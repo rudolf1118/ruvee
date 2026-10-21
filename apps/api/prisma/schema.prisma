@@ -1,0 +1,13 @@
+// No models yet. Account, key-storage and vault schemas wait on the open
+// security architecture decisions listed in docs/architecture/open-decisions.md.
+
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  moduleFormat        = "esm"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}

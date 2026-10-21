@@ -1,0 +1,21 @@
+node_modules/
+dist/
+.next/
+.turbo/
+coverage/
+playwright-report/
+test-results/
+*.tsbuildinfo
+next-env.d.ts
+apps/api/src/generated/
+
+# Environment files hold local settings; only the example is tracked.
+.env
+.env.*
+!.env.example
+
+# Design bundles are large self-contained HTML exports kept outside version control.
+/ruvee password manager.html
+/design/
+
+.DS_Store

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://turborepo.com/schema.json",
+  "globalDependencies": ["tsconfig.base.json"],
+  "globalEnv": ["NODE_ENV"],
+  "tasks": {
+    "generate": {
+      "inputs": ["prisma/**", "prisma.config.ts"],
+      "outputs": ["src/generated/**"]
+    },
+    "build": {
+      "dependsOn": ["^build", "generate"],
+      "inputs": ["$TURBO_DEFAULT$", "!**/*.test.*", "!**/*.spec.*", "!e2e/**"],
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+    },
+    "typecheck": {
+      "dependsOn": ["^build", "generate"]
+    },
+    "lint": {
+      "dependsOn": ["^build", "generate"]
+    },
+    "test": {
+      "dependsOn": ["^build", "generate"]
+    },
+    "test:integration": {
+      "dependsOn": ["^build", "generate"],
+      "env": ["DATABASE_URL"],
+      "cache": false
+    },
+    "test:e2e": {
+      "dependsOn": ["^build"],
+      "env": ["PLAYWRIGHT_CHANNEL", "CI"],
+      "cache": false
+    },
+    "dev": {
+      "dependsOn": ["generate"],
+      "cache": false,
+      "persistent": true
+    }
+  }
+}

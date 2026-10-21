@@ -1,0 +1,97 @@
+@import 'tailwindcss';
+
+/*
+ * Design tokens taken from the supplied Ruvee design ("ruvee password manager.html").
+ * Components use these names instead of raw values.
+ */
+@theme {
+  --font-sans: var(--font-hanken-grotesk), system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: var(--font-jetbrains-mono), ui-monospace, monospace;
+
+  /* Brand */
+  --color-brand: #6d4aff;
+  --color-brand-hover: #5a36f0;
+  --color-brand-strong: #3f22c9; /* text on selected surfaces */
+  --color-brand-text: #4a2bd6; /* links and accent icons */
+  --color-brand-soft: #eee9ff; /* selected backgrounds */
+  --color-brand-tint: #f1edff; /* item type tiles */
+  --color-brand-wash: #f6f3ff; /* notices */
+  --color-brand-line: #c6b8ff;
+
+  /* Neutrals */
+  --color-canvas: #f8f7f4;
+  --color-surface: #ffffff;
+  --color-ink: #20212b;
+  --color-ink-secondary: #3a3b47;
+  --color-ink-muted: #5e6070;
+  --color-line: #e6e3dc;
+  --color-line-soft: #eeebe5;
+  --color-line-strong: #dcd8cf;
+  --color-line-button: #d9d5cc;
+  --color-line-input: #d3cfc5;
+  --color-line-menu: #e1ddd4;
+  --color-line-dashed: #cfc9bd;
+  --color-hover: #efede7;
+  --color-hover-soft: #f5f3ee;
+  --color-subtle: #f3f1ec;
+  --color-avatar: #f4f1eb;
+  --color-avatar-line: #e6e2da;
+  --color-ribbon: #2b2240;
+
+  /* Status */
+  --color-danger: #b42318;
+  --color-danger-hover: #951b12;
+  --color-danger-strong: #8f1c13;
+  --color-danger-wash: #fdecea;
+  --color-caution-strong: #6b3a00;
+  --color-caution-wash: #fff4e5;
+  --color-caution-line: #f5d9ae;
+
+  /* Type scale (px values from the design at a 14px base) */
+  --text-caption: 0.75rem; /* 12px: counts, eyebrow labels */
+  --text-label: 0.78125rem; /* 12.5px: field labels */
+  --text-small: 0.8125rem; /* 13px: secondary text, chips */
+  --text-body: 0.875rem; /* 14px: default */
+  --text-body-lg: 0.9375rem; /* 15px: field values */
+  --text-title-sm: 1.0625rem; /* 17px: empty state titles */
+  --text-title: 1.25rem; /* 20px: pane titles */
+  --text-heading: 1.5rem; /* 24px: item titles */
+
+  --tracking-tight-title: -0.01em;
+  --tracking-wordmark: -0.02em;
+
+  --radius-control-sm: 7px;
+  --radius-control: 8px;
+  --radius-row: 10px;
+  --radius-menu: 12px;
+  --radius-card: 16px;
+
+  --shadow-card: 0 1px 2px rgb(32 33 43 / 0.04);
+  --shadow-menu: 0 12px 32px rgb(32 33 43 / 0.12);
+
+  --width-sidebar: 248px;
+  --width-list: 380px;
+}
+
+@layer base {
+  html {
+    color-scheme: light;
+  }
+
+  body {
+    @apply bg-canvas font-sans text-body leading-[1.45] text-ink antialiased;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-brand;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    ::before,
+    ::after {
+      transition-duration: 0.01ms !important;
+      animation-duration: 0.01ms !important;
+    }
+  }
+}
