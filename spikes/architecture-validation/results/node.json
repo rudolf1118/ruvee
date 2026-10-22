@@ -1,0 +1,312 @@
+{
+  "env": {
+    "userAgent": "Node.js/24",
+    "node": "24.13.0",
+    "v8": "13.6.233.17-node.37",
+    "scope": "node",
+    "hardwareConcurrency": 10,
+    "deviceMemoryGiB": null,
+    "sodiumVersion": "1.0.22",
+    "sodiumLibraryVersion": "26.4",
+    "sodiumInitMs": 5,
+    "opaqueInitMs": 0,
+    "rssMiBAfter": 403
+  },
+  "results": [
+    {
+      "id": "LS-01",
+      "name": "libsodium constants and required functions",
+      "status": "pass",
+      "ms": 0,
+      "missing": [],
+      "hkdfExports": [
+        "crypto_kdf_hkdf_sha256_BYTES_MAX",
+        "crypto_kdf_hkdf_sha256_BYTES_MIN",
+        "crypto_kdf_hkdf_sha256_KEYBYTES",
+        "crypto_kdf_hkdf_sha512_BYTES_MAX",
+        "crypto_kdf_hkdf_sha512_BYTES_MIN",
+        "crypto_kdf_hkdf_sha512_KEYBYTES"
+      ],
+      "constants": {
+        "crypto_pwhash_ALG_ARGON2ID13": 2,
+        "crypto_pwhash_ALG_DEFAULT": 2,
+        "crypto_pwhash_SALTBYTES": 16,
+        "crypto_pwhash_OPSLIMIT_MIN": 1,
+        "crypto_pwhash_MEMLIMIT_MIN": 8192,
+        "crypto_pwhash_MEMLIMIT_MAX": -2147483648,
+        "crypto_pwhash_OPSLIMIT_MODERATE": 3,
+        "crypto_pwhash_MEMLIMIT_MODERATE": 268435456,
+        "crypto_generichash_KEYBYTES_MIN": 16,
+        "crypto_generichash_KEYBYTES_MAX": 64,
+        "crypto_kdf_CONTEXTBYTES": 8,
+        "crypto_kdf_KEYBYTES": 32,
+        "crypto_aead_xchacha20poly1305_ietf_NPUBBYTES": 24,
+        "crypto_aead_xchacha20poly1305_ietf_ABYTES": 16,
+        "crypto_box_SEALBYTES": 48
+      }
+    },
+    {
+      "id": "LS-02",
+      "name": "XChaCha20-Poly1305: draft-irtf-cfrg-xchacha-03 A.3.1 (libsodium and noble)",
+      "status": "pass",
+      "ms": 1
+    },
+    {
+      "id": "LS-03",
+      "name": "XChaCha20-Poly1305: Wycheproof xchacha20_poly1305_test.json (libsodium)",
+      "status": "pass",
+      "ms": 5,
+      "passed": 315,
+      "failures": []
+    },
+    {
+      "id": "LS-04",
+      "name": "XChaCha20-Poly1305: tampering is detected and reported only as one generic failure",
+      "status": "pass",
+      "ms": 0,
+      "messages": {
+        "ciphertextBit": "Error: ciphertext cannot be decrypted using that key",
+        "tagBit": "Error: ciphertext cannot be decrypted using that key",
+        "aadBit": "Error: ciphertext cannot be decrypted using that key",
+        "aadEmpty": "Error: ciphertext cannot be decrypted using that key",
+        "nonceBit": "Error: ciphertext cannot be decrypted using that key",
+        "truncated": "TypeError: ciphertext is too short"
+      }
+    },
+    {
+      "id": "LS-05",
+      "name": "BLAKE2b: RFC 7693 Appendix A, BLAKE2b-512(\"abc\")",
+      "status": "pass",
+      "ms": 1
+    },
+    {
+      "id": "LS-06",
+      "name": "BLAKE2b keyed: BLAKE2 reference blake2b-kat.txt (libsodium)",
+      "status": "pass",
+      "ms": 3,
+      "passed": 256,
+      "failed": 0
+    },
+    {
+      "id": "LS-07",
+      "name": "Keyed BLAKE2b-256 (proposed MAC) with 16- and 32-byte keys: libsodium equals noble",
+      "status": "pass",
+      "ms": 2,
+      "cases": 27,
+      "fifteenByteKey": "ACCEPTED"
+    },
+    {
+      "id": "LS-08",
+      "name": "crypto_kdf_derive_from_key equals BLAKE2b(key, salt=LE64(id)||0^8, personal=ctx||0^8, empty input)",
+      "status": "pass",
+      "ms": 1,
+      "cases": 60,
+      "fiveByteContext": "TypeError: invalid ctx length",
+      "numberIdAtOrAbove2pow31": "TypeError: subkey_id must be an unsigned integer or bigint"
+    },
+    {
+      "id": "LS-09a",
+      "name": "Argon2id: RFC 9106 §5.3 KAT validates the independent implementation (noble)",
+      "status": "pass",
+      "ms": 3,
+      "note": "libsodium cannot run this KAT: its API fixes p=1 and has no secret or associated-data input"
+    },
+    {
+      "id": "LS-09b",
+      "name": "Argon2id: libsodium crypto_pwhash parameter mapping equals noble (v=0x13, m=memlimit/1024 KiB, t=opslimit, p=1)",
+      "status": "pass",
+      "ms": 587,
+      "cases": [
+        {
+          "t": 1,
+          "mKiB": 8,
+          "nobleMs": 0
+        },
+        {
+          "t": 2,
+          "mKiB": 19456,
+          "nobleMs": 76
+        },
+        {
+          "t": 3,
+          "mKiB": 65536,
+          "nobleMs": 405
+        }
+      ],
+      "argon2iDiffers": true,
+      "parallelism": "crypto_pwhash has no parallelism parameter; p=1 is implied"
+    },
+    {
+      "id": "LS-09c",
+      "name": "Argon2id input handling: strings are UTF-8 encoded without normalization; salt length enforced",
+      "status": "pass",
+      "ms": 1,
+      "nfcDiffersFromNfd": true,
+      "explicitNormalizationMatches": true,
+      "stringEqualsUtf8Bytes": true,
+      "loneSurrogateCollidesWithReplacementChar": true,
+      "eightByteSalt": "TypeError: invalid salt length"
+    },
+    {
+      "id": "LS-10",
+      "name": "X25519: RFC 7748 §6.1 (libsodium and noble)",
+      "status": "pass",
+      "ms": 2
+    },
+    {
+      "id": "LS-11",
+      "name": "crypto_box_seal: libsodium and an independent reconstruction interoperate both ways",
+      "status": "pass",
+      "ms": 13,
+      "note": "no published sealed-box KAT exists; this checks the documented construction"
+    },
+    {
+      "id": "LS-12",
+      "name": "pad/unpad (ISO/IEC 7816-4, block 256), memzero, randombytes",
+      "status": "pass",
+      "ms": 0,
+      "fullBlockAddsBlock": true
+    },
+    {
+      "id": "OP-01",
+      "name": "OPAQUE registration and login round trip (default key stretching)",
+      "status": "pass",
+      "ms": 203,
+      "serverKeyReturnedMatchesSetup": true,
+      "approxBytes": {
+        "serverSetup": 128,
+        "registrationRequest": 32,
+        "registrationResponse": 65,
+        "registrationRecord": 192,
+        "startLoginRequest": 96,
+        "loginResponse": 320,
+        "finishLoginRequest": 65
+      },
+      "registrationFinishMs": 109,
+      "loginClientFinishMs": 91
+    },
+    {
+      "id": "OP-02",
+      "name": "OPAQUE default key stretching equals \"memory-constrained\"; a different preset does not log in",
+      "status": "pass",
+      "ms": 180,
+      "explicitMemoryConstrainedLogsIn": true,
+      "sameMemoryAndTimeButP1LogsIn": false,
+      "explicitClientFinishMs": 90
+    },
+    {
+      "id": "OP-03",
+      "name": "OPAQUE wrong password: client finishLogin returns undefined",
+      "status": "pass",
+      "ms": 92
+    },
+    {
+      "id": "OP-04",
+      "name": "OPAQUE identifier mismatch (other server identifier) fails at the client",
+      "status": "pass",
+      "ms": 91
+    },
+    {
+      "id": "OP-05",
+      "name": "OPAQUE server key substitution: a different server setup with the stolen record cannot authenticate",
+      "status": "pass",
+      "ms": 89
+    },
+    {
+      "id": "OP-06",
+      "name": "OPAQUE unknown user: simulated response has the same length; client fails",
+      "status": "pass",
+      "ms": 181,
+      "realLen": 427,
+      "fakeLen": 427,
+      "note": "length only; timing indistinguishability must be tested at the HTTP layer in Phase 2"
+    },
+    {
+      "id": "OP-07",
+      "name": "OPAQUE malformed or tampered messages",
+      "status": "pass",
+      "ms": 275,
+      "outcomes": {
+        "server.startLogin garbage request": "threw Error: opaque protocol error at \"deserialize startLoginRequest\"; Internal error encountered",
+        "server.startLogin garbage record": "threw Error: opaque protocol error at \"deserialize registrationRecord\"; Invalid length for `name`: expected `len`, but is actu",
+        "client.finishLogin truncated response": "threw Error: opaque protocol error at \"deserialize loginResponse\"; Internal error encountered",
+        "client.finishLogin bit-flipped response": "threw Error: opaque protocol error at \"deserialize loginResponse\"; Internal error encountered",
+        "client.finishLogin byte flipped inside the masked response": "returned undefined",
+        "server.finishLogin bit-flipped finalization": "threw Error: opaque protocol error at \"finish server login\"; Error in validating credentials",
+        "server.finishLogin replay of state and finalization": "ACCEPTED"
+      }
+    },
+    {
+      "id": "OP-08",
+      "name": "OPAQUE password input is a JS string: lone surrogate vs U+FFFD",
+      "status": "pass",
+      "ms": 371,
+      "loneSurrogateLogsInAsReplacementChar": true,
+      "nfdLogsInToNfcRegistration": false
+    }
+  ],
+  "benchmarks": [
+    {
+      "kind": "libsodium crypto_pwhash",
+      "label": "OWASP minimum 19MiB t=2",
+      "t": 2,
+      "memMiB": 19,
+      "p": 1,
+      "runs": 5,
+      "error": null,
+      "medianMs": 14,
+      "minMs": 14,
+      "maxMs": 14
+    },
+    {
+      "kind": "libsodium crypto_pwhash",
+      "label": "profile-1 64MiB t=3",
+      "t": 3,
+      "memMiB": 64,
+      "p": 1,
+      "runs": 5,
+      "error": null,
+      "medianMs": 79,
+      "minMs": 78,
+      "maxMs": 80
+    },
+    {
+      "kind": "libsodium crypto_pwhash",
+      "label": "128MiB t=3",
+      "t": 3,
+      "memMiB": 128,
+      "p": 1,
+      "runs": 5,
+      "error": null,
+      "medianMs": 169,
+      "minMs": 165,
+      "maxMs": 175
+    },
+    {
+      "kind": "libsodium crypto_pwhash",
+      "label": "profile-2 256MiB t=3",
+      "t": 3,
+      "memMiB": 256,
+      "p": 1,
+      "runs": 5,
+      "error": null,
+      "medianMs": 339,
+      "minMs": 336,
+      "maxMs": 350
+    },
+    {
+      "kind": "OPAQUE client finishLogin",
+      "label": "memory-constrained 64MiB t=3 p=4",
+      "runs": 5,
+      "medianMs": 90,
+      "minMs": 89,
+      "maxMs": 106
+    }
+  ],
+  "host": {
+    "cpu": "Apple M5",
+    "cores": 10,
+    "totalMemGiB": 16,
+    "os": "darwin 25.5.0 arm64"
+  }
+}

@@ -25,9 +25,14 @@ the first device generates the 128-bit Recovery Key `RK` and shows the **Recover
 
 - the Recovery Key in its text form `RK1-…` (29 characters in groups of 5) and as a QR code
   ([cryptographic-design.md §5.4](cryptographic-design.md#54-recovery-key-display-format))
-- the username, the server URL and `instance_id`
+- the username and the server URL
 - the creation date and `recovery_key_id` (shortened), so the user can tell kits apart
 - the warnings in section 8
+
+It does not contain the password, `SK` or `AK`; the Recovery Key restores those through the
+recovery wrap and the keyset. The Phase 0 kit also listed `instance_id`. It is removed, because
+no protocol uses it any more, and printing it would suggest that the client verifies the server
+with it ([architecture-validation.md §5.1](architecture-validation.md#51-the-recovery-kit-contains)).
 
 The user can print it or save it as a PDF generated **locally**. The kit is never uploaded and
 never stored by Ruvee on any device after setup.
@@ -51,6 +56,9 @@ on a new device or on an existing one.
      generic error for an unknown username or a wrong key.
    - On success it creates a **recovery session**: 15 minutes, usable only for the recovery
      endpoints, and bound to a device record that is `pending` or new.
+   - It records `recovery_started` and **raises the recovery notice on every other device
+     immediately**. Step 3 alone lets the kit holder unwrap `AK`, so waiting for completion
+     would let someone with the kit take a copy of the keys silently.
 3. The client fetches the recovery material: `AK_WRAP_RECOVERY`, the keyset, `ak_id`,
    `ak_epoch` and `keyset_version`. It unwraps `AK` with `RWK`, decrypts the keyset, and obtains
    `SK` and `VK`. A failure here is an integrity failure, not a wrong key, because `RAK` already
@@ -70,12 +78,22 @@ on a new device or on an existing one.
    ([sync-protocol.md §Limits](../architecture/sync-protocol.md#limits)). It shows the vault's
    latest manifest date and the device that wrote it, and asks the user to confirm the vault looks
    current.
+8. If recovery was needed because devices were lost, the client lists the other devices and
+   asks the user to revoke the lost ones, then offers `SK` rotation
+   ([cryptographic-design.md §6.2](cryptographic-design.md#62-narrow-rotations)). The lost
+   devices still hold `SK` and a wrap of `AK` under the old password. Revoking stops the server
+   serving them, and rotating `SK` stops a later database copy from becoming guessable. Neither
+   takes back what they already hold; only full rotation (Phase 4) protects later data.
 
 `RAK` is sent to the server, so a malicious server, or anyone who breaks TLS, learns it. `RAK`
 only grants the right to run this flow; it is domain-separated from `RWK` and decrypts nothing.
 Someone who abuses it can take over **account access** by re-registering a password, but cannot
-read the vault. Other devices would then see the recovery notice. This risk is recorded as
-[R-08](risk-register.md).
+read the vault. They can also complete recovery with junk wraps that the server cannot check.
+That deletes the working recovery wrap, so the user's kit stops working against this server.
+Other devices would see the recovery notice. This risk is recorded as [R-08](risk-register.md).
+The established alternative that keeps a bearer value off the wire is a second OPAQUE
+registration whose password is derived from `RK`. It is open decision
+[D-22](../architecture/open-decisions.md).
 
 ## 4. What the user has, and what happens
 
@@ -106,6 +124,11 @@ and future data too if `AK` has not changed since. Rotating `RK` therefore prote
 someone who has the old kit **but not** an old backup. To also cut off old backups, do a full key
 rotation ([cryptographic-design.md §6.3](cryptographic-design.md#63-full-rotation-new-ak-vk-and-every-ik)).
 The UI must explain this whenever the reason for rotation is a lost or stolen kit.
+
+It also does not revoke what someone already took. While the old kit was current, its holder
+could start recovery and fetch the recovery material without completing, and unwrap `AK`
+(section 3, step 2 records this). After that, rotating `RK` changes nothing for them. Only full
+rotation protects data written afterwards, and nothing protects data they already downloaded.
 
 ## 6. Reset
 
@@ -183,3 +206,17 @@ Rules for every recovery-related screen:
   verification, before vault reset and before operator reset.
 - Never describe revocation, password change or Recovery Key rotation as removing data from
   devices or backups ([cryptographic-design.md §6.4](cryptographic-design.md#64-what-changing-a-password-does-not-do)).
+
+## Changes after architecture validation
+
+Status remains **Proposed**. Changes made on 2026-10-22 from
+[architecture-validation.md](architecture-validation.md). The recovery construction (`RK`,
+`RWK`, `RAK`) is unchanged.
+
+- §2: `instance_id` removed from the kit; what the kit does not contain is stated (V-02).
+- §3 step 2: the recovery notice is raised at start, because the material alone yields `AK`
+  (V-07).
+- §3 new step 8: revoke lost devices and offer `SK` rotation (V-08).
+- §3: a `RAK` holder can also destroy the working recovery wrap; the second-OPAQUE alternative
+  is now decision D-22 (V-07).
+- §5: rotation does not take back `AK` from someone who used the old kit.

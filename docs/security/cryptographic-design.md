@@ -62,6 +62,11 @@ not because it is standardized.
 - `MAC(key, msg)` is `crypto_generichash(32, msg, key)`: keyed BLAKE2b-256.
 - `KDF(key, ctx)` is `crypto_kdf_derive_from_key(32, 1, ctx, key)`. `ctx` is exactly 8 ASCII bytes,
   and the subkey id is always 1; separation comes from the context.
+- **Lengths are checked by Ruvee, not by the library.** Every key, salt, nonce and context is
+  checked for its exact length before a libsodium call. libsodium.js 0.8.4 accepts a 15-byte
+  BLAKE2b key although the documented minimum is 16, and reports
+  `crypto_pwhash_MEMLIMIT_MAX` as a negative number. No limit is read from library constants
+  ([validation V-12](architecture-validation.md#1-findings)).
 - In JSON APIs, binary values are base64url without padding. Byte-exact formats (envelopes,
   records, manifests) are always transported as base64url of the exact bytes defined here, never
   re-serialized.
@@ -108,9 +113,18 @@ re-wrapping its 32-byte key instead of re-encrypting its body.
 
 ### 3.1 Password normalization
 
-`P` is the UTF-8 encoding of the password after Unicode NFC normalization. No trimming, case
-folding or other changes. The same bytes are given to OPAQUE and to Argon2id. An empty password
-or one longer than 4,096 bytes is rejected before any derivation. Minimum length and strength
+`P` is produced in this order:
+
+1. Reject the input unless it is a well-formed string (`String.prototype.isWellFormed()`, or
+   the platform's equivalent check for unpaired surrogates). Both libraries silently replace a
+   lone surrogate with U+FFFD, so without this check two different inputs would derive the same
+   keys (spike LS-09c, OP-08).
+2. Apply Unicode NFC. No trimming, case folding or other changes.
+3. Encode as UTF-8, and reject an empty result or one longer than 4,096 bytes.
+
+The same normalized string is given to OPAQUE, which encodes it as UTF-8 itself, and its UTF-8
+bytes are given to Argon2id. Neither library normalizes: NFC and NFD forms of one password
+derive different keys. Minimum length and strength
 policy is a UX decision ([open decision D-09](../architecture/open-decisions.md)); the
 cryptography does not depend on it.
 
@@ -121,10 +135,10 @@ registry compiled into every client. A client must reject an unknown profile id 
 derive with parameters weaker than profile 1. This stops a malicious server from downgrading the
 work factor.
 
-| Profile | Status     | Memory                                 | Iterations (`opslimit`) | Lanes | Output |
-| ------- | ---------- | -------------------------------------- | ----------------------- | ----- | ------ |
-| 1       | V1 default | 64 MiB (`memlimit` = 67,108,864 bytes) | 3                       | 1     | 32 B   |
-| 2       | Reserved   | 256 MiB                                | 3                       | 1     | 32 B   |
+| Profile | Status                      | Memory                                 | Iterations (`opslimit`) | Lanes | Output |
+| ------- | --------------------------- | -------------------------------------- | ----------------------- | ----- | ------ |
+| 1       | V1 default, **provisional** | 64 MiB (`memlimit` = 67,108,864 bytes) | 3                       | 1     | 32 B   |
+| 2       | Reserved                    | 256 MiB                                | 3                       | 1     | 32 B   |
 
 Why these values:
 
@@ -141,6 +155,12 @@ Why these values:
   2 seconds and a peak of at most 128 MiB on the reference low-end Android device, in a Web Worker
   in Chrome and Safari, and in the MV3 service worker. If a platform misses the budget, the
   platform is blocked and the owner decides. **Profile 1 is never silently weakened.**
+- **Measured so far (one Apple M5 machine only):** profile 1 takes about 80 ms in a dedicated
+  worker in Chromium, Chrome, Playwright Firefox and Playwright WebKit, and in Node. In the MV3
+  extension service worker it takes about 300 ms. Nothing was measured on a phone or an older
+  laptop, and these numbers must not be used to argue for them. Profile 1 stays provisional
+  until P2-02 measures the reference devices
+  ([architecture-validation.md §7](architecture-validation.md#7-key-derivation-measurements)).
 - Profile 2 is enabled only by a future release, after the same benchmarks pass on every
   supported platform. Moving an account to a new profile requires an unlocked device and only
   re-wraps `AK` (section 6.1). Items are not re-encrypted.
@@ -170,7 +190,8 @@ whatever the password. If `SK` is known (for example after a device is stolen), 
 costs one Argon2id evaluation per password guess.
 
 `RK` is 128 bits from the CSPRNG and is not guessable. It is used directly as a BLAKE2b key
-(16 bytes is libsodium's `crypto_generichash_KEYBYTES_MIN`). `RWK` and `RAK` are bound to the
+(16 bytes is libsodium's documented `crypto_generichash_KEYBYTES_MIN`; Ruvee checks the length
+itself, see section 2). `RWK` and `RAK` are bound to the
 account and to `recovery_key_id` through the AAD of the recovery wrap (section 4.3), not through
 the derivation. That way recovery can start from the Recovery Kit and a username alone.
 
@@ -243,7 +264,9 @@ A decoder must check, in this order, and fail closed with a typed error:
 4. `key_id` equals the key the caller is about to use. A mismatch fails with `wrong_key`, before
    decryption is attempted.
 5. AEAD decryption with the rebuilt AAD. A failure is `integrity_failure`, and no partial
-   plaintext is ever returned.
+   plaintext is ever returned. The AEAD reports only that authentication failed: a changed
+   nonce, ciphertext, tag or AAD field all produce the same library error (spike LS-04). So
+   `integrity_failure` is one class, and no code may try to tell which field was changed.
 6. Plaintext post-checks: exact lengths for key material, valid padding for item bodies, and
    schema validation for JSON. A failure is `malformed_plaintext`.
 
@@ -358,7 +381,11 @@ A password change re-wraps `AK`. It does not re-encrypt any item:
 - **Secret Key rotation:** generate `SK'`. Re-encrypt the keyset (incrementing
   `keyset_version`) and re-wrap `AK` under `AUK'` derived with `SK'`. Other devices unlock
   locally with their old wrap, then read `SK'` from the new keyset on their next sync and
-  replace their local wrap.
+  replace their local wrap. **Triggers:** revoking a device as lost or possibly compromised, and
+  the end of a recovery that followed device loss. Once `SK` has left a device by theft or XSS,
+  any later database copy allows offline guessing of the current password until `SK` is
+  rotated ([validation V-08](architecture-validation.md#1-findings)). Rotating `SK` does not
+  help against a device that already holds `AK`; only full rotation does.
 
 ### 6.3 Full rotation (new `AK`, `VK` and every `IK`)
 
@@ -408,59 +435,74 @@ passwords stored in the vault.
 
 ## 8. Test vectors and interoperability plan
 
-**Goal.** Every client implementation must produce and accept exactly the bytes defined here, and
-the vectors that prove it must come from implementations other than the one being tested.
+Revised after the [architecture validation](architecture-validation.md#8-test-vector-plan-reassessed)
+(V-10). The Phase 0 plan used Python and Go generators. It also expected field-specific errors
+from the AEAD and cited libsodium's own test outputs as independent. Those parts are withdrawn.
 
-**Independent generator.** `tools/crypto-vectors/` will contain a generator with pinned
-dependencies that does not use libsodium:
+**Goal.** Every client implementation must produce and accept exactly the bytes defined here.
+Evidence comes from published vectors where they exist, and otherwise from **one** independent
+implementation that shares no code with libsodium: `@noble/hashes`, `@noble/ciphers` and
+`@noble/curves`, pinned exactly. A second independent language is not required. Noble's Argon2 is
+outside its audit scope, so it is trusted only because it passes the RFC 9106 vector.
 
-| Primitive                                            | Independent implementation                                                                                                                                                    |
-| ---------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Argon2id                                             | `argon2-cffi` (bindings to the reference `phc-winner-argon2` C code)                                                                                                          |
-| BLAKE2b, keyed and with salt/personalization (`KDF`) | Python `hashlib.blake2b` (CPython's own BLAKE2 implementation), with `key`, `salt` and `person`. This reproduces `crypto_kdf_derive_from_key` from its documented definition. |
-| XChaCha20-Poly1305                                   | PyCryptodome `ChaCha20_Poly1305` with a 24-byte nonce                                                                                                                         |
-| X25519 sealed box                                    | Go `golang.org/x/crypto/nacl/box.SealAnonymous` and `OpenAnonymous`                                                                                                           |
-| SHA-256                                              | Python `hashlib`                                                                                                                                                              |
+**1. Published primitive vectors.** These run in Node and in every supported browser engine, and
+later on mobile:
 
-The generator writes JSON vectors containing inputs, intermediate values and outputs. The vectors
-are committed. TypeScript tests in `packages/crypto` consume them and never regenerate them. The
-generator itself is checked against published known-answer tests before its output is trusted:
+| Primitive                                                                             | Published source                                                             | Notes                                                                                                                |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| XChaCha20-Poly1305-IETF                                                               | draft-irtf-cfrg-xchacha-03 §A.3.1; Wycheproof `xchacha20_poly1305_test.json` | Run directly through libsodium                                                                                       |
+| Argon2id v1.3                                                                         | RFC 9106 §5.3                                                                | p = 4 with secret and AD, so only noble can run it. noble then cross-checks libsodium at p = 1, including profile 1. |
+| BLAKE2b                                                                               | RFC 7693 Appendix A; BLAKE2 reference `blake2b-kat.txt` (keyed, 64-byte key) | Run directly through libsodium                                                                                       |
+| X25519                                                                                | RFC 7748 §6.1                                                                | Run directly through libsodium                                                                                       |
+| Keyed BLAKE2b-256 with 16- and 32-byte keys, `crypto_kdf`, `crypto_box_seal`, padding | **None published**                                                           | Cross-implementation checks against noble, from each function's documented definition                                |
+| OPAQUE                                                                                | RFC 9807 Appendix C, identity KSF only                                       | Upstream only; see [authentication.md](authentication.md#interoperability-tests)                                     |
 
-- RFC 9106 Argon2id test vector (p=4, so only the generator, not libsodium, can check it)
-- draft-irtf-cfrg-xchacha-03 Appendix A.3.1
-- Project Wycheproof `xchacha20_poly1305_test.json`
-- RFC 7693 BLAKE2b
-- libsodium's published sealed-box and `crypto_kdf` test outputs
+Negative cases for the AEAD expect only "authentication fails".
 
-**Vector set.** At minimum:
+**2. Ruvee protocol interoperability vectors.** These cover the derivations (`PwK`, `AUK`, `RWK`,
+`RAK` and every `K_*`), one envelope of every purpose, an item record with `record_hash`,
+`items_digest` for 0, 1 and 3 items (including a tombstone), a manifest with its
+`manifest_hash`, the Recovery Key and pairing-code text, and pairing MACs. `PwK` inputs include
+ASCII, NFC versus NFD input showing that normalization is applied, a rejected lone surrogate,
+emoji, and a password at the 4,096-byte maximum. Each vector is produced by `packages/crypto`
+on libsodium **and** by a small noble-based reference, and the two must agree.
 
-- `PwK` for profile 1 across several passwords: ASCII, NFC versus NFD input showing that
-  normalization is applied, emoji, and a password at the 4,096-byte maximum.
-- `AUK`, `RWK`, `RAK` and each `KDF` subkey.
-- One envelope of every purpose, with fixed nonces through the test-only interface.
-- An item record, `record_hash`, `items_digest` for 0, 1 and 3 items (including a tombstone), and
-  a manifest with its `manifest_hash`.
-- The Recovery Key text encoding and its checksum.
-- A sealed-box enrollment payload with its MACs.
+**They are not authoritative yet.** Until this byte format has been reviewed and frozen, they
+are labelled provisional and regenerated whenever the format changes. Nobody may treat a
+committed provisional vector as a compatibility promise. Fixed nonces are used only through the
+test-only interface (INV-02).
 
-**Negative vectors.** Each must be rejected with the stated error: flipped bit in the tag,
-ciphertext, nonce, `key_id`, purpose or version; a wrong context field such as another item id,
-another revision or another `seq`; truncation at every field boundary; over-maximum length;
-unknown profile id; Recovery Key with a bad checksum; bad padding; and a manifest with a
-`prev_manifest_hash` that does not chain.
+**3. Parsing and tampering tests** on the envelope decoder:
+
+- Typed errors only for decisions Ruvee's parser makes **before** decryption: length below the
+  minimum or above the purpose's maximum, `magic`, `format_version`, `alg` (`unsupported_format`),
+  the wrong `purpose`, and a `key_id` other than the expected one (`wrong_key`).
+- Everything the AEAD covers yields one `integrity_failure`: a flipped bit in the nonce,
+  ciphertext or tag, and a wrong context field such as another item id, revision or `seq`.
+  Tests assert the class, not which field changed.
+- Plaintext post-checks: bad padding, wrong key length, schema failure (`malformed_plaintext`).
+- Other format checks: unknown profile id, Recovery Key or pairing code with a bad checksum.
+- Property and fuzz tests: encode and decode round trips for random inputs; arbitrary bytes into
+  the decoder must never produce anything except a typed error; `items_digest` does not depend on
+  input order.
+
+**4. Application authorization and replay tests.** These are HTTP and integration tests, not
+vectors: a single-use `loginId`; one request per pairing; a MAC failure burning a pairing;
+recovery-session scope; step-up; refresh-token reuse; a keyset or manifest rollback; and a
+manifest whose `prev_manifest_hash` does not chain. They have exact status codes, because Ruvee
+defines them ([INV-23](security-invariants.md)).
 
 **Where the vectors run.**
 
-| Runtime                                       | Phase | How                                                                                              |
-| --------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------ |
-| Node 24 (`libsodium-wrappers-sumo`)           | 2     | Vitest in CI                                                                                     |
-| Chrome and WebKit, main thread and Web Worker | 2     | Playwright-driven test page in CI                                                                |
-| MV3 service worker                            | 5     | Test harness extension loaded by Playwright                                                      |
-| iOS and Android (`react-native-libsodium`)    | 6     | On-device test runner in CI (simulator/emulator), plus one physical reference device per release |
+| Runtime                                                  | Phase | How                                                                                              |
+| -------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------ |
+| Node 24 (`libsodium-wrappers-sumo`)                      | 2     | Vitest in CI                                                                                     |
+| Chromium, Firefox and WebKit, main thread and Web Worker | 2     | Playwright-driven test page in CI. Playwright WebKit is not Safari; Safari is checked by hand.   |
+| MV3 service worker and offscreen document                | 5     | Test harness extension loaded by Playwright, with `'wasm-unsafe-eval'` declared                  |
+| iOS and Android (`react-native-libsodium`)               | 6     | On-device test runner in CI (simulator/emulator), plus one physical reference device per release |
 
-**Property and fuzz tests.** Envelope encode/decode round trips for random inputs; decoder fuzzing
-with arbitrary bytes, which must never throw anything except typed errors; and `items_digest`
-invariance under input order.
+The spike in `spikes/architecture-validation/` already runs category 1 in the first three rows,
+using synthetic data. Its results are evidence for this plan, not a substitute for the CI suite.
 
 **OPAQUE interoperability** is separate, because Ruvee does not implement OPAQUE. See
 [authentication.md](authentication.md#interoperability-tests).
@@ -476,3 +518,20 @@ invariance under input order.
 - No compression before encryption, which would leak content through ciphertext length.
 - Signatures are not used in V1. The single user's devices share symmetric keys. Signing keys per
   device are left for shared vaults, where other users' devices need to verify authorship.
+
+## Changes after architecture validation
+
+Status remains **Proposed**. Changes made on 2026-10-22 from
+[architecture-validation.md](architecture-validation.md). No key, derivation, envelope or byte
+format changed.
+
+- §2: Ruvee checks every length itself, because libsodium.js accepts a too-short BLAKE2b key
+  (V-12).
+- §3.1: well-formed-string check before NFC (V-05).
+- §3.2: profile 1 is marked provisional, with the single-machine measurements and their limits.
+- §3.3: the `RK` length is checked by Ruvee.
+- §4.4: `integrity_failure` is a single class; the AEAD cannot report which field changed.
+- §6.2: `SK` rotation triggers (V-08).
+- §8: rewritten (V-10). The independent implementation is `@noble/*` instead of Python and Go.
+  Tests are split into four kinds. Ruvee protocol vectors stay provisional until the format is
+  reviewed.

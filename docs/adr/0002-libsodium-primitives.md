@@ -30,6 +30,10 @@ Use libsodium everywhere: `libsodium-wrappers-sumo` on web and extension, and
   unstable. BLAKE2b-based derivation is used instead.
 - There is no AES-GCM, because libsodium.js lacks it.
 - libsodium's Argon2id fixes parallelism at 1.
+- The libraries need `'wasm-unsafe-eval'` in the web CSP and in the extension manifest. Without it
+  they abort; there is no JavaScript fallback (verified in four browser engines).
+- libsodium.js does not enforce every documented length minimum, so `packages/crypto` checks
+  lengths itself.
 - Audits are dated and don't cover current versions (R-02). Mobile exposes a subset of functions,
   so padding is implemented in `packages/crypto` and covered by vectors (R-16).
 
@@ -37,5 +41,16 @@ Use libsodium everywhere: `libsodium-wrappers-sumo` on web and extension, and
 
 - **WebCrypto (AES-GCM, HKDF) plus a separate Argon2 library.** It has no Argon2 and no XChaCha,
   splits the implementation across libraries, and needs nonce care with 96-bit nonces.
-- **`@noble/*`.** Audited in 2024 and pure TypeScript, but slower for Argon2 and a second
-  implementation to keep consistent. It is kept as a fallback candidate.
+- **`@noble/*`.** Pure TypeScript, with audits of earlier versions (its Argon2 was outside the
+  audit scope), slower for Argon2, and a second implementation to keep consistent. It is not
+  used in production. It is the **independent test oracle** for the vector plan, replacing the
+  Python and Go generators.
+
+## Changes after architecture validation
+
+Still **Proposed**. Changes made on 2026-10-22 from
+[architecture-validation.md](../security/architecture-validation.md):
+
+- Consequences: the `'wasm-unsafe-eval'` requirement and Ruvee-side length checks (V-11, V-12).
+- Alternatives: noble's audit scope corrected, and its role as test oracle recorded (V-10, V-13).
+- The decision itself is unchanged.

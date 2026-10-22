@@ -9,3 +9,6 @@ test-results
 next-env.d.ts
 **/src/generated/**
 *.html
+spikes/*/kat
+spikes/*/results
+spikes/*/package-lock.json

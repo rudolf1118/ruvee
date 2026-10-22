@@ -42,6 +42,11 @@ There is exactly one row.
 
 The OPAQUE server setup is **not** stored here or anywhere else in the database ([INV-21](../security/security-invariants.md)).
 
+**Likely unnecessary.** If validation finding V-02 is accepted, OPAQUE uses no server identifier,
+and no protocol uses `instance_id`. This table would then be dropped from the Phase 2 schema
+([architecture-validation.md](../security/architecture-validation.md#1-findings)). The schema
+is not approved either way.
+
 ### `accounts`
 
 | Column                | Type        | Class | Purpose                                            |
@@ -235,3 +240,8 @@ staging table for full key rotation, with its own design review.
 
 Database backups contain exactly the tables above. What restoring them means for clients is in
 [account-recovery.md §7](../security/account-recovery.md#7-restoring-from-backups).
+
+## Changes after architecture validation
+
+Status remains **Proposed**, and the schema is not approved. On 2026-10-22, `server_instance` was
+marked as likely unnecessary (V-02). No other table changed.

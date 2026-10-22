@@ -35,21 +35,22 @@ authoritative for it.
  └──────────────────────────────────┘
 ```
 
-| Concern                                 | Summary                                                                                                                                                    | Authoritative document                                         |
-| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- |
-| Assets, attackers, guarantees           | The server is trusted for availability only. The web-delivery limit is stated openly.                                                                      | [threat-model.md](../security/threat-model.md)                 |
-| Properties that must always hold        | INV-01 to INV-22                                                                                                                                           | [security-invariants.md](../security/security-invariants.md)   |
-| Encryption and keys                     | libsodium: XChaCha20-Poly1305, Argon2id, BLAKE2b. Two-secret key derivation (password plus a device-held Secret Key). Versioned envelopes. Manifest chain. | [cryptographic-design.md](../security/cryptographic-design.md) |
-| Login and sessions                      | OPAQUE through `@serenity-kit/opaque`. HttpOnly cookie for web, rotating tokens elsewhere. Kept separate from unlocking.                                   | [authentication.md](../security/authentication.md)             |
-| Adding devices                          | Pairing with a code shown on an enrolled device, MAC-authenticated so that the server cannot substitute keys.                                              | [device-enrollment.md](../security/device-enrollment.md)       |
-| Recovery and reset                      | A user-held Recovery Kit. No administrator recovery.                                                                                                       | [account-recovery.md](../security/account-recovery.md)         |
-| Sync, offline, conflicts, local storage | Linear commit sequence, revision preconditions, explicit conflicts, checkpoints.                                                                           | [sync-protocol.md](sync-protocol.md)                           |
-| Tables                                  | Columns with confidentiality classes                                                                                                                       | [database-design.md](database-design.md)                       |
-| Endpoints, headers, errors, logging     |                                                                                                                                                            | [api-design.md](api-design.md)                                 |
-| Residual risks                          |                                                                                                                                                            | [risk-register.md](../security/risk-register.md)               |
-| Library and platform evidence           | Versions, audits and limitations, with dates checked                                                                                                       | [research-sources.md](../security/research-sources.md)         |
-| Decisions for the owner                 |                                                                                                                                                            | [open-decisions.md](open-decisions.md)                         |
-| Decision records                        | All Proposed                                                                                                                                               | [ADR index](../adr/README.md)                                  |
+| Concern                                 | Summary                                                                                                                                                    | Authoritative document                                               |
+| --------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Assets, attackers, guarantees           | The server is trusted for availability only. The web-delivery limit is stated openly.                                                                      | [threat-model.md](../security/threat-model.md)                       |
+| Properties that must always hold        | INV-01 to INV-23                                                                                                                                           | [security-invariants.md](../security/security-invariants.md)         |
+| Encryption and keys                     | libsodium: XChaCha20-Poly1305, Argon2id, BLAKE2b. Two-secret key derivation (password plus a device-held Secret Key). Versioned envelopes. Manifest chain. | [cryptographic-design.md](../security/cryptographic-design.md)       |
+| Login and sessions                      | OPAQUE through `@serenity-kit/opaque`. HttpOnly cookie for web, rotating tokens elsewhere. Kept separate from unlocking.                                   | [authentication.md](../security/authentication.md)                   |
+| Adding devices                          | Pairing with a code shown on an enrolled device, MAC-authenticated so that the server cannot substitute keys.                                              | [device-enrollment.md](../security/device-enrollment.md)             |
+| Recovery and reset                      | A user-held Recovery Kit. No administrator recovery.                                                                                                       | [account-recovery.md](../security/account-recovery.md)               |
+| Sync, offline, conflicts, local storage | Linear commit sequence, revision preconditions, explicit conflicts, checkpoints.                                                                           | [sync-protocol.md](sync-protocol.md)                                 |
+| Tables                                  | Columns with confidentiality classes                                                                                                                       | [database-design.md](database-design.md)                             |
+| Endpoints, headers, errors, logging     |                                                                                                                                                            | [api-design.md](api-design.md)                                       |
+| Residual risks                          |                                                                                                                                                            | [risk-register.md](../security/risk-register.md)                     |
+| Library and platform evidence           | Versions, audits and limitations, with dates checked                                                                                                       | [research-sources.md](../security/research-sources.md)               |
+| Validation of this design               | Self-review and compatibility spike: findings, attacker tables, protocol details, measurements. Not an independent audit.                                  | [architecture-validation.md](../security/architecture-validation.md) |
+| Decisions for the owner                 |                                                                                                                                                            | [open-decisions.md](open-decisions.md)                               |
+| Decision records                        | All Proposed                                                                                                                                               | [ADR index](../adr/README.md)                                        |
 
 ### Planned packages
 
@@ -127,7 +128,8 @@ noted in the roadmap.
 3. The user sets a new password. OPAQUE is re-registered and a new password wrap is made.
 4. The Recovery Key is rotated, which is mandatory, and the new kit is verified.
 5. Every other session is ended. Other devices show a "recovery was used" notice at their next
-   login.
+   login. The notice is raised when recovery **starts**, because the recovery material alone
+   lets the kit holder unwrap `AK`.
 
 Full steps: [account-recovery.md §3](../security/account-recovery.md#3-recovery-with-the-recovery-key).
 Without the Recovery Kit, a forgotten password means the data is lost
@@ -138,7 +140,9 @@ Without the Recovery Kit, a forgotten password means the data is lost
 - **The user has the Recovery Kit:** the same flow as scenario 4, on a new device. The user may
   keep the same password. The new device has no checkpoint, so it shows the vault's last change
   date and author device and asks the user to confirm
-  ([sync-protocol.md §Limits](sync-protocol.md#limits)).
+  ([sync-protocol.md §Limits](sync-protocol.md#limits)). It then asks the user to revoke the lost
+  devices and offers `SK` rotation, because the lost devices still hold `SK` and a wrap of `AK`
+  ([account-recovery.md §3](../security/account-recovery.md#3-recovery-with-the-recovery-key)).
 - **Password only:** the user can log in but cannot decrypt. The only option is a vault reset,
   which destroys the data and starts again
   ([account-recovery.md §6.1](../security/account-recovery.md#61-vault-reset-by-the-user)).
@@ -207,3 +211,10 @@ fresh device with no checkpoint, a freeze, or a fork between devices is **not** 
 - **Freshness comes from manifests and checkpoints, not from AEAD** ([INV-07](../security/security-invariants.md)).
 - **The web app trusts the server that serves it.** The extension and mobile apps don't depend
   on it for their code (R-01).
+
+## Changes after architecture validation
+
+Status remains **Proposed**. On 2026-10-22, scenarios 4 and 5 and the document table were updated to match
+[account-recovery.md](../security/account-recovery.md): the recovery notice is raised at recovery
+start, and recovery after device loss prompts revocation and `SK` rotation
+([architecture-validation.md](../security/architecture-validation.md), V-07 and V-08).

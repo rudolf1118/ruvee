@@ -46,7 +46,7 @@ Specified in [authentication.md](../security/authentication.md). Phase 2.
 
 | Method and path                      | Level     | Body to the server, and response                                                                                                                                                                                                                     |
 | ------------------------------------ | --------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `POST /auth/register/start`          | `none`    | `{ bootstrapToken, username, registrationRequest }` → `{ registrationResponse, instanceId, serverPublicKey }`. Returns `404` after the first account exists.                                                                                         |
+| `POST /auth/register/start`          | `none`    | `{ bootstrapToken, username, registrationRequest }` → `{ registrationResponse }`. Returns `404` after the first account exists.                                                                                                                      |
 | `POST /auth/register/finish`         | `none`    | `{ bootstrapToken, username, registrationRecord, accountId, device: { id, platform, label }, keys: { kdfProfile, saltPw, akId, akEpoch, wrappedAkPassword, recoveryKeyId, wrappedAkRecovery, recoveryVerifier, keysetVersion, keyset } }` → session. |
 | `POST /auth/login/start`             | `none`    | `{ username, startLoginRequest, deviceId?, platform }` → `{ loginId, loginResponse }`                                                                                                                                                                |
 | `POST /auth/login/finish`            | `none`    | `{ loginId, finishLoginRequest }` → session, plus `{ accountId, device: { id, status } }`                                                                                                                                                            |
@@ -78,7 +78,7 @@ Specified in [account-recovery.md §3](../security/account-recovery.md#3-recover
 | Method and path                 | Level      | Body to the server, and response                                                                                                                                                                   |
 | ------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `POST /recovery/start`          | `none`     | `{ username, recoveryAuthKey, device: { id, platform } }` → recovery session (15 minutes). Every failure returns the same `401 recovery_failed`.                                                   |
-| `GET /recovery/material`        | `recovery` | → `{ accountId, recoveryKeyId, wrappedAkRecovery, akId, akEpoch, keysetVersion, keyset, rowVersion, serverPublicKey, instanceId }`                                                                 |
+| `GET /recovery/material`        | `recovery` | → `{ accountId, recoveryKeyId, wrappedAkRecovery, akId, akEpoch, keysetVersion, keyset, rowVersion }`                                                                                              |
 | `POST /recovery/password/start` | `recovery` | `{ registrationRequest }` → `{ registrationResponse }`                                                                                                                                             |
 | `POST /recovery/complete`       | `recovery` | `{ registrationRecord, kdfProfile, saltPw, wrappedAkPassword, recoveryKeyId, wrappedAkRecovery, recoveryVerifier, label, expectedRowVersion }` → a normal session. All other sessions are revoked. |
 
@@ -96,7 +96,7 @@ Specified in [device-enrollment.md](../security/device-enrollment.md). Phase 2.
 | `DELETE /sessions/{sessionId}`        | `active`  | Revokes that session.                                                                                                                        |
 | `POST /pairings`                      | `active`  | `{ pairingId }` (device A)                                                                                                                   |
 | `GET /pairings/{pairingId}`           | `session` | → state, and for the role of the caller: A gets `{ requesterDeviceId, platform, epk, mac }`, and B gets `{ ciphertext, mac }` after approval |
-| `POST /pairings/{pairingId}/request`  | `session` | `{ epk, platform, mac }` (device B, which must be `pending`)                                                                                 |
+| `POST /pairings/{pairingId}/request`  | `session` | `{ epk, platform, mac }` (device B, which must be `pending`). `device_id_B` comes from the session. A second request gets `409`.             |
 | `POST /pairings/{pairingId}/approve`  | `active`  | `{ ciphertext, mac, label }` (device A)                                                                                                      |
 | `POST /pairings/{pairingId}/complete` | `active`  | Device B, now active. Deletes the pairing.                                                                                                   |
 | `DELETE /pairings/{pairingId}`        | `session` | Either device cancels.                                                                                                                       |
@@ -212,3 +212,11 @@ Every `/api/v1` response, and every HTML page of the vault UI, sends `Cache-Cont
 Static assets with content hashes in their names may be cached as `immutable`. The web app has
 no service worker in V1, so no API response can end up in a service-worker cache
 ([sync-protocol.md §12](sync-protocol.md#12-local-storage)).
+
+## Changes after architecture validation
+
+Status remains **Proposed**. Changes made on 2026-10-22 from
+[architecture-validation.md](../security/architecture-validation.md): `instanceId` and
+`serverPublicKey` removed from `register/start` and `recovery/material`, because OPAQUE uses no
+server identifier and clients no longer pin the server key (V-02, V-03). The pairing request
+takes `device_id_B` from the session and accepts one request per pairing (V-09).

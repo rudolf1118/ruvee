@@ -9,17 +9,21 @@ The Phase 0 security architecture is **proposed, not approved, and not independe
 Start with [docs/architecture/system-overview.md](docs/architecture/system-overview.md). The
 product specification is [docs/planning/master-engineering-prompt.md](docs/planning/master-engineering-prompt.md),
 and the next steps are in [docs/planning/implementation-roadmap.md](docs/planning/implementation-roadmap.md).
+A self-review of that architecture, with a library compatibility spike, is in
+[docs/security/architecture-validation.md](docs/security/architecture-validation.md). It is not an
+independent audit.
 
 ## What is here
 
-| Path                     | Contents                                                                     |
-| ------------------------ | ---------------------------------------------------------------------------- |
-| `apps/api`               | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging   |
-| `apps/web`               | Next.js web app: design tokens, UI components, vault app shell, dev preview  |
-| `packages/eslint-config` | Shared ESLint flat configs (`base`, `node`, `next`)                          |
-| `tsconfig.base.json`     | Shared strict TypeScript settings                                            |
-| `docker-compose.yml`     | Local PostgreSQL 18 with a persistent volume and health check                |
-| `docs/`                  | Architecture, security specifications, ADRs and planning (Phase 0, proposed) |
+| Path                     | Contents                                                                          |
+| ------------------------ | --------------------------------------------------------------------------------- |
+| `apps/api`               | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging        |
+| `apps/web`               | Next.js web app: design tokens, UI components, vault app shell, dev preview       |
+| `packages/eslint-config` | Shared ESLint flat configs (`base`, `node`, `next`)                               |
+| `tsconfig.base.json`     | Shared strict TypeScript settings                                                 |
+| `docker-compose.yml`     | Local PostgreSQL 18 with a persistent volume and health check                     |
+| `docs/`                  | Architecture, security specifications, ADRs and planning (Phase 0, proposed)      |
+| `spikes/`                | Disposable compatibility experiments; not workspace packages, synthetic data only |
 
 ## Requirements
 

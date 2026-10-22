@@ -17,7 +17,13 @@ the server in usable form. New devices receive `SK` by pairing or through the Re
 
 ## Consequences
 
-- Database theft alone allows no guessing, because the wrap needs `SK` as well (T-01).
+- A database copy alone allows no guessing against the vault wrap, because the wrap needs `SK`
+  as well (T-01). This does **not** cover the OPAQUE record: with the OPAQUE server setup, the
+  password can be guessed without `SK`, but a cracked password still doesn't decrypt. The exact
+  conditions are in
+  [architecture-validation.md §3.4](../security/architecture-validation.md#34-the-narrowed-claim).
+- Once `SK` has leaked from a device, later database copies are guessable until `SK` is
+  rotated (R-17).
 - A password alone cannot enroll a new device. Users need an enrolled device or their Recovery
   Kit. This is the main user-experience cost.
 - A stolen device, or an XSS attack that reads `SK`, reduces security to the password strength
@@ -29,3 +35,12 @@ the server in usable form. New devices receive `SK` by pairing or through the Re
   database theft.
 - **Typing `SK` on each new device**, as 1Password's Emergency Kit allows. Pairing gives the same
   security with less typing. The Recovery Key covers the case with no device.
+
+## Changes after architecture validation
+
+Still **Proposed**. Changes made on 2026-10-22 from
+[architecture-validation.md](../security/architecture-validation.md):
+
+- Consequences: the database-theft claim is narrowed to the vault wrap and to `SK` not having
+  leaked; the OPAQUE path is stated separately (V-01, V-08).
+- The decision itself is unchanged.
