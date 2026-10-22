@@ -17,8 +17,8 @@ security tests listed for it must pass in CI.
 
 | ID    | Task                                                                                                                                                                                                                            | Depends on                            | Size | Acceptance criteria                                                                                                                                                                                                                                                                                                         | Security tests                                                                                                                                                                                                                                                                                      |
 | ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| P2-01 | **Primitive validation harness** in `tools/crypto-validation` (see [first task](#first-bounded-task)).                                                                                                                          | D-25                                  | M    | See below.                                                                                                                                                                                                                                                                                                                  | Published KATs and cross-implementation checks pass in Node and three browser engines.                                                                                                                                                                                                              |
-| P2-02 | **Argon2id calibration spike.** A development-only harness runs `crypto_pwhash` with profile 1 in a dedicated Web Worker on Chrome, Firefox and Safari, on the reference devices.                                               | D-01, D-03                            | S    | A results table (median, p95 and peak memory per browser and device) is added to [research-sources.md](../security/research-sources.md). Profile 1 is confirmed, or a decision is raised. Profile 1 is never weakened silently.                                                                                             | Not applicable (measurement).                                                                                                                                                                                                                                                                       |
+| P2-01 | **Primitive validation harness** in `tools/crypto-validation` (see [first task](#first-bounded-task)). **Implemented locally 2026-10-22; remote CI not yet run.**                                                               | D-25 (approved)                       | M    | See below.                                                                                                                                                                                                                                                                                                                  | Published KATs and cross-implementation checks pass in Node and three browser engines.                                                                                                                                                                                                              |
+| P2-02 | **Argon2id calibration spike.** A development-only harness runs `crypto_pwhash` with profile 1 in a dedicated Web Worker on Chrome, Firefox and Safari, on the reference devices.                                               | D-26                                  | S    | A results table (median, p95 and peak memory per browser and device) is added to [research-sources.md](../security/research-sources.md). Profile 1 is confirmed, or a decision is raised. Profile 1 is never weakened silently.                                                                                             | Not applicable (measurement).                                                                                                                                                                                                                                                                       |
 | P2-03 | **`packages/crypto`**: envelope codec, derivations, wraps, keyset, padding, Recovery Key and pairing code formats, over an injected libsodium interface. Adds `libsodium-wrappers-sumo` and `libsodium-sumo` at exact versions. | P2-01, D-01, D-04, D-20               | L    | The P2-01 checks pass against it, and its provisional protocol vectors agree with a noble-based reference, in Node and in Chromium, Firefox and WebKit through Playwright. The public API matches [cryptographic-design.md](../security/cryptographic-design.md). There is no nonce parameter outside the test-only export. | INV-02 (nonce uniqueness, test-only export lint), INV-03 (negative vectors), INV-04 (fuzzing the decoder, typed errors), INV-05 (profile floor), INV-17, INV-22 (exact-version check in CI).                                                                                                        |
 | P2-04 | **Web security headers and CSP spike.** Caddy and Next.js headers from [api-design.md](../architecture/api-design.md#web-app-security-headers). `packages/crypto` and `@serenity-kit/opaque` load in a worker under the CSP.    | P2-03                                 | S    | D-16 is resolved with evidence. CSP has no `'unsafe-inline'` or `'unsafe-eval'` for scripts. Any deviation is recorded.                                                                                                                                                                                                     | An HTTP test asserting every header. A Playwright test that an injected inline script is blocked.                                                                                                                                                                                                   |
 | P2-05 | **`packages/contracts` and API conventions**: error shape, base64url byte fields with length checks, body limits, route-template logging, `Origin` and `X-Ruvee-Request` guard, `no-store`.                                     | none                                  | M    | Every rule in [api-design.md §Conventions](../architecture/api-design.md#conventions) has a test. Logs contain route templates only.                                                                                                                                                                                        | CSRF tests (T-17). A request with both cookie and bearer is rejected. The log-scan test is extended (INV-12).                                                                                                                                                                                       |
@@ -52,8 +52,9 @@ their tests), vault items, sync, and re-seeding.
 ## Decisions needing owner review
 
 They are listed with recommendations in [open-decisions.md](../architecture/open-decisions.md).
-The decision table there says which task each decision blocks. **Only D-25 blocks the next task
-(P2-01).** D-01, D-04 and D-20 block P2-03. The rest block later Phase 2 tasks or later phases.
+The decision table there says which task each decision blocks. D-25 was approved and P2-01 is
+implemented. **Only D-26 (the reference devices) blocks the next task, P2-02.** D-01, D-04 and
+D-20 block P2-03. The rest block later Phase 2 tasks or later phases.
 
 ## Independent review
 
@@ -121,6 +122,31 @@ Acceptance criteria:
 Out of scope: Ruvee protocol vectors (category 2, which waits for P2-03 and a format review),
 OPAQUE, performance budgets (P2-02), and any TypeScript implementation (P2-03).
 
+### P2-01 status (2026-10-22)
+
+Implemented locally in [`tools/crypto-validation/`](../../tools/crypto-validation/README.md),
+with the `crypto-validation` CI job. Every check and negative control passes in Node 24, in
+Playwright Chromium, Firefox and WebKit (page and worker), and in a local Linux container running
+the CI job's commands. **Remote CI has not run**, because nothing has been pushed; acceptance
+criterion 1 is met only when it does. Criteria 2 to 4 are met.
+
+Deviations from the scope above:
+
+- No test-runner dependency. The harness has a small runner of its own, so the same check code
+  runs unchanged in Node, a page and a worker, and every result is checked for completeness.
+- It adds negative controls (fault injection) and a check that WebAssembly fails without
+  `'wasm-unsafe-eval'`.
+- It found V-15 ([validation §1](../security/architecture-validation.md#1-findings)), which P2-03
+  must handle.
+
+## Next bounded task
+
+**P2-02: Argon2id calibration.** It measures profile 1 (64 MiB, t = 3, p = 1) through
+`crypto_pwhash` in a dedicated worker on the reference devices and browsers, including Safari and
+phones, which CI cannot cover. Only **D-26** blocks it: without named reference devices there is
+nothing to measure. D-03 is the decision P2-02 produces evidence for, so it cannot block it, and
+D-01 is not needed to measure the candidate library (the same reasoning as for P2-01).
+
 ## Changes after architecture validation
 
 Status remains **Proposed**. Changes made on 2026-10-22 from
@@ -132,3 +158,11 @@ Status remains **Proposed**. Changes made on 2026-10-22 from
 - P2-12 and P2-13: tests for the single-request rule and the recovery notice at start (V-07,
   V-09).
 - Which decisions block which task now follows the decision table in open-decisions.md.
+
+## Changes after P2-01
+
+Status remains **Proposed**. Changes made on 2026-10-22:
+
+- P2-01 marked implemented locally, with its deviations ([status](#p2-01-status-2026-10-22)).
+- P2-02 now depends on D-26 only, instead of D-01 and D-03 (see
+  [next bounded task](#next-bounded-task)).

@@ -12,3 +12,6 @@ next-env.d.ts
 spikes/*/kat
 spikes/*/results
 spikes/*/package-lock.json
+tools/crypto-validation/vectors
+tools/crypto-validation/results
+tools/crypto-validation/package-lock.json

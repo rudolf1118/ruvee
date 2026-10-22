@@ -15,15 +15,16 @@ independent audit.
 
 ## What is here
 
-| Path                     | Contents                                                                          |
-| ------------------------ | --------------------------------------------------------------------------------- |
-| `apps/api`               | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging        |
-| `apps/web`               | Next.js web app: design tokens, UI components, vault app shell, dev preview       |
-| `packages/eslint-config` | Shared ESLint flat configs (`base`, `node`, `next`)                               |
-| `tsconfig.base.json`     | Shared strict TypeScript settings                                                 |
-| `docker-compose.yml`     | Local PostgreSQL 18 with a persistent volume and health check                     |
-| `docs/`                  | Architecture, security specifications, ADRs and planning (Phase 0, proposed)      |
-| `spikes/`                | Disposable compatibility experiments; not workspace packages, synthetic data only |
+| Path                      | Contents                                                                                                                                                                     |
+| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api`                | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging                                                                                                   |
+| `apps/web`                | Next.js web app: design tokens, UI components, vault app shell, dev preview                                                                                                  |
+| `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                          |
+| `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                            |
+| `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                |
+| `docs/`                   | Architecture, security specifications, ADRs and planning (Phase 0, proposed)                                                                                                 |
+| `spikes/`                 | Disposable compatibility experiments; not workspace packages, synthetic data only                                                                                            |
+| `tools/crypto-validation` | Primitive validation harness (P2-01) for the candidate crypto libraries; own lockfile, synthetic data only, not Ruvee's format ([README](tools/crypto-validation/README.md)) |
 
 ## Requirements
 

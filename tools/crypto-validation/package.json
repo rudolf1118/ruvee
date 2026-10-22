@@ -1,0 +1,29 @@
+{
+  "name": "ruvee-crypto-validation",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Validation harness for the candidate primitive libraries (libsodium.js, with @noble/* as a test oracle). Synthetic inputs only. Not part of the pnpm workspace, not imported by any app, and not Ruvee's cryptographic format.",
+  "license": "UNLICENSED",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "node src/run-node.mjs",
+    "test:node": "node src/run-node.mjs",
+    "build:browser": "node src/browser/build.mjs",
+    "test:browsers": "node src/browser/build.mjs && node src/browser/run.mjs",
+    "install:browsers": "playwright-core install chromium firefox webkit"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "libsodium-sumo": "0.8.4",
+    "libsodium-wrappers-sumo": "0.8.4"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2",
+    "playwright-core": "1.64.1"
+  }
+}

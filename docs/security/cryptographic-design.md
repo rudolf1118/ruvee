@@ -448,14 +448,14 @@ outside its audit scope, so it is trusted only because it passes the RFC 9106 ve
 **1. Published primitive vectors.** These run in Node and in every supported browser engine, and
 later on mobile:
 
-| Primitive                                                                             | Published source                                                             | Notes                                                                                                                |
-| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- |
-| XChaCha20-Poly1305-IETF                                                               | draft-irtf-cfrg-xchacha-03 §A.3.1; Wycheproof `xchacha20_poly1305_test.json` | Run directly through libsodium                                                                                       |
-| Argon2id v1.3                                                                         | RFC 9106 §5.3                                                                | p = 4 with secret and AD, so only noble can run it. noble then cross-checks libsodium at p = 1, including profile 1. |
-| BLAKE2b                                                                               | RFC 7693 Appendix A; BLAKE2 reference `blake2b-kat.txt` (keyed, 64-byte key) | Run directly through libsodium                                                                                       |
-| X25519                                                                                | RFC 7748 §6.1                                                                | Run directly through libsodium                                                                                       |
-| Keyed BLAKE2b-256 with 16- and 32-byte keys, `crypto_kdf`, `crypto_box_seal`, padding | **None published**                                                           | Cross-implementation checks against noble, from each function's documented definition                                |
-| OPAQUE                                                                                | RFC 9807 Appendix C, identity KSF only                                       | Upstream only; see [authentication.md](authentication.md#interoperability-tests)                                     |
+| Primitive                                                                             | Published source                                                             | Notes                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| XChaCha20-Poly1305-IETF                                                               | draft-irtf-cfrg-xchacha-03 §A.3.1; Wycheproof `xchacha20_poly1305_test.json` | Run directly through libsodium                                                                                                                                                                                                                  |
+| Argon2id v1.3                                                                         | RFC 9106 §5.3; Argon2 reference `test.c` (Argon2id cases)                    | RFC 9106 needs p = 4 with secret and AD, so only noble can run it. The `test.c` vectors use 8-byte salts, so libsodium runs them through `crypto_pwhash_str_verify`. noble then cross-checks raw `crypto_pwhash` at p = 1, including profile 1. |
+| BLAKE2b                                                                               | RFC 7693 Appendix A; BLAKE2 reference `blake2b-kat.txt` (keyed, 64-byte key) | Run directly through libsodium                                                                                                                                                                                                                  |
+| X25519                                                                                | RFC 7748 §6.1                                                                | Run directly through libsodium                                                                                                                                                                                                                  |
+| Keyed BLAKE2b-256 with 16- and 32-byte keys, `crypto_kdf`, `crypto_box_seal`, padding | **None published**                                                           | Cross-implementation checks against noble, from each function's documented definition                                                                                                                                                           |
+| OPAQUE                                                                                | RFC 9807 Appendix C, identity KSF only                                       | Upstream only; see [authentication.md](authentication.md#interoperability-tests)                                                                                                                                                                |
 
 Negative cases for the AEAD expect only "authentication fails".
 
@@ -496,13 +496,17 @@ defines them ([INV-23](security-invariants.md)).
 
 | Runtime                                                  | Phase | How                                                                                              |
 | -------------------------------------------------------- | ----- | ------------------------------------------------------------------------------------------------ |
-| Node 24 (`libsodium-wrappers-sumo`)                      | 2     | Vitest in CI                                                                                     |
+| Node 24 (`libsodium-wrappers-sumo`)                      | 2     | The P2-01 harness's own runner in CI; Vitest for `packages/crypto` (P2-03)                       |
 | Chromium, Firefox and WebKit, main thread and Web Worker | 2     | Playwright-driven test page in CI. Playwright WebKit is not Safari; Safari is checked by hand.   |
 | MV3 service worker and offscreen document                | 5     | Test harness extension loaded by Playwright, with `'wasm-unsafe-eval'` declared                  |
 | iOS and Android (`react-native-libsodium`)               | 6     | On-device test runner in CI (simulator/emulator), plus one physical reference device per release |
 
-The spike in `spikes/architecture-validation/` already runs category 1 in the first three rows,
-using synthetic data. Its results are evidence for this plan, not a substitute for the CI suite.
+Category 1, the cross-implementation checks and the library behavior Ruvee relies on now run in
+the first two rows as a CI job: the
+[primitive validation harness](../../tools/crypto-validation/README.md) (P2-01), with synthetic
+data only. It tests the libraries, not this format. The earlier spike in
+`spikes/architecture-validation/` remains as disposable evidence, including its MV3 service
+worker run.
 
 **OPAQUE interoperability** is separate, because Ruvee does not implement OPAQUE. See
 [authentication.md](authentication.md#interoperability-tests).
@@ -535,3 +539,16 @@ format changed.
 - §8: rewritten (V-10). The independent implementation is `@noble/*` instead of Python and Go.
   Tests are split into four kinds. Ruvee protocol vectors stay provisional until the format is
   reviewed.
+
+## Changes after the primitive validation harness (P2-01)
+
+Status remains **Proposed**. Changes made on 2026-10-22 from the
+[harness](../../tools/crypto-validation/README.md). No key, derivation, envelope or byte format
+changed.
+
+- §8: the Argon2 reference `test.c` vectors are added, run through libsodium with
+  `crypto_pwhash_str_verify`. The Node and browser rows point to the harness instead of the spike.
+- Finding V-15 ([validation §1](architecture-validation.md#1-findings)): libsodium.js 0.8.4
+  returns stale memory from `crypto_kdf_derive_from_key` for subkey lengths outside 16..64. This
+  design already uses only 32-byte subkeys; §2's rule that Ruvee checks every length itself now
+  also covers that argument.
