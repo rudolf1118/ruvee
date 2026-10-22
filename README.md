@@ -5,15 +5,21 @@ no working vault, account system, encryption, sync or recovery. Do not use it to
 credentials. Open security architecture decisions are tracked in
 [docs/architecture/open-decisions.md](docs/architecture/open-decisions.md).
 
+The Phase 0 security architecture is **proposed, not approved, and not independently reviewed**.
+Start with [docs/architecture/system-overview.md](docs/architecture/system-overview.md). The
+product specification is [docs/planning/master-engineering-prompt.md](docs/planning/master-engineering-prompt.md),
+and the next steps are in [docs/planning/implementation-roadmap.md](docs/planning/implementation-roadmap.md).
+
 ## What is here
 
-| Path                     | Contents                                                                    |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `apps/api`               | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging  |
-| `apps/web`               | Next.js web app: design tokens, UI components, vault app shell, dev preview |
-| `packages/eslint-config` | Shared ESLint flat configs (`base`, `node`, `next`)                         |
-| `tsconfig.base.json`     | Shared strict TypeScript settings                                           |
-| `docker-compose.yml`     | Local PostgreSQL 18 with a persistent volume and health check               |
+| Path                     | Contents                                                                     |
+| ------------------------ | ---------------------------------------------------------------------------- |
+| `apps/api`               | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging   |
+| `apps/web`               | Next.js web app: design tokens, UI components, vault app shell, dev preview  |
+| `packages/eslint-config` | Shared ESLint flat configs (`base`, `node`, `next`)                          |
+| `tsconfig.base.json`     | Shared strict TypeScript settings                                            |
+| `docker-compose.yml`     | Local PostgreSQL 18 with a persistent volume and health check                |
+| `docs/`                  | Architecture, security specifications, ADRs and planning (Phase 0, proposed) |
 
 ## Requirements
 

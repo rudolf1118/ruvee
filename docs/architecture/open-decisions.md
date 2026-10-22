@@ -1,73 +1,76 @@
 # Open architecture decisions
 
-Status as of the Phase 1 foundation milestone. Nothing in this repository implements
-authentication, encryption, key management, vault persistence, sync, recovery or device
-enrollment. Those features stay blocked until the decisions below are written down and approved.
+Status as of Phase 0 (2026-10-22). Nothing in this repository implements authentication,
+encryption, key management, vault persistence, sync, recovery or device enrollment.
 
-## Phase 0 inputs that were not available
+The Phase 0 specifications now exist and are all **Proposed**; start from the
+[system overview](system-overview.md). The decisions below need the owner's review. Each has a
+recommendation, which is the agent's proposal and **not** an approval. Security-critical
+components also need independent review
+([roadmap](../planning/implementation-roadmap.md#independent-review)).
 
-The repository contained no Phase 0 documentation and no copy of the master engineering prompt
-when Phase 1 started. Only the UI design export was supplied. The following documents are
-therefore missing and should be produced (or added, if they exist elsewhere) before any
-security-sensitive feature work:
+## Decisions for owner review
 
-| Missing input               | Blocks                                                                               |
-| --------------------------- | ------------------------------------------------------------------------------------ |
-| Threat model                | Every security feature; logging and retention rules                                  |
-| Cryptographic design        | Key derivation, key hierarchy, item encryption format, algorithm and library choices |
-| Authentication protocol     | Account creation, login, session model, server-side verifier storage                 |
-| Account recovery policy     | Whether any recovery exists (the design says none does)                              |
-| Device enrollment and trust | Adding devices, revoking devices, browser extension and mobile pairing               |
-| Sync and conflict model     | Local storage, server storage, merge rules, offline behavior                         |
-| Vault data model            | Prisma schema for accounts, vaults, items and keys                                   |
-| Sharing model               | Multiple vaults such as "Household" in the design                                    |
-| Import and export policy    | Accepted formats, readable (unencrypted) export, warnings                            |
-| Deployment and hosting      | Production configuration, secrets management, TLS, backups                           |
+"Blocks" names the earliest work that can't start without the decision.
+
+| ID   | Decision                                                                                               | Recommendation                                                                                                                                                                                      | Blocks    | Details                                                                                               |
+| ---- | ------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------- | ----------------------------------------------------------------------------------------------------- |
+| D-01 | Cryptographic construction                                                                             | Approve libsodium (XChaCha20-Poly1305, Argon2id, BLAKE2b) with two-secret key derivation and envelope format 1.                                                                                     | Phase 2   | [ADR-0002](../adr/0002-libsodium-primitives.md), [ADR-0003](../adr/0003-two-secret-key-derivation.md) |
+| D-02 | Authentication protocol and library                                                                    | Approve OPAQUE through `@serenity-kit/opaque` 1.1.0, with the configuration in authentication.md §2.2.                                                                                              | Phase 2   | [ADR-0004](../adr/0004-opaque-authentication.md)                                                      |
+| D-03 | Argon2id profile 1 and the calibration reference devices                                               | Keep 64 MiB, t=3, p=1. The owner names the reference hardware: the oldest laptop browser and phones Ruvee should support. P2-02 measures them.                                                      | P2-02     | [cryptographic-design.md §3.2](../security/cryptographic-design.md#32-argon2id-profiles), R-03        |
+| D-04 | Enrollment only by pairing or Recovery Key; never by password alone                                    | Approve, accepting that a password alone can't set up a new device.                                                                                                                                 | Phase 2   | [ADR-0005](../adr/0005-device-pairing.md)                                                             |
+| D-05 | OPAQUE on React Native                                                                                 | Defer to a Phase 6 spike: Hermes WebAssembly first, then a UniFFI binding of `opaque-ke`. Do not adopt the client-hashed fallback.                                                                  | Phase 6   | [authentication.md §2.3](../security/authentication.md#23-mobile-blocker-and-alternatives), R-04      |
+| D-06 | Recovery model                                                                                         | Approve the user-held Recovery Kit, mandatory verification at setup, mandatory rotation after use, no administrator recovery, and the wording in account-recovery.md §8.                            | Phase 2   | [ADR-0006](../adr/0006-user-held-recovery-key.md)                                                     |
+| D-07 | Web-client trust                                                                                       | Accept for private mode, and say it in the product. Decide before any public-mode release whether the extension-hosted vault UI is required.                                                        | Phase 2   | [ADR-0009](../adr/0009-web-client-trust.md), R-01                                                     |
+| D-08 | Session lifetimes                                                                                      | Web: 12 h idle, 14 days absolute. Tokens: 10-minute access; refresh 30 days idle, 90 days absolute. Step-up window 5 minutes.                                                                       | Phase 2   | [ADR-0008](../adr/0008-session-model.md)                                                              |
+| D-09 | Master-password policy                                                                                 | At least 12 characters after NFC normalization, at most 4,096 bytes. Reject passwords found in a bundled common-password list. Show a strength estimate. No composition rules and no forced expiry. | Phase 2   | R-05                                                                                                  |
+| D-10 | Auto-lock                                                                                              | Default 15 minutes, configurable from 1 minute to 8 hours. No "never" option on web.                                                                                                                | P2-10     | [sync-protocol.md §Memory and lock](sync-protocol.md#memory-and-lock)                                 |
+| D-11 | Mobile biometric unlock, and whether an unlocked phone may reset the password without the Recovery Kit | Defer to Phase 6. A local OS-protected wrap of `AK` is the expected design.                                                                                                                         | Phase 6   | [account-recovery.md §4](../security/account-recovery.md#4-what-the-user-has-and-what-happens)        |
+| D-12 | Vault reset: may other devices export their local copy before wiping?                                  | Yes, an encrypted export if one exists by then. Decide in Phase 3.                                                                                                                                  | Phase 3   | [account-recovery.md §6.1](../security/account-recovery.md#61-vault-reset-by-the-user)                |
+| D-13 | Portable encrypted export format                                                                       | Design in Phase 7, within the constraints in account-recovery.md §7.                                                                                                                                | Phase 7   | [account-recovery.md §7](../security/account-recovery.md#7-restoring-from-backups)                    |
+| D-14 | Comparing checkpoints between devices to detect forks                                                  | Add encrypted per-device checkpoint records in Phase 4. Not a V1 blocker.                                                                                                                           | Phase 4   | [sync-protocol.md §Limits](sync-protocol.md#limits), R-07                                             |
+| D-15 | Security-event retention                                                                               | 365 days.                                                                                                                                                                                           | P2-15     | [database-design.md](database-design.md#security_events)                                              |
+| D-16 | CSP for Next.js inline scripts                                                                         | Prefer a static export of the client-rendered vault UI with build-time hashes. Decide with evidence from P2-04.                                                                                     | P2-04     | [api-design.md](api-design.md#web-app-security-headers), R-14                                         |
+| D-17 | Account identifier                                                                                     | A username, not an email address: NFC, lowercase, 1 to 64 characters. It is visible to the server.                                                                                                  | Phase 2   | [threat-model.md §4](../security/threat-model.md#4-what-the-server-can-see)                           |
+| D-18 | Single linear commit sequence per vault                                                                | Approve for V1.                                                                                                                                                                                     | Phase 3   | [ADR-0007](../adr/0007-sync-manifest-chain.md)                                                        |
+| D-19 | When independent review happens                                                                        | Review the crypto and authentication components after Phase 2, and before any real data is stored.                                                                                                  | Real data | R-15                                                                                                  |
+
+## Deviations from the master prompt
+
+| Deviation                                                                                                                       | Reason                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Visual identity.** The master prompt suggests charcoal and green; the supplied design uses purple.                            | The owner made the design the visual source of truth for Phase 1. The design stays authoritative unless the owner decides otherwise.                                                                                                                                                                                                                                                                                                                          |
+| **Phase 0 documents not created:** `monorepo-design.md`, `product-requirements.md`, `milestone-plan.md`, `testing-strategy.md`. | The Phase 0 assignment listed a narrower set of documents. Their content is covered as follows: the packages section of the [system overview](system-overview.md#planned-packages); the [master prompt](../planning/master-engineering-prompt.md) as the product specification; the [roadmap](../planning/implementation-roadmap.md) as the milestone plan; security tests in the roadmap and invariants. A full testing strategy should be written by P2-16. |
+| **"Use OS-protected secure storage where available."** The web app stores `SK` in IndexedDB.                                    | No OS key store is available to web pages ([device-enrollment.md §5](../security/device-enrollment.md#5-where-sk-is-stored-on-each-platform), R-06).                                                                                                                                                                                                                                                                                                          |
+| **HKDF and AES-256-GCM** were listed for consideration but are not used.                                                        | They are unavailable or unstable in the selected libraries ([ADR-0002](../adr/0002-libsodium-primitives.md)).                                                                                                                                                                                                                                                                                                                                                 |
+| **Estimated complexity** is given per Phase 2 task only.                                                                        | Later phases depend on Phase 2 findings and on D-05.                                                                                                                                                                                                                                                                                                                                                                                                          |
+
+## Prototype design conflicts and their status
+
+These were recorded in Phase 1. Each now points to where it is resolved, or says that it is still
+open.
+
+| Phase 1 conflict                                | Status                                                                                                                                                                                           |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| "Encrypted vault" and "Synced · Encrypted" copy | The UI keeps showing "Sync not set up" until Phase 3 and Phase 4 implement and test the design. Wording must follow [threat-model.md §4](../security/threat-model.md#4-what-the-server-can-see). |
+| Local-first storage                             | Specified in [sync-protocol.md §12](sync-protocol.md#12-local-storage).                                                                                                                          |
+| "No recovery" wording                           | Resolved by the proposed wording in [account-recovery.md §8](../security/account-recovery.md#8-user-facing-wording). It is pending D-06.                                                         |
+| Weak and reused password findings               | They run on the client only. Breach checks against an external service are **not designed** and stay out of V1.                                                                                  |
+| Biased password generator                       | Phase 3: unbiased sampling, using libsodium's `randombytes_uniform` on web, or rejection sampling over `randombytes_buf` on platforms that lack it, plus a reviewed word list.                   |
+| Clipboard clearing and auto-lock                | [sync-protocol.md §Memory and lock](sync-protocol.md#memory-and-lock), D-10, and T-26.                                                                                                           |
+| Readable export and import                      | Phase 7. Plaintext export requires step-up ([INV-14](../security/security-invariants.md)). The format is D-13.                                                                                   |
+| Multiple vaults ("Personal" and "Household")    | V1 has one vault. The data model allows more than one vault per account later, but sharing is deferred. "Household" stays a preview-only label.                                                  |
+| Onboarding and unlock screens                   | Phase 2: tasks P2-08 and P2-10.                                                                                                                                                                  |
 
 ## Decisions already made in Phase 1 (non-security)
 
 - Monorepo: pnpm workspaces with Turborepo. Node 24, TypeScript 6.0 (strict).
 - API: NestJS 12 (ESM), configuration validated with Zod at startup, Prisma 7 with the
   `@prisma/adapter-pg` driver adapter against PostgreSQL 18.
-- The Prisma schema intentionally has **no models**.
+- The Prisma schema intentionally has **no models**. The first models come with P2-06.
 - Health: `GET /health/live` (process only) and `GET /health/ready` (database reachable, 503 otherwise).
 - Logging: pino through `nestjs-pino`, allow-listed request fields only (method, path without query
   string, request id, status). Headers, cookies and bodies are never logged.
 - Web: Next.js 16 App Router, React 19, Tailwind CSS 4 with design tokens taken from the design.
 - UI preview: development-only route with synthetic, secret-free fixtures (see the README).
 - No Redis, no external cloud services.
-
-## Conflicts between the design and the (undecided) architecture
-
-The design is the visual source of truth, but several things it shows depend on decisions that
-have not been made. Phase 1 implements the layout and leaves these behaviors unavailable.
-
-1. **Security claims in copy.** The design says items are kept "in an encrypted vault on your
-   devices" and shows "Synced · Encrypted". These are claims about an encryption and sync design
-   that does not exist yet. The preview shows "Sync not set up" instead.
-2. **Local-first storage.** Messages such as "Changes saved on this device" imply local
-   persistence plus background sync. Where vault data lives, and how it is protected at rest on
-   each platform, is part of the sync decision.
-3. **No recovery.** The lock screen says Ruvee "can't reset or recover your master password".
-   That is a recovery-policy decision for Phase 0, not a UI detail.
-4. **Security findings.** Weak and reused password detection requires access to decrypted
-   passwords. Where that runs (client only) and whether breach checks call an external service
-   are open questions. The preview omits the Weak/Reused badges and the findings count.
-5. **Password generator.** The prototype draws characters with `getRandomValues() % n`, which
-   is biased. The real generator needs unbiased sampling and a reviewed word list. Not built.
-6. **Clipboard and auto-lock.** Clearing the clipboard after a delay and locking after idle or
-   sleep depend on platform capabilities and the session model. Not built.
-7. **Readable export and import.** Plaintext export and CSV import need an explicit policy and
-   warnings. Not built.
-8. **Multiple vaults.** "Personal" and "Household" vaults suggest per-vault keys and possibly
-   sharing. The preview treats vaults as labels only.
-9. **Onboarding and unlock.** The design's master password creation and unlock screens depend on
-   the authentication and key-derivation design. They were not implemented, and no fake login
-   was added.
-
-## Recommended order for resolving them
-
-1. Threat model and cryptographic design, reviewed together.
-2. Authentication protocol and recovery policy.
-3. Vault data model and sync/conflict model; only then the first Prisma models and migrations.
-4. Device enrollment, then the browser extension and mobile clients.
