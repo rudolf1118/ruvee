@@ -60,7 +60,19 @@ version does not cover the version Ruvee would ship.
   Chromium, Chrome, Playwright Firefox and Playwright WebKit (main thread and Web Worker), and the
   MV3 service worker ([architecture-validation.md §7](architecture-validation.md#7-key-derivation-measurements)).
   Safari, stock Firefox, older laptops, Android phones and iOS devices are unmeasured. See
-  [risk R-03](risk-register.md).
+  [risk R-03](risk-register.md). The P2-02 benchmark results so far, from the same machine only:
+
+  | Environment (2026-10-23, Apple M5, on battery, busy) | Profile 1 median (p95), two runs | Memory reported                         |
+  | ---------------------------------------------------- | -------------------------------- | --------------------------------------- |
+  | Node 24.13.0                                         | 93.2 (139.4) ms, 90.6 (161.7) ms | Whole-process peak 136 to 137 MiB       |
+  | Playwright Chromium                                  | 84.7 (88.3) ms, 81.9 (85.6) ms   | WebAssembly memory 64.3 MiB (not total) |
+  | Google Chrome                                        | 87.3 (99.0) ms, 96.9 (133.3) ms  | WebAssembly memory 64.3 MiB (not total) |
+  | Playwright Firefox                                   | 98.0 (124.0) ms, 97.8 (348.8) ms | WebAssembly memory 64.3 MiB (not total) |
+  | Playwright WebKit (not Safari)                       | 88.3 (116.4) ms, 86.0 (89.1) ms  | WebAssembly memory 64.3 MiB (not total) |
+
+  The method, the other configurations and the limitations are in
+  [kdf-calibration.md](kdf-calibration.md).
+
 - **Argon2id in the MV3 service worker** took about 3.7 times as long as in a page worker on the
   same Chromium build. The cause is unknown. The offscreen document is not yet measured.
 - **OPAQUE on React Native.** No maintained binding of `opaque-ke` 4.x exists for React Native.
@@ -100,3 +112,8 @@ Status remains **Proposed**. Additions made on 2026-10-22 from the
 - Vector sources (RFC 9106, Argon2 reference `test.c`, draft-irtf-cfrg-xchacha-03, Wycheproof,
   RFC 7693, BLAKE2 reference KAT, RFC 7748) are recorded with URL, revision and SHA-256 in the
   harness's `vectors/sources.json`.
+
+## Changes after the Argon2id calibration (P2-02, local part)
+
+Status remains **Proposed**. Added on 2026-10-23: the local profile 1 results table under
+"Argon2id timing on real target devices", linking [kdf-calibration.md](kdf-calibration.md).

@@ -249,7 +249,8 @@ The Docker run approximates CI but is not CI: GitHub's runners are x86_64.
 ## Bounds
 
 - Argon2id memory is capped at 64 MiB (`MAX_KDF_MEMORY_KIB = 65536`) for any case the harness
-  runs. Engines, contexts and runs are sequential, so only one heavy derivation is in flight.
+  checks run. The separate calibration benchmark goes up to 256 MiB (profile 2), one derivation
+  at a time. Engines, contexts and runs are sequential, so only one heavy derivation is in flight.
 - Excluded for memory: the reference `test.c` case with m = 2¹⁸ KiB (256 MiB).
 - Excluded for time: RFC 7748's 1,000,000-iteration X25519 result (1 and 1,000 are run).
 - The 1 GiB `memlimit` acceptance noted in `LB-ARGON2-SILENT-ADJUSTMENTS` was observed once
@@ -290,7 +291,151 @@ src/checks/                                one file per category
 src/proposed-rules.mjs                     test-local reference predicates (proposed, not an API)
 src/negative-controls.mjs                  fault injection
 src/run-node.mjs, src/browser/             runners
+src/calibration/                           Argon2id calibration benchmark (P2-02), see below
 ```
+
+## Argon2id calibration benchmark (P2-02)
+
+`src/calibration/` measures how long `crypto_pwhash` (Argon2id) takes with the proposed profile 1
+and a few comparison configurations. It uses the same pinned libsodium.js as the checks above, the
+same lockfile and the same version preflight. It is measurement tooling: it decides nothing, and
+the [calibration report](../../docs/security/kdf-calibration.md) holds the results and their
+limits. Inputs are synthetic.
+
+### What it measures
+
+The configurations come from a fixed registry in `src/calibration/core.mjs`; nothing else can be
+passed to the library. Each cites its basis in the specification.
+
+| Id           | Role                     | `memlimit` | `opslimit` | Argon2id parameters        |
+| ------------ | ------------------------ | ---------- | ---------- | -------------------------- |
+| `ref-19m-t2` | comparison (below floor) | 19 MiB     | 2          | v=0x13, m=19456, t=2, p=1  |
+| `p1-64m-t3`  | baseline (profile 1)     | 64 MiB     | 3          | v=0x13, m=65536, t=3, p=1  |
+| `c-64m-t4`   | candidate                | 64 MiB     | 4          | v=0x13, m=65536, t=4, p=1  |
+| `c-128m-t3`  | candidate                | 128 MiB    | 3          | v=0x13, m=131072, t=3, p=1 |
+| `p2-256m-t3` | reserved (profile 2)     | 256 MiB    | 3          | v=0x13, m=262144, t=3, p=1 |
+
+All use a 32-byte output, a 16-byte salt and a 24-byte password, with no secret or associated
+data. Before timing, each configuration's mapping is confirmed by libsodium's own
+`crypto_pwhash_str` output (`$argon2id$v=19$m=…,t=…,p=1$`). The self-test checks one output
+against noble.
+
+Procedure, the same in Node and browsers:
+
+- **One worker at a time.** A fresh worker (`worker_threads` in Node, a dedicated Web Worker in
+  browsers) is created for each configuration and terminated afterwards, so no WebAssembly memory
+  carries over. Configurations, engines and samples run strictly one after another.
+- **Order:** the five configurations by increasing cost, then profile 1 again, to show drift from
+  heat or power state during the run.
+- **Per configuration:** 3 warm-up derivations (discarded), then 20 timed ones (`quick` mode: 1
+  and 5). Only the `crypto_pwhash` call is timed, with `performance.now()` inside the worker.
+  Reported: median, p95 (nearest rank; with 20 samples, the 19th), minimum, maximum, sample count,
+  and failures. A failure stops that configuration and is recorded, never retried silently.
+- **Initialisation** is measured separately: 10 workers in a row, each from creation to
+  "libsodium ready", split into loading and evaluating the script and initialising libsodium.
+  The first worker is reported apart from the other nine.
+- **Memory**, only where it can be measured honestly:
+  - Node: the **peak resident set size of the whole process** (`getrusage`), one child process per
+    configuration, with the idle size of the same process for comparison.
+  - Browsers: only the **WebAssembly linear memory size** after the run. That is the Argon2
+    memory plus libsodium's own heap; it is **not** total peak memory, which browsers do not
+    expose to the page. Total browser memory is not measured.
+
+### Cancellation and cleanup
+
+A derivation runs synchronously inside the worker and cannot be interrupted from within.
+
+- **Cooperative cancel:** a `cancel` message is checked between derivations. The derivation in
+  progress finishes, and the worker stops before the next one. Latency is up to one derivation.
+- **Terminate:** `worker.terminate()` stops a derivation in progress and discards the worker and
+  its WebAssembly memory. Nothing it computed is delivered. The benchmark checks that no message
+  arrives after `terminate()`, and that a new worker then runs normally.
+- The controller terminates every worker in a `finally` block, including after failures and
+  timeouts. Output buffers and the password are wiped with `sodium.memzero` after use. JavaScript
+  cannot guarantee that no copy remains, which is one reason all inputs are synthetic.
+- The Node runner starts one child process per task, waits for it, and records each child's
+  process id. On a timeout it kills only that child.
+
+### V-15 and argument checks
+
+Every library call goes through a guard in `core.mjs`, which throws before calling the library:
+
+- `crypto_pwhash`: only registry configurations, `memlimit` in whole KiB and at most 256 MiB,
+  output exactly 32 bytes, salt exactly 16 bytes, password 1 to 4,096 bytes. libsodium itself
+  would round `memlimit` down silently and has no ceiling.
+- `crypto_kdf_derive_from_key` (one 32-byte subkey per configuration, timed separately): subkey
+  length exactly 32, key 32 bytes, an 8-character printable-ASCII context, id up to 2³¹ − 1.
+
+The benchmark never calls `crypto_kdf_derive_from_key` with an invalid length. This guard is the
+benchmark's own check. **It does not fix V-15**, which remains an open production integration
+issue in libsodium.js 0.8.4 (fixed upstream on master, not released). The dependencies were not
+changed. `LB-KDF-SUBKEY-LENGTH-STALE-MEMORY` above keeps tracking the library's behavior.
+
+### Commands
+
+From `tools/crypto-validation/`, after `npm ci`:
+
+```sh
+npm run calibration:selftest     # fast check of the tooling (also in CI); measures nothing
+npm run calibration:node         # Node; writes results/calibration/node-<time>.json
+npm run calibration:browsers     # Playwright browsers; writes results/calibration/browsers-<time>.json
+npm run calibration:serve        # local page on http://127.0.0.1:8787/ for manual runs
+node src/calibration/summarize.mjs   # Markdown tables from every result file, with an output-consistency check
+```
+
+- `MODE=quick` runs 1 warm-up and 5 samples instead of 3 and 20.
+- `BROWSERS=chromium,firefox,webkit,chrome` (default) selects engines. `chrome` is the installed
+  Google Chrome with a temporary profile.
+- Playwright WebKit is a WebKit build, **not Safari**, even though its user-agent string says
+  "Safari". Playwright Firefox is a patched build, not stock Firefox.
+- Results stay in `results/` (ignored by git).
+
+Measurements are only comparable on the same device under similar conditions. Before a run, plug
+the device in, close other applications, and note the power and load state. CI runs the
+self-test only, because timings on a shared runner would mean nothing.
+
+### Manual runs: Safari and other devices
+
+The page works in any browser with Web Workers and WebAssembly. It shows a results table and the
+full JSON, and sends the JSON back to the computer serving it (saved in
+`results/calibration/manual/`). Partial results survive a crash or reload of the tab, in
+`localStorage`.
+
+**Safari on a Mac** (no Safari settings, no "Allow Remote Automation", no OS changes):
+
+1. `npm run calibration:serve` on that Mac.
+2. Type `http://127.0.0.1:8787/` into Safari.
+3. Enter the device, macOS and Safari versions and the power state in "Device and browser", keep
+   Standard mode, and press Start. Leave the tab in the foreground for about two minutes.
+4. When "Saved on the computer as …" appears, run `node src/calibration/summarize.mjs`.
+
+**Android phone over USB**, which needs no network access: the phone reaches the computer's
+loopback port through `adb`.
+
+1. On the phone, enable USB debugging (the owner's choice; it changes a phone setting).
+2. Connect it, then on the computer: `adb reverse tcp:8787 tcp:8787` and
+   `npm run calibration:serve`.
+3. Open `http://127.0.0.1:8787/` in Chrome on the phone and proceed as in step 3 above.
+4. Afterwards, `adb reverse --remove tcp:8787`.
+
+**iPhone, or any device without USB forwarding.** This needs the page on the local network, so
+it exposes the server to that network while it runs. Decide this deliberately, and only on a
+network you trust:
+
+1. Find the computer's address on that network (for example `ipconfig getifaddr en0` on macOS).
+2. `HOST=<that address> npm run calibration:serve`. The server refuses `0.0.0.0` and binds only
+   that address. macOS may ask whether to allow incoming connections.
+3. Open `http://<that address>:8787/` on the device and run it as above.
+4. Stop the server with Ctrl+C as soon as the results are saved.
+
+Over a plain-HTTP network address the page is not a secure context, so it is not cross-origin
+isolated and its timers may be coarser; both are recorded in the results. Every browser on iOS
+uses WebKit, so an iPhone run covers Safari's engine whichever browser is used.
+
+Protocol for reference devices: battery above 50% and charging, Low Power or battery saver mode
+noted (off if possible), other apps closed, screen on. Run Standard mode twice, a few minutes
+apart, and keep both results. If a configuration fails (for example, the 256 MiB profile 2 runs
+out of memory), that is a result: record it.
 
 ## Vector provenance
 

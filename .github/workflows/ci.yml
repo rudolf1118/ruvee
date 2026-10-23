@@ -90,6 +90,7 @@ jobs:
           cache-dependency-path: tools/crypto-validation/package-lock.json
       - run: npm ci
       - run: npm run test:node
+      - run: npm run calibration:selftest
       - run: npm run install:browsers -- --with-deps
       - run: npm run test:browsers
       - if: always()

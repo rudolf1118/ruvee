@@ -443,6 +443,10 @@ What it does not support: any statement about the reference low-end devices, whi
 not named yet (D-03). **Profile 1 (64 MiB, t = 3) stays provisional** until P2-02 measures those
 devices. Peak memory was not measured in browsers.
 
+The P2-02 benchmark later repeated these measurements on the same machine with 20 samples, p95,
+worker initialisation, cancellation and memory where available
+([kdf-calibration.md](kdf-calibration.md)). It is still one machine.
+
 ## 8. Test-vector plan, reassessed
 
 ### 8.1 Published known-answer tests per primitive

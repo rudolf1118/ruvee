@@ -13,7 +13,12 @@
     "test:node": "node src/run-node.mjs",
     "build:browser": "node src/browser/build.mjs",
     "test:browsers": "node src/browser/build.mjs && node src/browser/run.mjs",
-    "install:browsers": "playwright-core install chromium firefox webkit"
+    "install:browsers": "playwright-core install chromium firefox webkit",
+    "calibration:selftest": "node src/calibration/selftest.mjs",
+    "calibration:build": "node src/calibration/build.mjs",
+    "calibration:node": "node src/calibration/run-node.mjs",
+    "calibration:browsers": "node src/calibration/build.mjs && node src/calibration/run-browsers.mjs",
+    "calibration:serve": "node src/calibration/build.mjs && node src/calibration/serve.mjs"
   },
   "dependencies": {
     "@noble/ciphers": "2.4.0",

@@ -161,6 +161,12 @@ Why these values:
   laptop, and these numbers must not be used to argue for them. Profile 1 stays provisional
   until P2-02 measures the reference devices
   ([architecture-validation.md §7](architecture-validation.md#7-key-derivation-measurements)).
+  The P2-02 benchmark on the same machine, 20 samples per engine, measured a median of 82 to
+  98 ms ([kdf-calibration.md](kdf-calibration.md)).
+- **The peak-memory budget needs a definition (D-03).** Browsers expose only the WebAssembly
+  memory size (64.3 MiB for profile 1), not process memory. In Node the whole process peaked at
+  136 MiB for profile 1, of which 45 MiB was the idle runtime. Whether the 128 MiB budget means
+  memory added by the derivation or the whole process must be decided before it can be checked.
 - Profile 2 is enabled only by a future release, after the same benchmarks pass on every
   supported platform. Moving an account to a new profile requires an unlocked device and only
   re-wraps `AK` (section 6.1). Items are not re-encrypted.
@@ -552,3 +558,12 @@ changed.
   returns stale memory from `crypto_kdf_derive_from_key` for subkey lengths outside 16..64. This
   design already uses only 32-byte subkeys; §2's rule that Ruvee checks every length itself now
   also covers that argument.
+
+## Changes after the Argon2id calibration (P2-02, local part)
+
+Status remains **Proposed**. Changes made on 2026-10-23 from
+[kdf-calibration.md](kdf-calibration.md). No parameter, key or format changed; profile 1 stays
+provisional.
+
+- §3.2: the local benchmark results are linked, and the peak-memory budget is marked as needing a
+  definition.
