@@ -16,8 +16,9 @@ The [architecture validation](../security/architecture-validation.md) replaced t
 of broad approval requests with the tables below. Technical decisions rest on engineering
 evidence. Product preferences are the owner's call and need no engineering validation. "Next
 task" means the bounded task proposed in the
-[roadmap](../planning/implementation-roadmap.md#next-bounded-task): P2-05, the API contracts,
-now that P2-01 and the local part of P2-02 are done. Approving a row approves only that row.
+[roadmap](../planning/implementation-roadmap.md#next-bounded-task): P2-03, `packages/crypto`,
+now that P2-01, the local part of P2-02 and P2-05 are done. Every remaining Phase 2 task is
+blocked by a decision. Approving a row approves only that row.
 
 ### Technical decisions
 
@@ -128,3 +129,8 @@ On 2026-10-23 the benchmark was built and run on the available computer
 stays provisional, now with the local results and an open question about how the peak-memory
 budget is measured. D-26 is still open and blocks only the remaining part of P2-02. "Next task"
 now means P2-05, which no decision blocks.
+
+## Changes after P2-05 (API contracts and conventions)
+
+On 2026-10-23 P2-05 was implemented locally. It needed no decision and changed none. "Next task"
+now means P2-03, which D-01, D-04 and D-20 block. Nothing was approved.

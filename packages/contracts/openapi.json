@@ -1,0 +1,651 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ruvee API",
+    "version": "0.0.0",
+    "description": "Endpoints that are implemented today, and nothing else. The endpoints proposed in\ndocs/architecture/api-design.md are not part of this document until they are built.\n\nNo endpoint requires authentication, and none exists yet.\n\nConventions that apply to every request:\n\n- Every response carries `x-request-id`. A caller-supplied value matching\n  `^[A-Za-z0-9._-]{1,64}$` is echoed back; any other\n  value is replaced by a generated UUID.\n- Every response carries `Cache-Control: no-store`.\n- Request bodies are read only for POST, PUT, PATCH and DELETE. They must be `application/json`\n  (UTF-8, no content encoding) and at most 65536 bytes. Request schemas\n  reject unknown fields. No implemented endpoint accepts a body yet.\n- Errors use the `ErrorResponse` shape with a code from a closed list and a fixed message.\n  Unknown paths return `404 not_found`."
+  },
+  "paths": {
+    "/health/live": {
+      "get": {
+        "operationId": "getLiveness",
+        "summary": "The process is running. Does not check dependencies.",
+        "responses": {
+          "200": {
+            "description": "The process is running.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LivenessResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "operationId": "getReadiness",
+        "summary": "Every required dependency (the database) is reachable.",
+        "responses": {
+          "200": {
+            "description": "Ready to serve traffic.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReadyResponse"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The database is unreachable.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/NotReadyResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "LivenessResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false
+      },
+      "ReadyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "ok"
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "database": {
+                "type": "string",
+                "const": "up"
+              }
+            },
+            "required": [
+              "database"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "status",
+          "checks"
+        ],
+        "additionalProperties": false
+      },
+      "NotReadyResponse": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "unavailable"
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "database": {
+                "type": "string",
+                "const": "down"
+              }
+            },
+            "required": [
+              "database"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "status",
+          "checks"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorResponse": {
+        "oneOf": [
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 400
+              },
+              "error": {
+                "type": "string",
+                "const": "invalid_request"
+              },
+              "message": {
+                "type": "string",
+                "const": "The request does not match the expected format."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              },
+              "details": {
+                "type": "object",
+                "properties": {
+                  "issues": {
+                    "minItems": 1,
+                    "maxItems": 20,
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "path": {
+                          "maxItems": 16,
+                          "type": "array",
+                          "items": {
+                            "anyOf": [
+                              {
+                                "type": "string",
+                                "pattern": "^[A-Za-z0-9_]{1,64}$"
+                              },
+                              {
+                                "type": "integer",
+                                "minimum": 0,
+                                "maximum": 9007199254740991
+                              }
+                            ]
+                          }
+                        },
+                        "code": {
+                          "type": "string",
+                          "enum": [
+                            "invalid_type",
+                            "too_small",
+                            "too_big",
+                            "invalid_format",
+                            "invalid_value",
+                            "unknown_field",
+                            "invalid"
+                          ]
+                        }
+                      },
+                      "required": [
+                        "path",
+                        "code"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "issues"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 400
+              },
+              "error": {
+                "type": "string",
+                "const": "malformed_json"
+              },
+              "message": {
+                "type": "string",
+                "const": "The request body is not valid JSON."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 404
+              },
+              "error": {
+                "type": "string",
+                "const": "not_found"
+              },
+              "message": {
+                "type": "string",
+                "const": "The requested resource does not exist."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 413
+              },
+              "error": {
+                "type": "string",
+                "const": "payload_too_large"
+              },
+              "message": {
+                "type": "string",
+                "const": "The request body is too large."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 415
+              },
+              "error": {
+                "type": "string",
+                "const": "unsupported_media_type"
+              },
+              "message": {
+                "type": "string",
+                "const": "Request bodies must be application/json encoded as UTF-8."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 500
+              },
+              "error": {
+                "type": "string",
+                "const": "internal_error"
+              },
+              "message": {
+                "type": "string",
+                "const": "An internal error occurred."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "ErrorInvalidRequest": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 400
+          },
+          "error": {
+            "type": "string",
+            "const": "invalid_request"
+          },
+          "message": {
+            "type": "string",
+            "const": "The request does not match the expected format."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          },
+          "details": {
+            "type": "object",
+            "properties": {
+              "issues": {
+                "minItems": 1,
+                "maxItems": 20,
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "maxItems": 16,
+                      "type": "array",
+                      "items": {
+                        "anyOf": [
+                          {
+                            "type": "string",
+                            "pattern": "^[A-Za-z0-9_]{1,64}$"
+                          },
+                          {
+                            "type": "integer",
+                            "minimum": 0,
+                            "maximum": 9007199254740991
+                          }
+                        ]
+                      }
+                    },
+                    "code": {
+                      "type": "string",
+                      "enum": [
+                        "invalid_type",
+                        "too_small",
+                        "too_big",
+                        "invalid_format",
+                        "invalid_value",
+                        "unknown_field",
+                        "invalid"
+                      ]
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "code"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "issues"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorMalformedJson": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 400
+          },
+          "error": {
+            "type": "string",
+            "const": "malformed_json"
+          },
+          "message": {
+            "type": "string",
+            "const": "The request body is not valid JSON."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorNotFound": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 404
+          },
+          "error": {
+            "type": "string",
+            "const": "not_found"
+          },
+          "message": {
+            "type": "string",
+            "const": "The requested resource does not exist."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorPayloadTooLarge": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 413
+          },
+          "error": {
+            "type": "string",
+            "const": "payload_too_large"
+          },
+          "message": {
+            "type": "string",
+            "const": "The request body is too large."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorUnsupportedMediaType": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 415
+          },
+          "error": {
+            "type": "string",
+            "const": "unsupported_media_type"
+          },
+          "message": {
+            "type": "string",
+            "const": "Request bodies must be application/json encoded as UTF-8."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorInternalError": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 500
+          },
+          "error": {
+            "type": "string",
+            "const": "internal_error"
+          },
+          "message": {
+            "type": "string",
+            "const": "An internal error occurred."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "headers": {
+      "X-Request-Id": {
+        "description": "The request id, as echoed or generated by the server.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9._-]{1,64}$"
+        }
+      },
+      "Cache-Control": {
+        "description": "API responses are never cached.",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "const": "no-store"
+        }
+      }
+    }
+  }
+}

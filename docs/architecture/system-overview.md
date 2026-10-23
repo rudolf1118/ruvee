@@ -56,13 +56,13 @@ authoritative for it.
 
 ### Planned packages
 
-This extends the Phase 1 monorepo. No package below exists yet.
+This extends the Phase 1 monorepo. Only `packages/contracts` exists so far (P2-05).
 
 | Package                  | Contents                                                                                                                                                                                                                                                                               | First phase |
 | ------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------- |
 | `packages/crypto`        | Envelope encode and decode, key derivations, wraps, records, manifests, padding, Recovery Key and pairing codes. Platform-neutral TypeScript over an injected libsodium interface (libsodium.js on web and extension, `react-native-libsodium` on mobile). No network or storage code. | 2           |
 | `packages/opaque-client` | A thin wrapper over `@serenity-kit/opaque` with Ruvee's fixed configuration. A mobile implementation is added in Phase 6.                                                                                                                                                              | 2           |
-| `packages/contracts`     | Zod request and response schemas shared by the API and clients. Binary fields are typed as opaque bytes.                                                                                                                                                                               | 2           |
+| `packages/contracts`     | Zod request and response schemas shared by the API and clients. Binary fields are typed as opaque bytes. **Exists:** the health responses, the error shape and the transport limits; the OpenAPI document is generated from it.                                                        | 2           |
 | `packages/vault-core`    | Client-side vault state, the sync engine, conflict handling, the lock manager and the storage interface. No UI.                                                                                                                                                                        | 3           |
 | `tools/crypto-vectors`   | The independent vector generator (Python and Go). It is not a dependency of any app.                                                                                                                                                                                                   | 2           |
 

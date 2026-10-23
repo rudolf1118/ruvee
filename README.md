@@ -19,6 +19,7 @@ independent audit.
 | ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `apps/api`                | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging                                                                                                   |
 | `apps/web`                | Next.js web app: design tokens, UI components, vault app shell, dev preview                                                                                                  |
+| `packages/contracts`      | Zod schemas for the implemented API (health responses, errors, limits), shared by server and clients; the OpenAPI document `openapi.json` is generated from them             |
 | `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                          |
 | `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                            |
 | `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                |
@@ -85,6 +86,7 @@ pnpm test                 # unit and HTTP-level tests (no database needed)
 pnpm test:integration     # API against a real PostgreSQL; needs DATABASE_URL (pnpm db:up)
 pnpm build
 pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan
+pnpm --filter @ruvee/contracts openapi:write   # regenerate openapi.json after changing a contract
 ```
 
 `pnpm test:integration` reads `DATABASE_URL` from the environment, e.g.

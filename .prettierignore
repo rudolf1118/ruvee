@@ -8,6 +8,7 @@ playwright-report
 test-results
 next-env.d.ts
 **/src/generated/**
+packages/contracts/openapi.json
 *.html
 spikes/*/kat
 spikes/*/results

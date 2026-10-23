@@ -7,6 +7,33 @@ This document lists endpoints and transport rules. What each flow does, and why,
 the security documents linked from each section. Tables are in
 [database-design.md](database-design.md).
 
+## What is implemented
+
+Only the health endpoints and the transport conventions below are implemented (P2-05, local
+branch, remote CI not yet run). Every other endpoint in this document is **proposed** and has no
+contract yet.
+
+- **Source of truth:** the Zod schemas in [`packages/contracts`](../../packages/contracts/src).
+  The OpenAPI 3.1 document [`packages/contracts/openapi.json`](../../packages/contracts/openapi.json)
+  is generated from them (`pnpm --filter @ruvee/contracts openapi:write`). Tests check that the
+  committed file matches the schemas, that the routes the API registers are exactly the
+  documented ones, and that actual responses parse with the schemas.
+- **Endpoints:** `GET /health/live` and `GET /health/ready`. Neither requires authentication;
+  no authentication exists. `OPTIONS` and every other method or path return `404 not_found`.
+- **Not yet implemented:** the `/api/v1` base path (no versioned endpoint exists), the 4 MiB
+  limit for `POST /sync/commits` (Phase 3), the authentication levels, and the `Origin` and
+  `X-Ruvee-Request` checks and cookie-plus-bearer rejection (P2-09, with sessions).
+
+| Rule           | Implemented behavior                                                                                                                                                                                                                                                                                                                                        |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Bodies         | Read only for `POST`, `PUT`, `PATCH` and `DELETE`; a body on other methods is ignored, not parsed. A body must be `application/json`, optionally with `charset=utf-8` and no other parameter, without `Content-Encoding`. Otherwise `415 unsupported_media_type`. Invalid JSON, or JSON whose top level is not an object or array, is `400 malformed_json`. |
+| Size           | 64 KiB of received bytes; more is `413 payload_too_large`. Compressed bodies are refused, so the limit can't be bypassed by compression. Node's 16 KiB header limit applies to headers.                                                                                                                                                                     |
+| Validation     | `ContractValidationPipe` with a contract schema. Failures are `400 invalid_request` with `details.issues`: at most 20, each with a field path and a code from a closed list. Zod messages, received values and unknown key names are never returned.                                                                                                        |
+| Unknown fields | Request schemas are strict objects: an unknown field is rejected with issue code `unknown_field` at the path of the object that contains it. The field name is not echoed. Request schemas must not use records or maps, whose keys come from the request. Unknown query parameters and headers are ignored.                                                |
+| Field lengths  | Every string and array in a request schema must have a maximum (a review rule; no request schema exists yet). Binary fields use `base64urlBytes`, which accepts only canonical unpadded base64url and checks the decoded length through the encoded length.                                                                                                 |
+| Request ids    | `X-Request-Id` is echoed if it matches `^[A-Za-z0-9._-]{1,64}$`, and replaced by a generated UUID otherwise. It is returned in the header and in every error body.                                                                                                                                                                                          |
+| Caching        | Every response, including errors, has `Cache-Control: no-store`.                                                                                                                                                                                                                                                                                            |
+
 ## Conventions
 
 - **Base path:** `/api/v1`. Caddy serves the web app and the API from the **same origin**. The
@@ -127,44 +154,65 @@ container ([authentication.md §3](../security/authentication.md#3-account-boots
 
 ## Errors
 
-Every error uses one shape:
+Every error uses one shape, refined in P2-05 from the Phase 1 filter's shape:
 
 ```json
 {
-  "error": {
-    "code": "revision_conflict",
-    "message": "The item changed on the server.",
-    "details": {}
-  }
+  "statusCode": 400,
+  "error": "invalid_request",
+  "message": "The request does not match the expected format.",
+  "requestId": "3f0c9a52-1d7e-4a8b-9c1e-6b2f0d4e7a11",
+  "details": { "issues": [{ "path": ["label"], "code": "too_big" }] }
 }
 ```
 
-- `code` comes from a closed list. `message` is a fixed string for that code. Neither ever
-  repeats request input.
-- `details` appears only for codes that need it. Its fields are documented per code, for
-  example `currentSeq` or the conflicting item ids and revisions.
+- `error` is the code, from a closed list. `message` is a fixed string for that code. Neither
+  ever repeats request input. `statusCode` always equals the HTTP status.
+- `requestId` is always present and matches `^[A-Za-z0-9._-]{1,64}$`.
+- `details` appears only for codes that need it. Its fields are documented per code: today only
+  `invalid_request` has it; later codes may add, for example, `currentSeq` or the conflicting
+  item ids and revisions.
 - Authentication failures never distinguish "unknown user" from "wrong password"
   ([authentication.md §4](../security/authentication.md#4-login)).
-- Unexpected errors return `500 internal_error` with the request id only. The existing Phase 1
-  exception filter already does this.
+- Unexpected errors return `500 internal_error`. An HTTP exception whose status has no code
+  (for example a framework `403`) is also reported as `500 internal_error` and logged, so every
+  new status must be added to the contract list first.
+
+Codes that are **implemented**, in `packages/contracts/src/errors.ts`:
+
+| Status | Codes                               | Returned when                                                                   |
+| ------ | ----------------------------------- | ------------------------------------------------------------------------------- |
+| 400    | `invalid_request`, `malformed_json` | A schema check failed, or the request was unusable; the body is not valid JSON. |
+| 404    | `not_found`                         | No route matches.                                                               |
+| 413    | `payload_too_large`                 | The body exceeds 64 KiB.                                                        |
+| 415    | `unsupported_media_type`            | The body is not uncompressed UTF-8 `application/json`.                          |
+| 500    | `internal_error`                    | Anything unexpected.                                                            |
+
+Codes that are **proposed** for later endpoints, and are added to the contract only with them:
 
 | Status | Codes                                                                                                |
 | ------ | ---------------------------------------------------------------------------------------------------- |
-| 400    | `invalid_request`, `unsupported_format`                                                              |
+| 400    | `unsupported_format`                                                                                 |
 | 401    | `unauthenticated`, `login_failed`, `recovery_failed`, `session_expired`, `device_revoked`            |
 | 403    | `forbidden`, `step_up_required`, `device_not_enrolled`, `csrf_rejected`                              |
-| 404    | `not_found`                                                                                          |
 | 409    | `seq_conflict`, `revision_conflict`, `idempotency_mismatch`, `row_version_conflict`, `pairing_state` |
-| 413    | `payload_too_large`                                                                                  |
 | 429    | `rate_limited`, with `Retry-After`                                                                   |
 
 ## Logging
 
-Phase 1 already logs only method, path without the query string, request id and status. V1
-keeps that and adds:
+Implemented in P2-05: the access log line has the request id, method, status, response time and
+the **route template** (such as `/items/:itemId`), never the raw path or query string. Unknown
+paths, and requests rejected before routing (body errors), are logged with the fixed route
+`(unmatched)`. Health probes (`GET` and `HEAD` on the health paths) are not access-logged.
+Unexpected errors are logged with their class name and stack frames only, without the message,
+because messages can contain request input or connection strings. A test sends a synthetic secret
+in the path, query string, `Authorization`, `Cookie`, other headers, bodies and exception
+messages, and checks that no log line and no response contains it.
 
-- The **route template** (`/api/v1/pairings/:pairingId/approve`) replaces the raw path, so ids
-  never reach the logs.
+V1 keeps that and adds:
+
+- The route template is the only form of path that is logged
+  (`/api/v1/pairings/:pairingId/approve`), so ids never reach the logs.
 - Account id and device id may be logged, because they are server-visible metadata.
 - Bodies, headers, cookies, tokens, OPAQUE messages, envelopes and usernames are never logged.
   A failed login is recorded as a security event, not in the application log.
@@ -220,3 +268,18 @@ Status remains **Proposed**. Changes made on 2026-10-22 from
 `serverPublicKey` removed from `register/start` and `recovery/material`, because OPAQUE uses no
 server identifier and clients no longer pin the server key (V-02, V-03). The pairing request
 takes `device_id_B` from the session and accepts one request per pairing (V-09).
+
+## Changes after P2-05 (API contracts and conventions)
+
+Status remains **Proposed**. Changes made on 2026-10-23, from the implementation:
+
+- New section [What is implemented](#what-is-implemented), separating the implemented health
+  endpoints and conventions from the proposed endpoints.
+- [Errors](#errors): the shape is the existing flat Phase 1 shape with stable codes, instead of
+  the nested `{ error: { code, message, details } }` proposed in Phase 0, so there is one format.
+  `malformed_json` (400) and `unsupported_media_type` (415) were added. Proposed codes are listed
+  separately.
+- [Logging](#logging): the route template replaced the raw path, and error messages are no longer
+  logged.
+- Deferred to P2-09: the `Origin` and `X-Ruvee-Request` checks and the cookie-plus-bearer
+  rejection, which need sessions.
