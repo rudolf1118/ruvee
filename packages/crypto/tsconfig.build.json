@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": "./src",
+    "outDir": "./dist",
+    "declaration": true,
+    // No Node.js or DOM types: the package must run unchanged in browsers, workers and Node.
+    "types": []
+  },
+  "include": ["src"],
+  // The fixed-nonce entry point is for tests and vectors only and is never shipped (INV-02).
+  "exclude": ["node_modules", "dist", "src/testing"]
+}

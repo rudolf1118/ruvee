@@ -66,3 +66,13 @@ added, because `@serenity-kit/opaque` accepts a replayed server login state
 
 Status remains **Proposed**. On 2026-10-23 INV-12's tests were extended with the sentinel
 log-scan test. No invariant changed.
+
+## Changes after P2-03 (`packages/crypto`)
+
+Status remains **Proposed**. On 2026-10-24 `packages/crypto` added the first tests for INV-02
+(nonce uniqueness; the fixed-nonce module is test-only, enforced by lint and a test), INV-03
+(negative cases for every context field of the two implemented purposes), INV-04 (decoder
+fuzzing with typed errors only), INV-05 (unknown and reserved profiles fail before any library
+call), INV-17 (`AUK` changes with the password for a fixed `SK`; no purpose is keyed by `SK`) and
+INV-22 (exact pins, one locked `libsodium-sumo`, the runtime library version). They cover only the
+implemented purposes. No invariant changed.

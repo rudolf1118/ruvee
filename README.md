@@ -1,8 +1,9 @@
 # Ruvee
 
-Monorepo for Ruvee, a planned password manager. **This is the Phase 1 foundation only.** There is
-no working vault, account system, encryption, sync or recovery. Do not use it to store real
-credentials. Open security architecture decisions are tracked in
+Monorepo for Ruvee, a planned password manager. **This is the Phase 1 foundation plus the first
+Phase 2 packages.** There is no working vault, account system, sync or recovery. Part of the
+encryption format exists in `packages/crypto` for development; it is not reviewed and nothing
+uses it yet. Do not use it to store real credentials. Open security architecture decisions are tracked in
 [docs/architecture/open-decisions.md](docs/architecture/open-decisions.md).
 
 The Phase 0 security architecture is **proposed, not approved, and not independently reviewed**.
@@ -15,17 +16,18 @@ independent audit.
 
 ## What is here
 
-| Path                      | Contents                                                                                                                                                                     |
-| ------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/api`                | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging                                                                                                   |
-| `apps/web`                | Next.js web app: design tokens, UI components, vault app shell, dev preview                                                                                                  |
-| `packages/contracts`      | Zod schemas for the implemented API (health responses, errors, limits), shared by server and clients; the OpenAPI document `openapi.json` is generated from them             |
-| `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                          |
-| `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                            |
-| `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                |
-| `docs/`                   | Architecture, security specifications, ADRs and planning (Phase 0, proposed)                                                                                                 |
-| `spikes/`                 | Disposable compatibility experiments; not workspace packages, synthetic data only                                                                                            |
-| `tools/crypto-validation` | Primitive validation harness (P2-01) for the candidate crypto libraries; own lockfile, synthetic data only, not Ruvee's format ([README](tools/crypto-validation/README.md)) |
+| Path                      | Contents                                                                                                                                                                         |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api`                | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging                                                                                                       |
+| `apps/web`                | Next.js web app: design tokens, UI components, vault app shell, dev preview                                                                                                      |
+| `packages/contracts`      | Zod schemas for the implemented API (health responses, errors, limits), shared by server and clients; the OpenAPI document `openapi.json` is generated from them                 |
+| `packages/crypto`         | Ruvee's client-side format over libsodium.js, in part (P2-03): password rule, `AUK`, the account-key password wrap, the keyset envelope, padding. Development only, not reviewed |
+| `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                              |
+| `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                                |
+| `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                    |
+| `docs/`                   | Architecture, security specifications, ADRs and planning (Phase 0, proposed)                                                                                                     |
+| `spikes/`                 | Disposable compatibility experiments; not workspace packages, synthetic data only                                                                                                |
+| `tools/crypto-validation` | Primitive validation harness (P2-01) for the candidate crypto libraries; own lockfile, synthetic data only, not Ruvee's format ([README](tools/crypto-validation/README.md))     |
 
 ## Requirements
 
@@ -87,7 +89,12 @@ pnpm test:integration     # API against a real PostgreSQL; needs DATABASE_URL (p
 pnpm build
 pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan
 pnpm --filter @ruvee/contracts openapi:write   # regenerate openapi.json after changing a contract
+pnpm --filter @ruvee/crypto test:browsers      # crypto checks in Chromium, Firefox and WebKit, page and worker
+pnpm --filter @ruvee/crypto vectors:write      # regenerate the provisional protocol vectors after a format change
 ```
+
+The browser checks need Playwright's engines once
+(`pnpm --filter @ruvee/crypto exec playwright-core install chromium firefox webkit`).
 
 `pnpm test:integration` reads `DATABASE_URL` from the environment, e.g.
 `set -a; . ./.env; set +a; pnpm test:integration` (open a new shell afterwards so

@@ -74,6 +74,21 @@ jobs:
           path: apps/web/test-results
           retention-days: 7
 
+  crypto-package-browsers:
+    name: '@ruvee/crypto checks in browsers (page and worker)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ruvee/crypto exec playwright-core install --with-deps chromium firefox webkit
+      - run: pnpm --filter @ruvee/crypto test:browsers
+
   crypto-validation:
     name: Crypto primitive validation (Node and browsers)
     runs-on: ubuntu-latest

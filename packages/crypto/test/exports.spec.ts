@@ -1,0 +1,67 @@
+import { readdir, readFile } from 'node:fs/promises';
+import * as publicApi from '../src/index.js';
+
+const root = new URL('../', import.meta.url);
+
+async function productionSources(): Promise<{ file: string; text: string }[]> {
+  const entries = await readdir(new URL('src/', root), { recursive: true });
+  const files = entries.filter((f) => f.endsWith('.ts') && !f.startsWith('testing'));
+  return Promise.all(
+    files.map(async (file) => ({
+      file,
+      text: await readFile(new URL(`src/${file}`, root), 'utf8'),
+    })),
+  );
+}
+
+describe('public surface (INV-02)', () => {
+  it('exports exactly the allowlisted runtime values', () => {
+    expect(Object.keys(publicApi).sort()).toEqual([
+      'ACCOUNT_KEY_WRAP_BYTES',
+      'CRYPTO_ERROR_CODES',
+      'DEFAULT_KDF_PROFILE',
+      'KEYSET_ENVELOPE_MAX_BYTES',
+      'PADDED_MAX_BYTES',
+      'PADDING_BLOCK_BYTES',
+      'PASSWORD_MAX_BYTES',
+      'RuveeCryptoError',
+      'initRuveeCrypto',
+      'isRuveeCryptoError',
+      'normalizePassword',
+      'padPlaintext',
+      'unpadPlaintext',
+      'wipe',
+    ]);
+    expect(publicApi.ACCOUNT_KEY_WRAP_BYTES).toBe(93);
+    expect(publicApi.KEYSET_ENVELOPE_MAX_BYTES).toBe(16_445);
+  });
+
+  it('ships only the main entry point; the fixed-nonce module is neither exported nor built', async () => {
+    const pkg = JSON.parse(await readFile(new URL('package.json', root), 'utf8')) as {
+      exports: Record<string, unknown>;
+    };
+    expect(Object.keys(pkg.exports)).toEqual(['.']);
+    const build = await readFile(new URL('tsconfig.build.json', root), 'utf8');
+    expect(build).toMatch(/"exclude": \[[^\]]*"src\/testing"/);
+  });
+
+  it('no production module imports the test-only entry point', async () => {
+    for (const { file, text } of await productionSources())
+      expect(text, file).not.toMatch(/from\s+['"][^'"]*testing[^'"]*['"]/);
+  });
+
+  it('no public operation input has a nonce field', async () => {
+    const operations = await readFile(new URL('src/operations.ts', root), 'utf8');
+    expect(operations).not.toMatch(/\bnonce\??\s*:/i);
+  });
+
+  it('only src/libsodium.ts imports the library', async () => {
+    for (const { file, text } of await productionSources())
+      if (file !== 'libsodium.ts') expect(text, file).not.toMatch(/libsodium-(wrappers-)?sumo/);
+  });
+
+  it('production modules never call console', async () => {
+    for (const { file, text } of await productionSources())
+      expect(text, file).not.toMatch(/\bconsole\./);
+  });
+});

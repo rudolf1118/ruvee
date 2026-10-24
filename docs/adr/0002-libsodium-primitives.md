@@ -1,6 +1,8 @@
 # ADR-0002: libsodium primitives on every platform
 
-- Status: Proposed
+- Status: **Accepted for development** (owner approval of D-01, 2026-10-24). This is an
+  implementation decision, not a security audit, and not approval to store real secrets.
+  Independent review (D-19) is still open.
 - Date: 2026-10-22
 - Specification: [cryptographic-design.md](../security/cryptographic-design.md)
 - Evidence: [research-sources.md](../security/research-sources.md)
@@ -54,3 +56,12 @@ Still **Proposed**. Changes made on 2026-10-22 from
 - Consequences: the `'wasm-unsafe-eval'` requirement and Ruvee-side length checks (V-11, V-12).
 - Alternatives: noble's audit scope corrected, and its role as test oracle recorded (V-10, V-13).
 - The decision itself is unchanged.
+
+## Changes after P2-03
+
+On 2026-10-24 the owner approved D-01 for this development milestone: `libsodium-wrappers-sumo`
+0.8.4 and `libsodium-sumo` 0.8.4 (libsodium 1.0.22), exactly pinned. `packages/crypto` now uses
+them on web through a guarded interface that checks every length itself, which contains V-15
+and the V-12 discrepancies for its callers without fixing them upstream
+([cryptographic-design.md §10](../security/cryptographic-design.md#10-implementation-status-packagescrypto-p2-03)).
+`react-native-libsodium` remains untested, and the decision is unchanged.

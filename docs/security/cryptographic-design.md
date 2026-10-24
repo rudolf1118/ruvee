@@ -1,8 +1,10 @@
 # Cryptographic design
 
-Status: **Proposed (Phase 0).** Not owner-approved, not independently reviewed, not implemented.
-Nothing in this document may be implemented until the decisions listed in
-[open-decisions.md](../architecture/open-decisions.md) are approved.
+Status: **Proposed (Phase 0).** Not independently reviewed. The byte format is not frozen. The
+owner approved D-01, D-04 and D-20 for development on 2026-10-24, and `packages/crypto`
+implements the parts listed in
+[§10](#10-implementation-status-packagescrypto-p2-03). The rest may be implemented only once the
+decisions it depends on in [open-decisions.md](../architecture/open-decisions.md) are approved.
 
 This document is authoritative for keys, derivations, envelope formats, byte encodings, limits
 and test vectors. Protocol flows that use these keys live elsewhere:
@@ -529,6 +531,123 @@ worker run.
 - Signatures are not used in V1. The single user's devices share symmetric keys. Signing keys per
   device are left for shared vaults, where other users' devices need to verify authorship.
 
+## 10. Implementation status (`packages/crypto`, P2-03)
+
+Implemented locally on 2026-10-24 as a **development milestone**. This byte format is still
+Proposed and has not been reviewed (D-19). The package is not approved for real secrets, and
+remote CI has not run. The owner approved D-01, D-04 and D-20 for this milestone only.
+
+### Public API
+
+| Export                                      | Purpose                                                                                                                                                           |
+| ------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `initRuveeCrypto()`                         | Explicit, asynchronous initialization. Loads libsodium.js, refuses any build other than libsodium 1.0.22, and returns the operations below. Nothing loads before. |
+| `generateKey()`                             | 32 bytes from the CSPRNG, for `SK`, `AK` or `VK`.                                                                                                                 |
+| `generateKeyId()`, `generatePasswordSalt()` | 16 bytes from the CSPRNG, for `ak_id` or `vk_id`, and for `salt_pw`.                                                                                              |
+| `deriveAccountUnlockKey()`                  | `PwK` and then `AUK` (§3.3) from the password, `salt_pw`, a profile id, `SK` and `account_id`. `PwK` never leaves the call.                                       |
+| `wrapAccountKey()`, `unwrapAccountKey()`    | The 93-byte `AK_WRAP_PASSWORD` envelope (§4.3). A wrong password surfaces as `integrity_failure` (§7).                                                            |
+| `sealKeyset()`, `openKeyset()`              | The `KEYSET` envelope with the §5.1 JSON. `K_keyset` is derived from `AK` inside the call.                                                                        |
+| `normalizePassword()`                       | The §3.1 rule, returning the string OPAQUE will receive.                                                                                                          |
+| `padPlaintext()`, `unpadPlaintext()`        | §5.2 padding, ready for Phase 3 item bodies.                                                                                                                      |
+| `wipe()`, `RuveeCryptoError`, constants     | Best-effort zeroing; the typed error; `PASSWORD_MAX_BYTES`, `DEFAULT_KDF_PROFILE`, envelope and padding sizes.                                                    |
+
+No public function takes a nonce, a raw KDF parameter, a library instance or a purpose code.
+Fixed nonces exist only in `src/testing/fixed-nonce.ts`, which is outside the package's exports
+and its build; a lint rule forbids production modules from importing it (INV-02).
+
+### Not implemented
+
+| Part of this design                                                                           | Why                                                                                                                                                                                      |
+| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `AK_WRAP_RECOVERY`, `RWK`, `RAK`, Recovery Key text (§5.4)                                    | Recovery was excluded from this milestone. Needed by P2-08 (Recovery Kit, D-06) and P2-13 (D-22).                                                                                        |
+| Pairing code text, pairing MACs, `crypto_box_seal` transfer                                   | D-21 is open, and D-04's approval explicitly excludes the pairing protocol. P2-12.                                                                                                       |
+| `ITEM_KEY`, `ITEM_BODY`, `MANIFEST`, `K_manifest`, record and manifest hashes, `items_digest` | Phase 3 (item records and manifests).                                                                                                                                                    |
+| `LOCAL_RECORD`, `K_local`                                                                     | The local store (P2-10).                                                                                                                                                                 |
+| `DEVICE_LABEL`, `K_devlabel`                                                                  | Device records (P2-08, P2-11). §4.3 fixes only "UTF-8, at most 128 bytes". Whether a label is normalized and whether an empty label is allowed must be decided before it is implemented. |
+
+The KDF context allowlist contains only `rvkeyst1`, and the purpose registry only `0x01` and
+`0x03`, so the guard refuses the other contexts and the decoder cannot be asked for other
+purposes.
+
+### Password input (D-20)
+
+In order: anything but a string is refused; a string longer than **65,536 UTF-16 code units** is
+refused before normalization; a string with an unpaired surrogate is refused; NFC is applied and
+nothing else (no trimming, case folding or truncation); the result must be **1 to 4,096 UTF-8
+bytes, counted after NFC**. The code-unit bound only limits the work given to `normalize()`. It
+cannot refuse a password that would pass the byte limit: a canonical decomposition has at most 4
+code points (a test checks every code point in the engine's Unicode data), so a valid input has at
+most 32,768 code units. NFC under different engines' Unicode versions was not compared.
+
+### Library boundary
+
+Every libsodium call goes through one guard, which checks types and exact sizes before the call
+and the output length after it. The table lists what is accepted and which library behavior that
+contains. **The guard contains these defects for Ruvee's callers. It does not fix libsodium.js**,
+and the pinned release still has them.
+
+| Function                               | Accepted by the guard                                                               | Library behavior contained                                                                              |
+| -------------------------------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `crypto_kdf_derive_from_key`           | Subkey length exactly 32, subkey id exactly 1, context `rvkeyst1`, 32-byte key      | V-15 (stale memory outside 16..64); numeric ids from 2³¹ throw; an 8-byte non-ASCII context is accepted |
+| `crypto_generichash`                   | Output 32 bytes, key 32 bytes, message at most 1,024 bytes                          | V-12: 1- to 15-byte keys and outputs are accepted                                                       |
+| `crypto_pwhash` (Argon2id)             | Password 1 to 4,096 bytes, 16-byte salt, parameters only from the registry objects  | `memlimit` silently rounded down to whole KiB, no memory ceiling, negative `MEMLIMIT_MAX`               |
+| XChaCha20-Poly1305 encrypt and decrypt | 32-byte key, 24-byte nonce, plaintext at most 16,384 bytes, AAD at most 1,024 bytes | Decryption failures of every kind become one `integrity_failure`                                        |
+| `randombytes_buf`                      | 16, 24 or 32 bytes                                                                  |                                                                                                         |
+| All                                    | `Uint8Array` only                                                                   | Strings are silently UTF-8 encoded by the library (a 32-character string is accepted as a key)          |
+
+Library exceptions are replaced by `library_failure` without their message. Profile 1 stays
+**provisional**: phone compatibility and final approval of the parameters are open (D-03, D-26).
+
+### Errors
+
+`RuveeCryptoError.code` is one of `invalid_argument`, `invalid_password`, `unsupported_profile`,
+`malformed_envelope`, `unsupported_format`, `wrong_purpose`, `wrong_key`, `integrity_failure`,
+`malformed_plaintext` and `library_failure`. §4.4 does not name the errors for its steps 1 and 3;
+the package calls them `malformed_envelope` and `wrong_purpose`. Messages are fixed per code, and
+the only extra detail is a field name or a reason from a closed set. No error carries a library
+message, a `cause`, or any key, password or plaintext, and the package never logs.
+
+### Buffer ownership and memory
+
+Inputs are borrowed: they are read and never modified or wiped. Every returned `Uint8Array` is a
+new buffer owned by the caller, who should `wipe()` key material when done. The package wipes its
+intermediates (password bytes, `PwK`, the `AUK` input, `K_keyset`, keyset plaintext bytes) on
+success and on failure.
+
+This is **best effort**. JavaScript strings cannot be erased, so the password, its normalized
+form and the keyset JSON text (which holds `SK` and `VK` as base64url) stay in memory until the
+garbage collector reclaims them. The engine may also copy buffers when it moves them, and
+libsodium.js copies every argument into WebAssembly memory, where this package cannot erase it.
+
+### Interpretations to confirm in the format review
+
+- Keyset decoding is strict: exactly the §5.1 fields, `v` = 1, one vault, canonical unpadded
+  base64url with the exact byte lengths, and lowercase canonical UUID text. Encoding is compact
+  JSON in the §5.1 key order. Decoders do not depend on whitespace or key order; the fixed form
+  only makes vectors reproducible.
+- `ak_epoch` and `keyset_version` accept the full u32 range, including 0. Rejecting a keyset older
+  than the last one seen is the caller's job.
+- The error names for §4.4 steps 1 and 3, above.
+
+### Verification
+
+| Kind                         | What runs through the package                                                                                                                                                                                                                                                                                                  |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Published vectors            | XChaCha20-Poly1305: draft-irtf-cfrg-xchacha-03 §A.3.1 and all 315 Wycheproof tests (9 with off-size nonces are refused by the guard), read from the hash-checked files in `tools/crypto-validation/vectors`.                                                                                                                   |
+| Cross-implementation (noble) | Keyed BLAKE2b-256 with 32-byte keys, `crypto_kdf` for `rvkeyst1`, Argon2id at profile 1, XChaCha20-Poly1305 in both directions; padding against `sodium_pad`.                                                                                                                                                                  |
+| Provisional protocol vectors | `packages/crypto/test/vectors/provisional-protocol-vectors.json`: `PwK` and `AUK` for ASCII, preserved whitespace, NFC, NFD, emoji and non-Latin, 4,096 bytes and a rejected lone surrogate; `K_keyset`; both envelopes. The package, an independent noble reference and the file must agree. **Not a compatibility promise.** |
+| Negative and boundary        | Every header field, tampered bytes and context fields, wrong keys, wrong purposes, lengths, keyset schema failures, decoder fuzzing, the profile floor, V-15 reproduction and containment, nonce uniqueness.                                                                                                                   |
+
+The other published vectors (Argon2id `test.c` with 8-byte salts, RFC 9106 with p = 4, BLAKE2b-512
+and 64-byte keys) use sizes the guard refuses by design. They still run in the P2-01 harness, and
+a test checks that the package locks the same libsodium.js and noble tarballs as the harness.
+
+Runtimes: Node 24.13.0 (Vitest), and Playwright 1.64.1 Chromium, Firefox and WebKit, each on the
+page and in a dedicated worker under a CSP that adds only `'wasm-unsafe-eval'`. Playwright WebKit
+is not Safari; Safari, phones and the MV3 service worker were not tested. The nonce-uniqueness
+test (1,000 envelopes, 1,000 distinct nonces) detects a fixed or repeating nonce. It says nothing
+about the quality of the randomness, which comes from libsodium.js's `randombytes_buf`.
+
 ## Changes after architecture validation
 
 Status remains **Proposed**. Changes made on 2026-10-22 from
@@ -567,3 +686,14 @@ provisional.
 
 - §3.2: the local benchmark results are linked, and the peak-memory budget is marked as needing a
   definition.
+
+## Changes after P2-03 (`packages/crypto`)
+
+Status remains **Proposed**; the byte format has not been reviewed. Changes made on 2026-10-24.
+No key, derivation, envelope or byte format changed.
+
+- The owner approved D-01 (the pinned libsodium.js), D-04 (`AUK` from the password **and** `SK`)
+  and D-20 (the §3.1 password rule) for this development milestone.
+- §10 added: what `packages/crypto` implements, the limits it applies and how they are counted,
+  the library boundary, buffer ownership and memory limits, error names for §4.4 steps 1 and 3,
+  interpretations to confirm in the format review, and the parts left to later milestones.

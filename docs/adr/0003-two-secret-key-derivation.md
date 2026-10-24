@@ -1,6 +1,8 @@
 # ADR-0003: Two-secret key derivation with a device-held Secret Key
 
-- Status: Proposed
+- Status: **Accepted for development** (owner approval of D-04, 2026-10-24). This is an
+  implementation decision, not a security audit, and not approval to store real secrets. It does
+  not approve the pairing protocol (D-21, [ADR-0005](0005-device-pairing.md)), which stays open.
 - Date: 2026-10-22
 - Specification: [cryptographic-design.md §3](../security/cryptographic-design.md#3-secrets-and-keys)
 
@@ -44,3 +46,12 @@ Still **Proposed**. Changes made on 2026-10-22 from
 - Consequences: the database-theft claim is narrowed to the vault wrap and to `SK` not having
   leaked; the OPAQUE path is stated separately (V-01, V-08).
 - The decision itself is unchanged.
+
+## Changes after P2-03
+
+On 2026-10-24 the owner approved D-04 for this development milestone, with the condition that a
+password alone must never give a new device decryption capability. `packages/crypto` implements
+the derivation of `AUK` from the Argon2id output and `SK`, and the password wrap of `AK` keyed by
+`AUK`. Tests show that `AUK` changes with the password for a fixed `SK`, and that no envelope
+purpose is keyed by `SK` alone (INV-17). Pairing and recovery, the two ways a new device obtains
+`SK`, are not implemented.

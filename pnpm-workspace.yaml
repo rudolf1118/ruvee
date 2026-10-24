@@ -1,6 +1,12 @@
 packages:
   - apps/*
   - packages/*
+# libsodium-wrappers-sumo asks for libsodium-sumo ^0.8.0; the override keeps the WebAssembly build
+# at the exact version validated in tools/crypto-validation (INV-22).
+overrides:
+  libsodium-sumo: 0.8.4
 allowBuilds:
   '@prisma/engines': true
+  # The binary comes from the platform-specific optional dependency; the install script is not needed.
+  esbuild: false
   prisma: true

@@ -2,8 +2,9 @@
 
 Status: **Proposed.** This is a **self-review** by the agent that wrote the Phase 0 design. It is
 **not an independent security audit**, it approves nothing, and it does not make Ruvee secure or
-production-ready. Decisions D-01 to D-09, the database schema and all implementation remain
-unapproved.
+production-ready. The database schema and decisions D-02, D-03 and D-05 to D-09 remain
+unapproved. The owner approved D-01, D-04 and D-20 for development on 2026-10-24
+([§11](#11-follow-up-packagescrypto-p2-03)).
 
 Date: 2026-10-22. Baseline: commit `0a6cd24` (Phase 0 architecture). The disposable experiments
 are in [`spikes/architecture-validation/`](../../spikes/architecture-validation/README.md). They
@@ -21,6 +22,7 @@ use synthetic inputs only and are not part of any workspace package.
 8. [Test-vector plan, reassessed](#8-test-vector-plan-reassessed)
 9. [Document changes made](#9-document-changes-made)
 10. [Follow-up: primitive validation harness (P2-01)](#10-follow-up-primitive-validation-harness-p2-01)
+11. [Follow-up: `packages/crypto` (P2-03)](#11-follow-up-packagescrypto-p2-03)
 
 ## 1. Findings
 
@@ -535,3 +537,23 @@ What the harness added to this report:
 - Argon2id now has a published-vector check through libsodium: the reference `test.c` vectors
   via `crypto_pwhash_str_verify`. Raw `crypto_pwhash` with a 16-byte salt still has no published
   vector and relies on agreement with noble.
+
+## 11. Follow-up: `packages/crypto` (P2-03)
+
+Added on 2026-10-24. The status of V-12 and V-15 after P2-03:
+
+- **V-15 is contained, not fixed.** A package test reproduces the defect against the pinned
+  libsodium.js 0.8.4 in Node and in three browser engines: a 65-byte request returns the previous
+  64-byte subkey derived with another key. The package's guard refuses every subkey length except
+  32, every subkey id except 1, and every context outside its allowlist. Tests show that the
+  refused calls never reach the library, for lengths 0, 1, 15, 16, 17, 31, 33, 63, 64, 65 and
+  non-numbers. The defect remains in the dependency; any code that calls libsodium.js directly
+  is still exposed. The package does not upgrade the dependency, and the upstream fix is not
+  released.
+- **V-12** and the Argon2id parameter findings get the same treatment: BLAKE2b keys and outputs
+  must be 32 bytes, Argon2id parameters come only from the frozen registry objects, and strings
+  are refused wherever the library would silently encode them.
+
+Details are in
+[cryptographic-design.md §10](cryptographic-design.md#10-implementation-status-packagescrypto-p2-03).
+This is still a self-review.
