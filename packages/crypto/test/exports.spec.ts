@@ -21,6 +21,7 @@ describe('public surface (INV-02)', () => {
       'CRYPTO_ERROR_CODES',
       'DEFAULT_KDF_PROFILE',
       'KEYSET_ENVELOPE_MAX_BYTES',
+      'KEYSET_FORMAT_VERSION',
       'PADDED_MAX_BYTES',
       'PADDING_BLOCK_BYTES',
       'PASSWORD_MAX_BYTES',
@@ -34,6 +35,7 @@ describe('public surface (INV-02)', () => {
     ]);
     expect(publicApi.ACCOUNT_KEY_WRAP_BYTES).toBe(93);
     expect(publicApi.KEYSET_ENVELOPE_MAX_BYTES).toBe(16_445);
+    expect(publicApi.KEYSET_FORMAT_VERSION).toBe(1);
   });
 
   it('ships only the main entry point; the fixed-nonce module is neither exported nor built', async () => {

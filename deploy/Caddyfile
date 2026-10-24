@@ -1,0 +1,39 @@
+# Production-shaped static-export server for the P2-04 header spike.
+# Next.js `headers()` is not applied to `output: 'export'`; this file is the source of
+# those headers, together with apps/web/security-headers.mjs.
+#
+# Caddy is not started by local checks. After `pnpm --filter @ruvee/web build`:
+#   export RUVEE_CSP="$(node apps/web/scripts/print-csp.mjs)"
+#   caddy run --config deploy/Caddyfile
+#
+# HSTS is omitted here (local HTTP). Public HTTPS must add:
+#   header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+#
+# Same-origin API routing is not configured; sessions and the API proxy are later tasks.
+
+{
+	admin off
+}
+
+http://127.0.0.1:3101 {
+	root * apps/web/out
+	try_files {path} {path}.html {path}/index.html /404.html
+	file_server
+
+	header {
+		Content-Security-Policy {$RUVEE_CSP}
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		X-Frame-Options DENY
+		Permissions-Policy "camera=(self), accelerometer=(), attribution-reporting=(), autoplay=(), bluetooth=(), browsing-topics=(), compute-pressure=(), display-capture=(), encrypted-media=(), fullscreen=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), picture-in-picture=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), web-share=(), window-management=(), xr-spatial-tracking=()"
+		Cross-Origin-Opener-Policy same-origin
+		Cross-Origin-Resource-Policy same-origin
+		-Server
+	}
+
+	@html path *.html /
+	header @html Cache-Control no-store
+
+	@hashed path /_next/static/*
+	header @hashed Cache-Control "public, max-age=31536000, immutable"
+}

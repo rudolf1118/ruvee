@@ -2,6 +2,9 @@ node_modules
 pnpm-lock.yaml
 dist
 .next
+apps/web/out
+apps/web/public/csp-probe-worker.js
+deploy/Caddyfile
 .turbo
 coverage
 playwright-report

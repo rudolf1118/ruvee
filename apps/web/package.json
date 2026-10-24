@@ -6,19 +6,23 @@
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3100",
-    "build": "next build && node scripts/assert-preview-excluded.mjs",
+    "build": "node scripts/bundle-csp-probe-worker.mjs && next build && node scripts/assert-preview-excluded.mjs",
     "start": "next start --hostname 127.0.0.1 --port 3100",
+    "serve:export": "node scripts/serve-export.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:headers": "playwright test -c playwright.headers.config.ts"
   },
   "dependencies": {
     "next": "16.4.2",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "@ruvee/crypto": "workspace:*"
   },
   "devDependencies": {
+    "esbuild": "0.28.2",
     "@axe-core/playwright": "4.14.0",
     "@playwright/test": "1.64.1",
     "@ruvee/eslint-config": "workspace:*",

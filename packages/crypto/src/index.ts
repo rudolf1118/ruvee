@@ -20,7 +20,7 @@ export {
   type CryptoErrorReason,
 } from './errors.js';
 export { ACCOUNT_KEY_WRAP_BYTES, KEYSET_ENVELOPE_MAX_BYTES } from './envelope.js';
-export type { Keyset, KeysetVault } from './keyset.js';
+export { KEYSET_FORMAT_VERSION, type Keyset, type KeysetVault } from './keyset.js';
 export type {
   AccountUnlockKeyInput,
   KeysetContext,

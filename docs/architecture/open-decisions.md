@@ -1,9 +1,11 @@
 # Open architecture decisions
 
-Status as of P2-03 (2026-10-24). `packages/crypto` implements the password rule, `AUK`, the
-account-key password wrap and the keyset envelope for development
+Status as of P2-04 crypto-only (2026-10-24). `packages/crypto` implements the password rule,
+`AUK`, the account-key password wrap and the keyset envelope for development
 ([cryptographic-design.md §10](../security/cryptographic-design.md#10-implementation-status-packagescrypto-p2-03)).
-Nothing implements authentication, vault persistence, sync, recovery or device enrollment.
+The web static export applies the production headers and loads that package in a worker
+([api-design.md](api-design.md#what-p2-04-implemented-crypto-only)). Nothing implements
+authentication, vault persistence, sync, recovery or device enrollment. OPAQUE is not present.
 
 The Phase 0 specifications now exist and are all **Proposed**; start from the
 [system overview](system-overview.md). They were checked by an
@@ -18,8 +20,8 @@ The [architecture validation](../security/architecture-validation.md) replaced t
 of broad approval requests with the tables below. Technical decisions rest on engineering
 evidence. Product preferences are the owner's call and need no engineering validation. "Next
 task" means the bounded task proposed in the
-[roadmap](../planning/implementation-roadmap.md#next-bounded-task): P2-04, the web security
-headers and CSP spike, now that P2-01, the local part of P2-02, P2-05 and P2-03 are done.
+[roadmap](../planning/implementation-roadmap.md#next-bounded-task): the remaining half of P2-04
+(OPAQUE under the CSP, blocked by D-02) or P2-06 if the database design is approved.
 Approving a row approves only that row.
 
 ### Technical decisions
@@ -54,18 +56,19 @@ These need no engineering validation. Each has a recommendation, which is only a
 
 ### Later-phase decisions
 
-Unchanged from Phase 0. Details are in the linked documents.
+Details are in the linked documents. D-16 was resolved for development by P2-04; the others are
+unchanged from Phase 0.
 
-| ID   | Decision                                                       | Recommendation                                                                                  | Blocks  |
-| ---- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------- |
-| D-05 | OPAQUE on React Native                                         | Phase 6 spike: Hermes WebAssembly first, then a UniFFI binding. Not the client-hashed fallback. | Phase 6 |
-| D-11 | Mobile biometric unlock; password reset from an unlocked phone | Defer to Phase 6                                                                                | Phase 6 |
-| D-12 | Vault reset: may other devices export before wiping?           | Yes, an encrypted export if one exists by then                                                  | Phase 3 |
-| D-13 | Portable encrypted export format                               | Design in Phase 7 within account-recovery.md §7                                                 | Phase 7 |
-| D-14 | Checkpoint comparison between devices                          | Encrypted per-device checkpoint records in Phase 4                                              | Phase 4 |
-| D-15 | Security-event retention                                       | 365 days                                                                                        | P2-15   |
-| D-16 | CSP for Next.js inline scripts                                 | Prefer a static export with build-time hashes; decide with P2-04 evidence                       | P2-04   |
-| D-18 | Single linear commit sequence per vault                        | Approve for V1                                                                                  | Phase 3 |
+| ID   | Decision                                                       | Recommendation                                                                                                                                                                                       | Blocks                   |
+| ---- | -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| D-05 | OPAQUE on React Native                                         | Phase 6 spike: Hermes WebAssembly first, then a UniFFI binding. Not the client-hashed fallback.                                                                                                      | Phase 6                  |
+| D-11 | Mobile biometric unlock; password reset from an unlocked phone | Defer to Phase 6                                                                                                                                                                                     | Phase 6                  |
+| D-12 | Vault reset: may other devices export before wiping?           | Yes, an encrypted export if one exists by then                                                                                                                                                       | Phase 3                  |
+| D-13 | Portable encrypted export format                               | Design in Phase 7 within account-recovery.md §7                                                                                                                                                      | Phase 7                  |
+| D-14 | Checkpoint comparison between devices                          | Encrypted per-device checkpoint records in Phase 4                                                                                                                                                   | Phase 4                  |
+| D-15 | Security-event retention                                       | 365 days                                                                                                                                                                                             | P2-15                    |
+| D-16 | CSP for Next.js inline scripts                                 | **Resolved for development (2026-10-24):** static export with build-time script hashes. Trusted Types omitted until Next.js can issue them without a default policy. Not an owner security approval. | P2-04 (crypto-only done) |
+| D-18 | Single linear commit sequence per vault                        | Approve for V1                                                                                                                                                                                       | Phase 3                  |
 
 ## Deviations from the master prompt
 
@@ -150,3 +153,11 @@ devices), D-19 (independent review), D-21 (pairing), D-22 (recovery authenticati
 (Recovery Kit). One new question came up: the plaintext rule for `DEVICE_LABEL` (normalization,
 empty labels) must be settled before device labels are encrypted (P2-08, P2-11). "Next task" now
 means P2-04.
+
+## Changes after P2-04 (web headers, crypto-only)
+
+On 2026-10-24 the crypto-only half of P2-04 was implemented locally. **D-16** is resolved for
+development: static export with build-time script hashes. That is spike evidence, not an owner
+security approval. **D-02 is unchanged and still Proposed.** Trusted Types from the documented
+CSP were omitted (Next.js 16.4.2 has no named-policy hook on the static export). "Next task"
+means the OPAQUE half of P2-04 if D-02 is approved, or P2-06 if the database design is approved.

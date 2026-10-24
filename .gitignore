@@ -1,6 +1,9 @@
 node_modules/
 dist/
 .next/
+# Static export produced by `next build` when `output: 'export'`.
+apps/web/out/
+apps/web/public/csp-probe-worker.js
 .turbo/
 coverage/
 playwright-report/

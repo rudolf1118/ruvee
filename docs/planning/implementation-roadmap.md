@@ -20,7 +20,7 @@ security tests listed for it must pass in CI.
 | P2-01 | **Primitive validation harness** in `tools/crypto-validation` (see [first task](#first-bounded-task)). **Implemented locally 2026-10-22; remote CI not yet run.**                                                                                                                                                                                                                      | D-25 (approved)                       | M    | See below.                                                                                                                                                                                                                                                                                                                  | Published KATs and cross-implementation checks pass in Node and three browser engines.                                                                                                                                                                                                              |
 | P2-02 | **Argon2id calibration spike.** A development-only harness runs `crypto_pwhash` with profile 1 in a dedicated Web Worker on Chrome, Firefox and Safari, on the reference devices. **Tooling and the local computer done 2026-10-23 ([report](../security/kdf-calibration.md)); reference devices and Safari pending.**                                                                 | D-26 (reference-device part only)     | S    | A results table (median, p95 and peak memory per browser and device) is added to [research-sources.md](../security/research-sources.md). Profile 1 is confirmed, or a decision is raised. Profile 1 is never weakened silently.                                                                                             | Not applicable (measurement).                                                                                                                                                                                                                                                                       |
 | P2-03 | **`packages/crypto`**: envelope codec, derivations, wraps, keyset, padding, Recovery Key and pairing code formats, over an injected libsodium interface. Adds `libsodium-wrappers-sumo` and `libsodium-sumo` at exact versions. **Implemented locally 2026-10-24 for the Phase 2 parts that are not recovery or pairing ([status](#p2-03-status-2026-10-24)); remote CI not yet run.** | P2-01, D-01, D-04, D-20               | L    | The P2-01 checks pass against it, and its provisional protocol vectors agree with a noble-based reference, in Node and in Chromium, Firefox and WebKit through Playwright. The public API matches [cryptographic-design.md](../security/cryptographic-design.md). There is no nonce parameter outside the test-only export. | INV-02 (nonce uniqueness, test-only export lint), INV-03 (negative vectors), INV-04 (fuzzing the decoder, typed errors), INV-05 (profile floor), INV-17, INV-22 (exact-version check in CI).                                                                                                        |
-| P2-04 | **Web security headers and CSP spike.** Caddy and Next.js headers from [api-design.md](../architecture/api-design.md#web-app-security-headers). `packages/crypto` and `@serenity-kit/opaque` load in a worker under the CSP.                                                                                                                                                           | P2-03                                 | S    | D-16 is resolved with evidence. CSP has no `'unsafe-inline'` or `'unsafe-eval'` for scripts. Any deviation is recorded.                                                                                                                                                                                                     | An HTTP test asserting every header. A Playwright test that an injected inline script is blocked.                                                                                                                                                                                                   |
+| P2-04 | **Web security headers and CSP spike.** Caddy and Next.js headers from [api-design.md](../architecture/api-design.md#web-app-security-headers). `packages/crypto` and `@serenity-kit/opaque` load in a worker under the CSP. **Crypto-only part implemented locally 2026-10-24 ([status](#p2-04-status-2026-10-24)); OPAQUE still excluded; remote CI not yet run.**                   | P2-03                                 | S    | D-16 is resolved with evidence. CSP has no `'unsafe-inline'` or `'unsafe-eval'` for scripts. Any deviation is recorded.                                                                                                                                                                                                     | An HTTP test asserting every header. A Playwright test that an injected inline script is blocked.                                                                                                                                                                                                   |
 | P2-05 | **`packages/contracts` and API conventions**: error shape, base64url byte fields with length checks, body limits, route-template logging, `Origin` and `X-Ruvee-Request` guard, `no-store`. **Implemented locally 2026-10-23, except the `Origin` and `X-Ruvee-Request` guard (moved to P2-09); remote CI not yet run.**                                                               | none                                  | M    | Every rule in [api-design.md §Conventions](../architecture/api-design.md#conventions) has a test. Logs contain route templates only.                                                                                                                                                                                        | CSRF tests (T-17). A request with both cookie and bearer is rejected. The log-scan test is extended (INV-12).                                                                                                                                                                                       |
 | P2-06 | **Phase 2 database schema and first migration**: the tables in [database-design.md §Phase 2](../architecture/database-design.md#phase-2-tables).                                                                                                                                                                                                                                       | Owner approval of the database design | S    | The migration applies to an empty database and rolls back in CI. Every column appears in the documented list.                                                                                                                                                                                                               | INV-10 column-list test.                                                                                                                                                                                                                                                                            |
 | P2-07 | **Server secrets and admin CLI**: OPAQUE server setup loaded from a secret file, `instance_id`, and `ruvee-admin bootstrap-token`.                                                                                                                                                                                                                                                     | P2-06                                 | S    | The API refuses to start without the secret file. The token is printed only to the terminal, and only its hash is stored. The Docker Compose example mounts the secret.                                                                                                                                                     | INV-21 (configuration and log scan). Expiry and single use of the token.                                                                                                                                                                                                                            |
@@ -55,8 +55,9 @@ They are listed with recommendations in [open-decisions.md](../architecture/open
 The decision table there says which task each decision blocks. D-25 was approved and P2-01 is
 implemented. P2-02's tooling and local measurements are done; **D-26 (the reference devices)
 blocks its remaining part.** P2-05 is implemented locally. D-01, D-04 and D-20 were approved for
-development, and P2-03 is implemented locally. P2-04 is unblocked; approval of the database
-design blocks P2-06, and most later tasks follow from it.
+development, and P2-03 is implemented locally. The crypto-only part of P2-04 is implemented
+locally; D-02 still blocks the OPAQUE half. Approval of the database design blocks P2-06, and
+most later tasks follow from it.
 
 ## Independent review
 
@@ -205,20 +206,30 @@ Deviations:
 - The browser checks run with a script of their own instead of a test page in the web app. A CI
   job (`crypto-package-browsers`) runs them.
 
+### P2-04 status (2026-10-24)
+
+The **crypto-only** half is implemented locally. **Remote CI has not run.** D-02 was not
+approved, so `@serenity-kit/opaque` was not added. Details and deviations are in
+[api-design.md](../architecture/api-design.md#what-p2-04-implemented-crypto-only).
+
+| Acceptance item                                             | Status                                                                                                                                                                                                                                                                                    |
+| ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Caddy and Next.js headers from api-design.md                | **Done locally** as `deploy/Caddyfile` plus `apps/web/scripts/serve-export.mjs`. Next.js `headers()` does not apply to `output: 'export'`; that is recorded. The Caddy binary was not available; header values were checked by a Caddyfile unit test and by HTTP against the Node server. |
+| `packages/crypto` loads in a worker under the CSP           | **Done** on `/csp-probe` in Playwright Chromium. Firefox, WebKit and Safari were not run for this spike.                                                                                                                                                                                  |
+| `@serenity-kit/opaque` loads in a worker under the CSP      | **Not done.** Blocked by D-02.                                                                                                                                                                                                                                                            |
+| D-16 resolved with evidence                                 | **Resolved for development:** static export with build-time script hashes. Not an owner security approval.                                                                                                                                                                                |
+| CSP has no `'unsafe-inline'` or `'unsafe-eval'` for scripts | **Done** on the static export. `'wasm-unsafe-eval'` remains, as required for libsodium.js. `next dev` is not under this CSP.                                                                                                                                                              |
+| Deviations recorded                                         | Trusted Types omitted; HSTS omitted on local HTTP; `/csp-probe` ships in the export; Caddy not executed.                                                                                                                                                                                  |
+| HTTP test of every header; injected inline script blocked   | **Done** (`pnpm --filter @ruvee/web test:headers`).                                                                                                                                                                                                                                       |
+
 ## Next bounded task
 
-The proposed next task is **P2-04, the web security headers and CSP spike**. P2-03 was its only
-dependency. It loads `packages/crypto` in a worker under the CSP from api-design.md, which the
-P2-03 browser checks already approximate. Its other half loads `@serenity-kit/opaque`, the OPAQUE
-library in D-02, which is not approved. Either the owner approves D-02 for the spike, or P2-04
-starts with `packages/crypto` alone.
-
-The other paths:
+P2-04 is **partially complete**. The remaining half is loading `@serenity-kit/opaque` under the
+same CSP, which needs D-02. Until then, the unblocked paths are:
 
 - **P2-06**, the first migration, blocked only by owner approval of the database design.
 - P2-02, remaining part: **D-26** (which devices), then manual runs on them and on Safari.
-- The Recovery Key format, part of P2-03, can be added as a small follow-up once recovery work is
-  in scope. It needs no new decision; P2-08 needs it, together with D-06.
+- The Recovery Key format, still an open part of P2-03, once recovery work is in scope.
 
 ## Changes after architecture validation
 
@@ -265,3 +276,11 @@ Status remains **Proposed**. Changes made on 2026-10-24:
   with its deviations ([status](#p2-03-status-2026-10-24)).
 - The Recovery Key and pairing code formats remain open parts of P2-03.
 - The proposed next task is P2-04.
+
+## Changes after P2-04 (crypto-only)
+
+Status remains **Proposed**. Changes made on 2026-10-24:
+
+- P2-04 marked partially implemented: headers, hashed CSP, and `packages/crypto` in a worker.
+  OPAQUE remains outstanding.
+- D-16 resolved for development from the spike evidence. D-02 is unchanged.

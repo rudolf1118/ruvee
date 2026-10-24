@@ -10,7 +10,7 @@
     "build": {
       "dependsOn": ["^build", "generate"],
       "inputs": ["$TURBO_DEFAULT$", "!**/*.test.*", "!**/*.spec.*", "!e2e/**"],
-      "outputs": ["dist/**", ".next/**", "!.next/cache/**"]
+      "outputs": ["dist/**", ".next/**", "!.next/cache/**", "out/**"]
     },
     "typecheck": {
       "dependsOn": ["^build", "generate"]
@@ -29,6 +29,11 @@
     "test:e2e": {
       "dependsOn": ["^build"],
       "env": ["PLAYWRIGHT_CHANNEL", "CI"],
+      "cache": false
+    },
+    "test:headers": {
+      "dependsOn": ["build"],
+      "env": ["PLAYWRIGHT_CHANNEL", "CI", "RUVEE_EXPORT_PORT"],
       "cache": false
     },
     "dev": {

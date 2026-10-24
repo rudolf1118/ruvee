@@ -52,12 +52,13 @@ authoritative for it.
 | Primitive library checks                | Published vectors, cross-implementation checks and library behavior for libsodium.js, in Node and browsers (P2-01). Tests the libraries, not this design.  | [tools/crypto-validation](../../tools/crypto-validation/README.md)   |
 | Argon2id calibration                    | Benchmark of profile 1 and candidates on the available computer (P2-02, local part). Provisional; reference devices not measured.                          | [kdf-calibration.md](../security/kdf-calibration.md)                 |
 | Decisions for the owner                 |                                                                                                                                                            | [open-decisions.md](open-decisions.md)                               |
-| Decision records                        | ADR-0002 and ADR-0003 accepted for development (2026-10-24); the others Proposed                                                                           | [ADR index](../adr/README.md)                                        |
+| Decision records                        | ADR-0002 and ADR-0003 accepted for development (2026-10-24); D-16 resolved for development by P2-04 evidence; the others Proposed                          | [ADR index](../adr/README.md)                                        |
 
 ### Planned packages
 
 This extends the Phase 1 monorepo. `packages/contracts` (P2-05) and part of `packages/crypto`
-(P2-03) exist so far.
+(P2-03) exist so far. The web app's static export applies the P2-04 headers and loads
+`packages/crypto` in a worker; OPAQUE is not present.
 
 | Package                  | Contents                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | First phase |
 | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------- |

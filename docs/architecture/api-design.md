@@ -244,7 +244,8 @@ Next.js App Router emits inline scripts. Two ways to allow them without `'unsafe
 - per-request nonces, which force dynamic rendering of every page
 - a static export, where build-time hashes can be listed
 
-The choice is [D-16](open-decisions.md). Phase 2 must also verify that Tailwind and Next.js work
+The choice is [D-16](open-decisions.md), **resolved for development** by the P2-04 spike: static
+export with build-time script hashes. Phase 2 must also verify that Tailwind and Next.js work
 with `style-src 'self'`. If inline styles are unavoidable, that is recorded as a deviation and
 not quietly allowed.
 
@@ -260,6 +261,38 @@ Every `/api/v1` response, and every HTML page of the vault UI, sends `Cache-Cont
 Static assets with content hashes in their names may be cached as `immutable`. The web app has
 no service worker in V1, so no API response can end up in a service-worker cache
 ([sync-protocol.md §12](sync-protocol.md#12-local-storage)).
+
+### What P2-04 implemented (crypto-only)
+
+Implemented locally on 2026-10-24. **Remote CI has not run.** OPAQUE / `@serenity-kit/opaque`
+was excluded (D-02 is open). This is a development spike, not a security review.
+
+| Item                                                  | Status                                                                                                                                                                                                                             |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `output: 'export'` and build-time `script-src` hashes | **Done.** Next.js 16.4.2 emits inline scripts for the RSC payload. `apps/web/security-headers.ts` hashes those bodies (`sha256-...`). `'unsafe-inline'` and `'unsafe-eval'` are never added.                                       |
+| Production headers on the static export               | **Done** in `deploy/Caddyfile` and `apps/web/scripts/serve-export.mjs`. Next.js `headers()` is ignored for the export ([Next.js docs](https://nextjs.org/docs/app/guides/static-exports)); `next dev` keeps only the Phase 1 trio. |
+| `packages/crypto` in a worker under that CSP          | **Done.** `/csp-probe` starts `/csp-probe-worker.js`, which calls `initRuveeCrypto()` and `generateKey()`. Playwright Chromium: worker succeeds and `eval` is blocked.                                                             |
+| Tailwind / Next.js with `style-src 'self'`            | **Done** for `/`, `/csp-probe` and the custom `not-found` page. The default Next.js 404 used inline styles and style attributes; it was replaced.                                                                                  |
+| HTTP test of every header                             | **Done** (`pnpm --filter @ruvee/web test:headers`).                                                                                                                                                                                |
+| Injected inline script blocked                        | **Done** in the same Playwright file.                                                                                                                                                                                              |
+| HSTS                                                  | **Local HTTP omitted**, as specified ("in public mode"). The public-mode value is documented in the Caddyfile.                                                                                                                     |
+| Caddy binary                                          | **Not run.** Caddy is not installed here. The Caddyfile is checked against the header module; the Node export server applies the same values.                                                                                      |
+| `@serenity-kit/opaque` under the CSP                  | **Not done.** D-02 is unapproved.                                                                                                                                                                                                  |
+
+Deviations from the table above:
+
+- **Trusted Types omitted.** `require-trusted-types-for 'script'` and `trusted-types ruvee` are
+  not in the production CSP. Next.js 16.4.2 creates script elements from the RSC payload at
+  runtime (`nonce="$undefined"` in the export) and has no named policy hook in the static
+  export. A `default` policy would be an equivalent hole. Revisit when Next.js can issue
+  Trusted Types without a default policy.
+- **`X-Frame-Options: DENY`** is kept next to `frame-ancestors 'none'` (already in Phase 1).
+- **Permissions-Policy** lists the disabled features explicitly in
+  `apps/web/security-headers.ts` (camera remains `(self)` for later pairing QR scans).
+- **`next dev` is not the production CSP.** React Fast Refresh needs `'unsafe-eval'`. The
+  production policy is only on the static export.
+- **`/csp-probe` ships in the production export.** It is a spike page, not vault UI. Remove it
+  before any real-data build.
 
 ## Changes after architecture validation
 
@@ -283,3 +316,12 @@ Status remains **Proposed**. Changes made on 2026-10-23, from the implementation
   logged.
 - Deferred to P2-09: the `Origin` and `X-Ruvee-Request` checks and the cookie-plus-bearer
   rejection, which need sessions.
+
+## Changes after P2-04 (web security headers, crypto-only)
+
+Status remains **Proposed**. Changes made on 2026-10-24 from the implementation:
+
+- D-16 resolved for development: static export with build-time script hashes.
+- New subsection [What P2-04 implemented](#what-p2-04-implemented-crypto-only), including the
+  Trusted Types omission and the fact that Next.js `headers()` does not apply to the export.
+- OPAQUE under the same CSP remains open with D-02.

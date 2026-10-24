@@ -2,8 +2,9 @@
 
 Monorepo for Ruvee, a planned password manager. **This is the Phase 1 foundation plus the first
 Phase 2 packages.** There is no working vault, account system, sync or recovery. Part of the
-encryption format exists in `packages/crypto` for development; it is not reviewed and nothing
-uses it yet. Do not use it to store real credentials. Open security architecture decisions are tracked in
+encryption format exists in `packages/crypto` for development; it is not reviewed. The web
+static export loads it in a worker under the production CSP as a spike, still with synthetic
+data only. Do not use it to store real credentials. Open security architecture decisions are tracked in
 [docs/architecture/open-decisions.md](docs/architecture/open-decisions.md).
 
 The Phase 0 security architecture is **proposed, not approved, and not independently reviewed**.
@@ -16,18 +17,19 @@ independent audit.
 
 ## What is here
 
-| Path                      | Contents                                                                                                                                                                         |
-| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `apps/api`                | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging                                                                                                       |
-| `apps/web`                | Next.js web app: design tokens, UI components, vault app shell, dev preview                                                                                                      |
-| `packages/contracts`      | Zod schemas for the implemented API (health responses, errors, limits), shared by server and clients; the OpenAPI document `openapi.json` is generated from them                 |
-| `packages/crypto`         | Ruvee's client-side format over libsodium.js, in part (P2-03): password rule, `AUK`, the account-key password wrap, the keyset envelope, padding. Development only, not reviewed |
-| `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                              |
-| `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                                |
-| `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                    |
-| `docs/`                   | Architecture, security specifications, ADRs and planning (Phase 0, proposed)                                                                                                     |
-| `spikes/`                 | Disposable compatibility experiments; not workspace packages, synthetic data only                                                                                                |
-| `tools/crypto-validation` | Primitive validation harness (P2-01) for the candidate crypto libraries; own lockfile, synthetic data only, not Ruvee's format ([README](tools/crypto-validation/README.md))     |
+| Path                      | Contents                                                                                                                                                                                   |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `apps/api`                | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging                                                                                                                 |
+| `apps/web`                | Next.js web app: design tokens, UI components, vault app shell, dev preview. Production is a static export with the P2-04 security headers; `/csp-probe` loads `@ruvee/crypto` in a worker |
+| `deploy/Caddyfile`        | Header spike for serving `apps/web/out`. Same-origin API routing is not configured. Caddy is not required for local checks                                                                 |
+| `packages/contracts`      | Zod schemas for the implemented API (health responses, errors, limits), shared by server and clients; the OpenAPI document `openapi.json` is generated from them                           |
+| `packages/crypto`         | Ruvee's client-side format over libsodium.js, in part (P2-03): password rule, `AUK`, the account-key password wrap, the keyset envelope, padding. Development only, not reviewed           |
+| `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                                        |
+| `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                                          |
+| `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                              |
+| `docs/`                   | Architecture, security specifications, ADRs and planning (Phase 0, proposed)                                                                                                               |
+| `spikes/`                 | Disposable compatibility experiments; not workspace packages, synthetic data only                                                                                                          |
+| `tools/crypto-validation` | Primitive validation harness (P2-01) for the candidate crypto libraries; own lockfile, synthetic data only, not Ruvee's format ([README](tools/crypto-validation/README.md))               |
 
 ## Requirements
 
@@ -87,7 +89,8 @@ pnpm typecheck
 pnpm test                 # unit and HTTP-level tests (no database needed)
 pnpm test:integration     # API against a real PostgreSQL; needs DATABASE_URL (pnpm db:up)
 pnpm build
-pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan
+pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan (`next dev`)
+pnpm --filter @ruvee/web test:headers          # production-export headers and CSP (needs a prior web build)
 pnpm --filter @ruvee/contracts openapi:write   # regenerate openapi.json after changing a contract
 pnpm --filter @ruvee/crypto test:browsers      # crypto checks in Chromium, Firefox and WebKit, page and worker
 pnpm --filter @ruvee/crypto vectors:write      # regenerate the provisional protocol vectors after a format change
@@ -103,6 +106,10 @@ The browser checks need Playwright's engines once
 For end-to-end tests, either install Playwright's browser once
 (`pnpm --filter @ruvee/web exec playwright install chromium`) or reuse a local Chrome with
 `PLAYWRIGHT_CHANNEL=chrome pnpm test:e2e`.
+
+The header tests serve the static export on `127.0.0.1:3101` (not the `next dev` port). They do
+not start or stop the development server. After `pnpm --filter @ruvee/web build`,
+`pnpm --filter @ruvee/web serve:export` is the local stand-in for Caddy.
 
 CI (`.github/workflows/ci.yml`) runs all of the above on pushes and pull requests, with
 PostgreSQL as a service container.

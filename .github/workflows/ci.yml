@@ -66,6 +66,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ruvee/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @ruvee/web build
+      - run: pnpm --filter @ruvee/web test:headers
       - run: pnpm --filter @ruvee/web test:e2e
       - if: failure()
         uses: actions/upload-artifact@v7

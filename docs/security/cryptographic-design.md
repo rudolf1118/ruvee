@@ -549,7 +549,7 @@ remote CI has not run. The owner approved D-01, D-04 and D-20 for this milestone
 | `sealKeyset()`, `openKeyset()`              | The `KEYSET` envelope with the §5.1 JSON. `K_keyset` is derived from `AK` inside the call.                                                                        |
 | `normalizePassword()`                       | The §3.1 rule, returning the string OPAQUE will receive.                                                                                                          |
 | `padPlaintext()`, `unpadPlaintext()`        | §5.2 padding, ready for Phase 3 item bodies.                                                                                                                      |
-| `wipe()`, `RuveeCryptoError`, constants     | Best-effort zeroing; the typed error; `PASSWORD_MAX_BYTES`, `DEFAULT_KDF_PROFILE`, envelope and padding sizes.                                                    |
+| `wipe()`, `RuveeCryptoError`, constants     | Best-effort zeroing; the typed error; `PASSWORD_MAX_BYTES`, `DEFAULT_KDF_PROFILE`, `KEYSET_FORMAT_VERSION`, envelope and padding sizes.                           |
 
 No public function takes a nonce, a raw KDF parameter, a library instance or a purpose code.
 Fixed nonces exist only in `src/testing/fixed-nonce.ts`, which is outside the package's exports
@@ -697,3 +697,13 @@ No key, derivation, envelope or byte format changed.
 - §10 added: what `packages/crypto` implements, the limits it applies and how they are counted,
   the library boundary, buffer ownership and memory limits, error names for §4.4 steps 1 and 3,
   interpretations to confirm in the format review, and the parts left to later milestones.
+
+## Changes after P2-04 (web headers, crypto-only)
+
+Status remains **Proposed**. Changes made on 2026-10-24. No key, derivation, envelope or byte
+format changed.
+
+- `KEYSET_FORMAT_VERSION` is a public export so a consumer can see the plaintext schema version
+  (`v` = 1). The one-vault restriction and canonical base64url rules were confirmed against
+  §5.1; they already match V1. Rollback still uses `keyset_version` in the AAD, which remains
+  the caller's job.
