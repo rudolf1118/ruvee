@@ -192,6 +192,12 @@ The web session is a cookie, so state-changing requests are protected three ways
 Bearer-token clients (extension and mobile) don't use cookies, so CSRF does not apply. The API
 rejects requests that carry both a cookie and a bearer token.
 
+**As built (2026-10-25):** the extension's unauthenticated calls (`login/*`, `refresh`) carry no
+cookie and no token, so they still go through the CSRF check. They pass it only from an origin
+listed in `EXTENSION_ORIGINS`, with `X-Ruvee-Request: 1`, and only without a cookie; the
+extension fetches with `credentials: 'omit'`, so a cookie on such a request means it came from
+somewhere else. A cookie request must always come from `PUBLIC_ORIGIN`.
+
 ## 7. Rate limiting and brute-force protection
 
 There is no Redis. V1 runs a single API instance; counters are kept in PostgreSQL for anything

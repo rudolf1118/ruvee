@@ -28,6 +28,8 @@ import {
   registerStartResponseSchema,
   SESSION_COOKIE_SECURE,
   sessionResponseSchema,
+  refreshRequestSchema,
+  tokenPairSchema,
 } from './auth.js';
 import { livenessResponseSchema, notReadyResponseSchema, readyResponseSchema } from './health.js';
 import {
@@ -206,7 +208,9 @@ function operation(options: {
       ? {}
       : {
           security: [
-            options.access === 'recovery' ? { recoveryCookie: [] } : { sessionCookie: [] },
+            ...(options.access === 'recovery'
+              ? [{ recoveryCookie: [] }]
+              : [{ sessionCookie: [] }, { bearerToken: [] }]),
           ],
         }),
     ...(options.parameters ? { parameters: options.parameters } : {}),
@@ -316,6 +320,17 @@ export function buildOpenApiDocument(): JsonSchema {
             schema: 'SessionResponse',
           },
           errors: ['login_failed', 'device_revoked', 'rate_limited'],
+        }),
+      },
+      '/api/v1/auth/refresh': {
+        post: operation({
+          operationId: 'refresh',
+          summary:
+            'Token clients: a new access and refresh token; a reused refresh token ends the session.',
+          access: 'none',
+          request: 'RefreshRequest',
+          success: { status: '200', description: 'New tokens.', schema: 'TokenPair' },
+          errors: ['unauthenticated', 'session_expired', 'device_revoked', 'rate_limited'],
         }),
       },
       '/api/v1/auth/logout': {
@@ -672,6 +687,7 @@ export function buildOpenApiDocument(): JsonSchema {
       securitySchemes: {
         sessionCookie: { type: 'apiKey', in: 'cookie', name: SESSION_COOKIE_SECURE },
         recoveryCookie: { type: 'apiKey', in: 'cookie', name: '__Host-ruvee_recovery' },
+        bearerToken: { type: 'http', scheme: 'bearer', description: 'Token clients (extension).' },
       },
       schemas: {
         RegisterStartRequest: jsonSchema(registerStartRequestSchema),
@@ -681,6 +697,8 @@ export function buildOpenApiDocument(): JsonSchema {
         LoginStartResponse: jsonSchema(loginStartResponseSchema),
         LoginFinishRequest: jsonSchema(loginFinishRequestSchema),
         SessionResponse: jsonSchema(sessionResponseSchema),
+        RefreshRequest: jsonSchema(refreshRequestSchema),
+        TokenPair: jsonSchema(tokenPairSchema),
         AccountResponse: jsonSchema(accountResponseSchema),
         AccountKeysResponse: jsonSchema(accountKeysResponseSchema),
         Device: jsonSchema(deviceSchema),

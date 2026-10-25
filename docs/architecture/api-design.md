@@ -19,8 +19,12 @@ Implemented locally (remote CI not yet run): the health endpoints and transport 
 `POST /api/v1/devices/{id}/revoke`, `/api/v1/account/password/{start,finish}` and
 `POST /api/v1/account/secret-key` (`SK` rotation, D-24) and `PUT /api/v1/account/recovery`
 (Recovery Kit rotation; it also ends unfinished recovery sessions), and `GET
-/api/v1/account/events` (cursor `<created_at ms>.<id>`). Everything else
-in this document (refresh, events, SSE, re-seeding) is still
+/api/v1/account/events` (cursor `<created_at ms>.<id>`). Token sessions for the extension: `platform: "extension"` on
+`login/start` makes `login/finish` return `tokens` instead of a cookie, `POST /api/v1/auth/refresh`
+rotates them, and every `session`/`active`/`step-up` endpoint accepts `Authorization: Bearer`.
+Registration and recovery stay web-only (`platform: "web"`). Unauthenticated writes from an
+extension need its origin in `EXTENSION_ORIGINS` and no cookie. Everything else
+in this document (SSE, re-seeding) is still
 **proposed** and has no contract. A step-up login state is bound to its session: `login/finish`
 refuses it, so step-up can never mint a new session. `GET /account` also returns `lastRecoveryAt`, the time of the
 latest `recovery_started` event, which is how every device learns that the Recovery Kit was used;

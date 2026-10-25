@@ -141,6 +141,9 @@ export class PairingService {
     client: ClientContext,
   ): Promise<void> {
     if (session.deviceStatus !== 'pending') throw new ApiException('forbidden');
+    // The platform A is shown (and that the MAC binds) must be the one B logged in as.
+    const device = await this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } });
+    if (device.platform !== body.platform) throw new ApiException('invalid_request');
     const row = await this.live(pairingIdText, session.accountId);
     const updated = await this.prisma.pairing.updateMany({
       where: { pairingId: row.pairingId, state: 'open', requesterDeviceId: null },

@@ -37,6 +37,7 @@ describe('OpenAPI document', () => {
       '/api/v1/auth/logout',
       '/api/v1/auth/reauth/finish',
       '/api/v1/auth/reauth/start',
+      '/api/v1/auth/refresh',
       '/api/v1/auth/register/finish',
       '/api/v1/auth/register/start',
       '/api/v1/devices',
@@ -85,7 +86,9 @@ describe('OpenAPI document', () => {
         if (access === 'none') expect(op.security, `${method} ${path}`).toBeUndefined();
         else
           expect(op.security, `${method} ${path}`).toEqual([
-            access === 'recovery' ? { recoveryCookie: [] } : { sessionCookie: [] },
+            ...(access === 'recovery'
+              ? [{ recoveryCookie: [] }]
+              : [{ sessionCookie: [] }, { bearerToken: [] }]),
           ]);
       }
     }

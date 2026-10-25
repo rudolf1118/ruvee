@@ -12,7 +12,7 @@ export interface PendingLogin {
   /** Null for an unknown username; such a login can never succeed. */
   readonly accountId: string | null;
   readonly deviceId: string | undefined;
-  readonly platform: 'web';
+  readonly platform: 'web' | 'extension';
   /** Set for `reauth`: the state can only finish on this session. */
   readonly sessionId?: string;
   readonly expiresAt: number;

@@ -7,6 +7,7 @@ import {
   RECOVERY_SESSION_MS,
   SESSION_COOKIE_INSECURE_DEV,
   SESSION_COOKIE_SECURE,
+  type TokenPair,
 } from '@ruvee/contracts';
 import type { Response } from 'express';
 import { ApiException } from '../common/api-exception.js';
@@ -18,6 +19,10 @@ import type { DeviceStatus, Prisma, RevokeReason } from '../generated/prisma/cli
 /** D-08, approved for development: web sessions 12 h idle (sliding) and 14 days absolute. */
 export const SESSION_IDLE_MS = 12 * 60 * 60 * 1000;
 export const SESSION_ABSOLUTE_MS = 14 * 24 * 60 * 60 * 1000;
+/** D-08 for token clients: 10-minute access tokens; refresh 30 days idle, 90 days absolute. */
+export const ACCESS_TOKEN_MS = 10 * 60 * 1000;
+export const REFRESH_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
+export const REFRESH_ABSOLUTE_MS = 90 * 24 * 60 * 60 * 1000;
 /** Step-up window for INV-14 endpoints. */
 export const STEP_UP_MS = 5 * 60 * 1000;
 /** `last_used_at`, `idle_expires_at` and `last_seen_at` are written at most this often. */
@@ -132,6 +137,108 @@ export class SessionService {
     return { token, absoluteExpiresAt };
   }
 
+  /**
+   * A token session (authentication.md §5): `secret_hash` is the current access token's hash, and
+   * the first refresh token of the family goes to `refresh_tokens`. Neither raw token is stored.
+   */
+  async createToken(
+    accountId: string,
+    deviceId: string,
+    tx: Prisma.TransactionClient = this.prisma,
+    now = new Date(),
+  ): Promise<TokenPair> {
+    const accessToken = randomToken();
+    const refreshToken = randomToken();
+    const accessExpiresAt = new Date(now.getTime() + ACCESS_TOKEN_MS);
+    const sessionId = randomUUID();
+    await tx.session.create({
+      data: {
+        id: sessionId,
+        accountId,
+        deviceId,
+        kind: 'token',
+        secretHash: sha256(accessToken),
+        accessExpiresAt,
+        authAt: now,
+        createdAt: now,
+        lastUsedAt: now,
+        idleExpiresAt: new Date(now.getTime() + REFRESH_IDLE_MS),
+        absoluteExpiresAt: new Date(now.getTime() + REFRESH_ABSOLUTE_MS),
+      },
+    });
+    await tx.refreshToken.create({
+      data: { tokenHash: sha256(refreshToken), sessionId, createdAt: now },
+    });
+    return { accessToken, refreshToken, accessExpiresAt: accessExpiresAt.toISOString() };
+  }
+
+  /**
+   * Exchanges a refresh token once. A token that was already exchanged is a reuse: the whole
+   * family (the session) is revoked and the caller learns only `unauthenticated`. The idle expiry
+   * slides with each refresh, never past the absolute one.
+   */
+  async refresh(
+    refreshToken: string,
+    now = new Date(),
+  ): Promise<
+    { tokens: TokenPair } | { reused: { sessionId: string; accountId: string; deviceId: string } }
+  > {
+    if (!TOKEN_TEXT.test(refreshToken)) throw new ApiException('unauthenticated');
+    return this.prisma.$transaction(async (tx) => {
+      const row = await tx.refreshToken.findUnique({
+        where: { tokenHash: sha256(refreshToken) },
+        include: { session: { include: { device: { select: { status: true } } } } },
+      });
+      if (!row) throw new ApiException('unauthenticated');
+      const session = row.session;
+      if (session.kind !== 'token') throw new ApiException('unauthenticated');
+      if (session.device.status === 'revoked') throw new ApiException('device_revoked');
+      if (session.revokedAt !== null) throw new ApiException('unauthenticated');
+      if (row.rotatedAt !== null) {
+        await tx.session.update({
+          where: { id: session.id },
+          data: { revokedAt: now, revokeReason: 'refresh_reuse' },
+        });
+        return {
+          reused: {
+            sessionId: session.id,
+            accountId: session.accountId,
+            deviceId: session.deviceId,
+          },
+        };
+      }
+      if (session.idleExpiresAt <= now || session.absoluteExpiresAt <= now)
+        throw new ApiException('session_expired');
+      // Conditional on rotated_at still being null, so two concurrent refreshes cannot both win.
+      const claimed = await tx.refreshToken.updateMany({
+        where: { tokenHash: row.tokenHash, rotatedAt: null },
+        data: { rotatedAt: now },
+      });
+      if (claimed.count !== 1) throw new ApiException('unauthenticated');
+      const accessToken = randomToken();
+      const next = randomToken();
+      const accessExpiresAt = new Date(now.getTime() + ACCESS_TOKEN_MS);
+      await tx.session.update({
+        where: { id: session.id },
+        data: {
+          secretHash: sha256(accessToken),
+          accessExpiresAt,
+          lastUsedAt: now,
+          idleExpiresAt: new Date(
+            Math.min(now.getTime() + REFRESH_IDLE_MS, session.absoluteExpiresAt.getTime()),
+          ),
+        },
+      });
+      await tx.refreshToken.create({
+        data: { tokenHash: sha256(next), sessionId: session.id, createdAt: now },
+      });
+      await tx.device.update({ where: { id: session.deviceId }, data: { lastSeenAt: now } });
+      return {
+        tokens: { accessToken, refreshToken: next, accessExpiresAt: accessExpiresAt.toISOString() },
+      };
+    });
+  }
+
   /** `__Host-` cookie attributes of authentication.md §5; no `Domain`, `Path=/`. */
   setCookie(res: Response, token: string, absoluteExpiresAt: Date, now = new Date()): void {
     const maxAge = Math.max(0, Math.floor((absoluteExpiresAt.getTime() - now.getTime()) / 1000));
@@ -158,19 +265,33 @@ export class SessionService {
    * Resolves a cookie value to a live session, failing with the documented codes. Revocation is
    * checked on every request, and the idle expiry slides at most once a minute.
    */
-  async authenticate(token: string | undefined, now = new Date()): Promise<AuthenticatedSession> {
+  async authenticate(
+    token: string | undefined,
+    now = new Date(),
+    kind: 'cookie' | 'token' = 'cookie',
+  ): Promise<AuthenticatedSession> {
     if (token === undefined || !TOKEN_TEXT.test(token)) throw new ApiException('unauthenticated');
     const session = await this.prisma.session.findUnique({
       where: { secretHash: sha256(token) },
       include: { device: { select: { status: true } } },
     });
-    if (session?.kind !== 'cookie') throw new ApiException('unauthenticated');
+    // A cookie value is never accepted as a bearer token, nor the reverse.
+    if (session?.kind !== kind) throw new ApiException('unauthenticated');
     if (session.device.status === 'revoked') throw new ApiException('device_revoked');
     if (session.revokedAt !== null) throw new ApiException('unauthenticated');
     if (session.idleExpiresAt <= now || session.absoluteExpiresAt <= now)
       throw new ApiException('session_expired');
+    // A token session's access token expires on its own; the client refreshes it.
+    if (kind === 'token' && (session.accessExpiresAt === null || session.accessExpiresAt <= now))
+      throw new ApiException('session_expired');
 
-    if (now.getTime() - session.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS) {
+    if (kind === 'token') {
+      if (now.getTime() - session.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS)
+        await this.prisma.$transaction([
+          this.prisma.session.update({ where: { id: session.id }, data: { lastUsedAt: now } }),
+          this.prisma.device.update({ where: { id: session.deviceId }, data: { lastSeenAt: now } }),
+        ]);
+    } else if (now.getTime() - session.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS) {
       const idle = new Date(
         Math.min(now.getTime() + SESSION_IDLE_MS, session.absoluteExpiresAt.getTime()),
       );

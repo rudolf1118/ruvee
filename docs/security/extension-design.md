@@ -36,7 +36,10 @@ The extension CSP is the MV3 default plus WebAssembly:
   bearer access token and a rotating refresh token (30 days idle, 90 absolute), family revocation
   on reuse. The access token stays in service-worker memory and `chrome.storage.session`; the
   refresh token in extension-origin IndexedDB. The API rejects a request with both a cookie and a
-  bearer token (already enforced).
+  bearer token (already enforced), so the extension fetches with `credentials: 'omit'`: the
+  browser would otherwise attach the user's web-app cookie for the same server. The API accepts
+  the extension's unauthenticated calls (login, refresh) only from origins in `EXTENSION_ORIGINS`
+  ([authentication.md §6](authentication.md#6-csrf)).
 - **Enrollment** is the existing pairing (device-enrollment §3) with platform code 2. The
   extension never receives `SK` any other way, except by Recovery Kit recovery.
 

@@ -35,6 +35,19 @@ export const envSchema = z.object({
   SESSION_COOKIE_SECURE: z.enum(['true', 'false']).default('true'),
   /** Address of the reverse proxy whose X-Forwarded-For is trusted for the client IP. */
   TRUSTED_PROXY_ADDRESS: z.ipv4().or(z.ipv6()).optional(),
+  /**
+   * Comma-separated `chrome-extension://<id>` origins allowed to call the unauthenticated token
+   * endpoints (login, refresh) without a cookie (extension-design.md §2). Empty: none.
+   */
+  EXTENSION_ORIGINS: z.preprocess(
+    emptyToUndefined,
+    z
+      .string()
+      .regex(/^chrome-extension:\/\/[a-p]{32}(,chrome-extension:\/\/[a-p]{32})*$/, {
+        error: 'Must be comma-separated chrome-extension://<32 letters a-p> origins',
+      })
+      .optional(),
+  ),
 });
 
 export type Env = z.infer<typeof envSchema>;

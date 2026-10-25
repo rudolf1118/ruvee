@@ -42,6 +42,12 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     last_seen_at: 'M',
     revoked_at: 'M',
   },
+  refresh_tokens: {
+    token_hash: 'V',
+    session_id: 'M',
+    created_at: 'S',
+    rotated_at: 'S',
+  },
   sessions: {
     id: 'M',
     account_id: 'M',

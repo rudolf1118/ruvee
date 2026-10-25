@@ -47,6 +47,8 @@ A complete single-user web vault across several browsers, against the real API a
   back, then the master password confirms it; the old kit stops working with this server.
 - **Activity**: the account's security events, newest first, with the ones worth a second look
   highlighted (failed sign-ins, Recovery Kit use, failed pairing checks).
+- **Token sessions** for the extension (API only so far): extension logins get a 10-minute bearer
+  access token and a rotating refresh token; a reused refresh token ends the session.
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -59,7 +61,7 @@ A complete single-user web vault across several browsers, against the real API a
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                       | Pass                            |
 | `pnpm test` (contracts 34, API 68, web 73, crypto 60)                                                                                                                                                    | Pass                            |
-| `pnpm test:integration` (42; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                     | Pass                            |
+| `pnpm test:integration` (49; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                     | Pass                            |
 | `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                        | Pass                            |
 | `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                                      | Pass                            |
 | `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                    | Pass                            |

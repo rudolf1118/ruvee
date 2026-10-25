@@ -48,8 +48,13 @@ export const uuidSchema = z
   .string()
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
-/** Token clients (extension, mobile) arrive in Phase 5; the web app is the only platform now. */
-export const platformSchema = z.literal('web');
+/**
+ * Platforms that can log in. `web` gets a cookie session; `extension` gets bearer tokens
+ * (authentication.md §5). Mobile arrives in Phase 6.
+ */
+export const platformSchema = z.enum(['web', 'extension']);
+/** Registration and recovery use cookie sessions, so they happen in the web app. */
+export const webPlatformSchema = z.literal('web');
 export const devicePlatformSchema = z.enum(['web', 'extension', 'ios', 'android']);
 export const deviceStatusSchema = z.enum(['pending', 'active', 'revoked']);
 
@@ -101,7 +106,7 @@ export const registerFinishRequestSchema = z.strictObject({
   accountId: uuidSchema,
   device: z.strictObject({
     id: uuidSchema,
-    platform: platformSchema,
+    platform: webPlatformSchema,
     label: deviceLabelSchema.optional(),
   }),
   keys: accountKeyMaterialSchema,
@@ -133,11 +138,28 @@ export const loginFinishRequestSchema = z.strictObject({
 export type LoginFinishRequest = z.infer<typeof loginFinishRequestSchema>;
 
 /** Returned with the `Set-Cookie` header of a new web session. */
+/** 32 random bytes in base64url; the server stores only `SHA-256` (INV-13). */
+export const tokenTextSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+
+/** A token client's credentials: a 10-minute access token and a rotating refresh token (D-08). */
+export const tokenPairSchema = z.strictObject({
+  accessToken: tokenTextSchema,
+  refreshToken: tokenTextSchema,
+  accessExpiresAt: z.iso.datetime({ offset: false }),
+});
+export type TokenPair = z.infer<typeof tokenPairSchema>;
+
 export const sessionResponseSchema = z.strictObject({
   accountId: uuidSchema,
   device: z.strictObject({ id: uuidSchema, status: deviceStatusSchema }),
+  /** Present only for token platforms; the web gets a cookie instead. */
+  tokens: tokenPairSchema.optional(),
 });
 export type SessionResponse = z.infer<typeof sessionResponseSchema>;
+
+/** `POST /auth/refresh`: exchanges a refresh token once; a reused one ends the session. */
+export const refreshRequestSchema = z.strictObject({ refreshToken: tokenTextSchema });
+export type RefreshRequest = z.infer<typeof refreshRequestSchema>;
 
 const timestamp = z.iso.datetime({ offset: false });
 

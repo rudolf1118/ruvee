@@ -4,7 +4,7 @@ import {
   U32_MAX,
   deviceLabelSchema,
   kdfProfileSchema,
-  platformSchema,
+  webPlatformSchema,
   uuidSchema,
   usernameSchema,
 } from './auth.js';
@@ -24,7 +24,7 @@ export const recoveryStartRequestSchema = z.strictObject({
   username: usernameSchema,
   /** `RAK`, 32 bytes. Compared as `SHA-256(RAK)` in constant time. */
   recoveryAuthKey: base64urlBytes({ length: 32 }),
-  device: z.strictObject({ id: uuidSchema, platform: platformSchema }),
+  device: z.strictObject({ id: uuidSchema, platform: webPlatformSchema }),
 });
 export type RecoveryStartRequest = z.infer<typeof recoveryStartRequestSchema>;
 

@@ -4,6 +4,7 @@ import {
   loginFinishRequestSchema,
   loginStartRequestSchema,
   reauthStartRequestSchema,
+  refreshRequestSchema,
   registerFinishRequestSchema,
   registerStartRequestSchema,
   type LoginFinishRequest,
@@ -11,10 +12,12 @@ import {
   type LoginStartResponse,
   type ReauthFinishResponse,
   type ReauthStartRequest,
+  type RefreshRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
   type RegisterStartResponse,
   type SessionResponse,
+  type TokenPair,
 } from '@ruvee/contracts';
 import type { Request, Response } from 'express';
 import { ContractValidationPipe } from '../common/contract-validation.pipe.js';
@@ -82,8 +85,20 @@ export class AuthController {
     @Res({ passthrough: true }) res: Response,
   ): Promise<SessionResponse> {
     const session = await this.auth.loginFinish(body, this.client(req));
-    this.sessions.setCookie(res, session.token, session.absoluteExpiresAt);
+    if (session.token !== undefined)
+      this.sessions.setCookie(res, session.token, session.absoluteExpiresAt);
     return session.body;
+  }
+
+  /** Token clients only: a new access token and refresh token (authentication.md §5). */
+  @Post('refresh')
+  @HttpCode(200)
+  @Access('none')
+  refresh(
+    @Body(new ContractValidationPipe(refreshRequestSchema)) body: RefreshRequest,
+    @Req() req: Request,
+  ): Promise<TokenPair> {
+    return this.auth.refresh(body, this.client(req));
   }
 
   @Post('reauth/start')

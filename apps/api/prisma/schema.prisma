@@ -196,12 +196,26 @@ model Session {
   revokedAt         DateTime?     @map("revoked_at") @db.Timestamptz(3)
   revokeReason      RevokeReason? @map("revoke_reason")
 
-  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  device  Device  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  account       Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
 
   @@index([accountId])
   @@index([deviceId])
   @@map("sessions")
+}
+
+/// A token session's refresh tokens; the session is the family (authentication.md §5).
+model RefreshToken {
+  tokenHash Bytes     @id @map("token_hash")
+  sessionId String    @map("session_id") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  rotatedAt DateTime? @map("rotated_at") @db.Timestamptz(3)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("refresh_tokens")
 }
 
 model AuthThrottle {

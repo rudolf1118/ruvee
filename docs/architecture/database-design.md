@@ -134,6 +134,9 @@ Rows are deleted 30 days after they expire or are revoked.
 
 ### `refresh_tokens`
 
+**Implemented** in `20261025160000_token_sessions` (Phase 5). The same migration adds the check that
+exactly the `token` sessions have an `access_expires_at`.
+
 | Column       | Type                  | Class | Purpose                                                                                                                   |
 | ------------ | --------------------- | ----- | ------------------------------------------------------------------------------------------------------------------------- |
 | `token_hash` | bytea (32) PK         | V     | `SHA-256(refresh token)`.                                                                                                 |

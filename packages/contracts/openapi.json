@@ -817,6 +817,186 @@
         }
       }
     },
+    "/api/v1/auth/refresh": {
+      "post": {
+        "operationId": "refresh",
+        "summary": "Token clients: a new access and refresh token; a reused refresh token ends the session.",
+        "x-ruvee-access": "none",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefreshRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "New tokens.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TokenPair"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/auth/logout": {
       "post": {
         "operationId": "logout",
@@ -825,6 +1005,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -914,6 +1097,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -1106,6 +1292,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -1301,6 +1490,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -1397,6 +1589,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -1541,6 +1736,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -1744,6 +1942,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -1921,6 +2122,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -2109,6 +2313,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -2216,6 +2423,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -2404,6 +2614,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -2592,6 +2805,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -2670,6 +2886,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -2784,6 +3003,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -2862,6 +3084,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -2958,6 +3183,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "responses": {
@@ -3072,6 +3300,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -3224,6 +3455,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -4047,6 +4281,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "requestBody": {
@@ -4257,6 +4494,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -4381,6 +4621,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -4571,6 +4814,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -4786,6 +5032,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -5001,6 +5250,9 @@
         "security": [
           {
             "sessionCookie": []
+          },
+          {
+            "bearerToken": []
           }
         ],
         "parameters": [
@@ -5149,6 +5401,11 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "__Host-ruvee_recovery"
+      },
+      "bearerToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Token clients (extension)."
       }
     },
     "schemas": {
@@ -5387,7 +5644,10 @@
           },
           "platform": {
             "type": "string",
-            "const": "web"
+            "enum": [
+              "web",
+              "extension"
+            ]
           }
         },
         "required": [
@@ -5473,11 +5733,72 @@
               "status"
             ],
             "additionalProperties": false
+          },
+          "tokens": {
+            "type": "object",
+            "properties": {
+              "accessToken": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{43}$"
+              },
+              "refreshToken": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9_-]{43}$"
+              },
+              "accessExpiresAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              }
+            },
+            "required": [
+              "accessToken",
+              "refreshToken",
+              "accessExpiresAt"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "accountId",
           "device"
+        ],
+        "additionalProperties": false
+      },
+      "RefreshRequest": {
+        "type": "object",
+        "properties": {
+          "refreshToken": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          }
+        },
+        "required": [
+          "refreshToken"
+        ],
+        "additionalProperties": false
+      },
+      "TokenPair": {
+        "type": "object",
+        "properties": {
+          "accessToken": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "refreshToken": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{43}$"
+          },
+          "accessExpiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "accessToken",
+          "refreshToken",
+          "accessExpiresAt"
         ],
         "additionalProperties": false
       },
@@ -6773,7 +7094,10 @@
           },
           "platform": {
             "type": "string",
-            "const": "web"
+            "enum": [
+              "web",
+              "extension"
+            ]
           },
           "mac": {
             "type": "string",

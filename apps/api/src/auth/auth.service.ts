@@ -9,6 +9,8 @@ import {
   type RegisterFinishRequest,
   type RegisterStartRequest,
   type SessionResponse,
+  type RefreshRequest,
+  type TokenPair,
 } from '@ruvee/contracts';
 import { ApiException } from '../common/api-exception.js';
 import { envelopeHeaderOk, fromBase64url, sha256 } from '../common/secrets.js';
@@ -28,11 +30,15 @@ export interface ClientContext {
   readonly userAgent: string | undefined;
 }
 
-export interface NewSession {
+export interface CookieSession {
   readonly body: SessionResponse;
   readonly token: string;
   readonly absoluteExpiresAt: Date;
 }
+
+/** A web login carries a cookie; a token login returns its tokens in the body instead. */
+export type NewSession =
+  CookieSession | { readonly body: SessionResponse; readonly token?: undefined };
 
 @Injectable()
 export class AuthService {
@@ -77,7 +83,7 @@ export class AuthService {
    * Stores, in one transaction: the OPAQUE record, the key material, the first device (active),
    * its session and the empty vault, and marks the token used. Afterwards registration is closed.
    */
-  async registerFinish(body: RegisterFinishRequest, client: ClientContext): Promise<NewSession> {
+  async registerFinish(body: RegisterFinishRequest, client: ClientContext): Promise<CookieSession> {
     this.throttle.assertIpAllowed(client.ip);
     await this.assertRegistrationOpen();
     await this.assertBootstrapToken(body.bootstrapToken, client);
@@ -240,6 +246,8 @@ export class AuthService {
       await this.events.record('login_failed', { accountId, deviceId: known.id, ...client });
       throw new ApiException('device_revoked');
     }
+    // A device id belongs to one platform; a web device cannot log in as an extension.
+    if (known && known.platform !== pending.platform) throw new ApiException('invalid_request');
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       // An unknown device becomes a pending record that can do nothing but enroll (§4 step 4).
@@ -255,18 +263,24 @@ export class AuthService {
             lastSeenAt: now,
           },
         }));
-      const session = await this.sessions.create(accountId, device.id, tx, now);
+      const cookie =
+        pending.platform === 'web'
+          ? await this.sessions.create(accountId, device.id, tx, now)
+          : undefined;
+      const tokens = cookie
+        ? undefined
+        : await this.sessions.createToken(accountId, device.id, tx, now);
       await this.events.record(
         'login_succeeded',
         { accountId, deviceId: device.id, ...client, details: { newDevice: known === null } },
         tx,
       );
-      return { device, session };
+      return { device, cookie, tokens };
     });
-    return {
-      body: { accountId, device: { id: result.device.id, status: result.device.status } },
-      ...result.session,
-    };
+    const response = { accountId, device: { id: result.device.id, status: result.device.status } };
+    if (result.cookie) return { body: response, ...result.cookie };
+    if (!result.tokens) throw new ApiException('internal_error');
+    return { body: { ...response, tokens: result.tokens } };
   }
 
   /**
@@ -338,5 +352,24 @@ export class AuthService {
       ...client,
       details: { sessionId, reason: 'logout' },
     });
+  }
+
+  /**
+   * Token clients (authentication.md §5). A reused refresh token revokes its family and is
+   * recorded; the caller sees the same `unauthenticated` as for an unknown token.
+   */
+  async refresh(body: RefreshRequest, client: ClientContext): Promise<TokenPair> {
+    this.throttle.assertIpAllowed(client.ip);
+    const result = await this.sessions.refresh(body.refreshToken);
+    if ('reused' in result) {
+      await this.events.record('refresh_reuse', {
+        accountId: result.reused.accountId,
+        deviceId: result.reused.deviceId,
+        ...client,
+        details: { sessionId: result.reused.sessionId },
+      });
+      throw new ApiException('unauthenticated');
+    }
+    return result.tokens;
   }
 }
