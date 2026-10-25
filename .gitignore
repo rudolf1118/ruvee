@@ -16,6 +16,8 @@ apps/api/src/generated/
 .env
 .env.*
 !.env.example
+# Local server secrets (OPAQUE server setup); never committed.
+/.secrets/
 
 # Design bundles are large self-contained HTML exports kept outside version control.
 /ruvee password manager.html

@@ -3,6 +3,7 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { APP_FILTER } from '@nestjs/core';
 import { LoggerModule } from 'nestjs-pino';
 import type { DestinationStream } from 'pino';
+import { AuthModule } from './auth/auth.module.js';
 import { AllExceptionsFilter } from './common/all-exceptions.filter.js';
 import { HttpConventionsMiddleware } from './common/http-conventions.middleware.js';
 import { type Env, validateEnv } from './config/env.js';
@@ -32,6 +33,7 @@ import { buildLoggerOptions, LOG_DESTINATION } from './logging/logger-options.js
         ),
     }),
     HealthModule,
+    AuthModule,
   ],
   providers: [{ provide: APP_FILTER, useClass: AllExceptionsFilter }],
 })

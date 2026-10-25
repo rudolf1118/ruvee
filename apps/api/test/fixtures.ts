@@ -11,6 +11,7 @@ import {
 import { base64urlBytes } from '@ruvee/contracts';
 import { z } from 'zod';
 import { ContractValidationPipe } from '../src/common/contract-validation.pipe.js';
+import { Access } from '../src/sessions/access.decorator.js';
 
 /** Synthetic secret. It must never appear in a response or a log line. */
 export const SENTINEL = 'SENTINEL-7f3a9c-not-a-real-secret';
@@ -24,6 +25,7 @@ export const testBodySchema = z.strictObject({
 
 /** Test-only routes. They are never registered by the application module. */
 @Controller('test-only')
+@Access('none')
 export class TestOnlyController {
   @Post('echo')
   @HttpCode(200)

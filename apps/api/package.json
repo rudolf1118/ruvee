@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:integration": "vitest run --config vitest.integration.config.ts"
+    "test:integration": "vitest run --config vitest.integration.config.ts",
+    "admin": "node dist/admin/cli.js"
   },
   "dependencies": {
     "@nestjs/common": "12.2.0",
@@ -22,6 +23,8 @@
     "@prisma/adapter-pg": "7.10.1",
     "@prisma/client": "7.10.1",
     "@ruvee/contracts": "workspace:*",
+    "@ruvee/crypto": "workspace:*",
+    "@serenity-kit/opaque": "1.1.0",
     "express": "5.3.0",
     "nestjs-pino": "5.3.1",
     "pino": "10.4.0",
@@ -46,5 +49,8 @@
     "supertest": "7.3.1",
     "typescript": "6.0.3",
     "vitest": "5.0.5"
+  },
+  "bin": {
+    "ruvee-admin": "dist/admin/cli.js"
   }
 }

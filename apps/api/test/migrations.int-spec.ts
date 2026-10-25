@@ -7,9 +7,13 @@ import {
   type TempDatabase,
 } from './support/temp-database.js';
 
-const MIGRATION = 'prisma/migrations/20261025120000_web_vault_initial';
+/** Newest first, the order in which their down scripts run. */
+const MIGRATIONS = [
+  'prisma/migrations/20261025130000_pairings_and_device_state',
+  'prisma/migrations/20261025120000_web_vault_initial',
+];
 
-describe('web-vault migration against an empty, task-created database', () => {
+describe('migrations against an empty, task-created database', () => {
   let db: TempDatabase;
 
   beforeAll(async () => {
@@ -62,7 +66,26 @@ describe('web-vault migration against an empty, task-created database', () => {
     await query(db.url, `DELETE FROM accounts`);
     expect(await query(db.url, `SELECT 1 FROM vaults`)).toEqual([]);
 
-    await runSqlFile(db.url, `${MIGRATION}/down.sql`);
+    // A pending device can be revoked (the second migration's rule), and an active one needs an
+    // enrolment method.
+    await query(db.url, `INSERT INTO accounts (id, username_normalized) VALUES ($1, 'synthetic')`, [
+      '11111111-1111-4111-8111-111111111111',
+    ]);
+    await query(
+      db.url,
+      `INSERT INTO devices (id, account_id, platform, status) VALUES ($1, $2, 'web', 'revoked')`,
+      ['44444444-4444-4444-8444-444444444444', '11111111-1111-4111-8111-111111111111'],
+    );
+    await expect(
+      query(
+        db.url,
+        `INSERT INTO devices (id, account_id, platform, status) VALUES ($1, $2, 'web', 'active')`,
+        ['55555555-5555-4555-8555-555555555555', '11111111-1111-4111-8111-111111111111'],
+      ),
+    ).rejects.toThrow(/devices_active_enrolled/);
+    await query(db.url, `DELETE FROM accounts`);
+
+    for (const migration of MIGRATIONS) await runSqlFile(db.url, `${migration}/down.sql`);
     const left = await query<{ table_name: string }>(
       db.url,
       `SELECT table_name FROM information_schema.tables

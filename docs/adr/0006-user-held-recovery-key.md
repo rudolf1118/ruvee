@@ -1,6 +1,6 @@
 # ADR-0006: User-held Recovery Key, no administrator recovery
 
-- Status: Proposed
+- Status: Accepted for development (owner, 2026-10-25). Not independently reviewed; not approved for real data.
 - Date: 2026-10-22
 - Specification: [account-recovery.md](../security/account-recovery.md)
 

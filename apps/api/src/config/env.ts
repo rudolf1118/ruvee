@@ -2,6 +2,18 @@ import { z } from 'zod';
 
 const emptyToUndefined = (value: unknown) => (value === '' ? undefined : value);
 
+function isOrigin(value: string): boolean {
+  try {
+    return new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
+const origin = z.url({ protocol: /^https?$/ }).refine(isOrigin, {
+  error: 'Must be an origin: scheme, host and optional port, with no path or trailing slash',
+});
+
 export const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
   API_HOST: z.string().min(1).default('127.0.0.1'),
@@ -12,6 +24,17 @@ export const envSchema = z.object({
   }),
   LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   READINESS_DB_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(2000),
+  /** Path of the OPAQUE server setup file (a Docker secret in deployment). Never in the database. */
+  OPAQUE_SERVER_SETUP_FILE: z.string().min(1),
+  /** The single origin that serves the web app and the API; state-changing requests must match. */
+  PUBLIC_ORIGIN: origin,
+  /**
+   * `false` only for loopback HTTP development: the cookie loses `Secure` and the `__Host-`
+   * prefix. Refused when NODE_ENV is production.
+   */
+  SESSION_COOKIE_SECURE: z.enum(['true', 'false']).default('true'),
+  /** Address of the reverse proxy whose X-Forwarded-For is trusted for the client IP. */
+  TRUSTED_PROXY_ADDRESS: z.ipv4().or(z.ipv6()).optional(),
 });
 
 export type Env = z.infer<typeof envSchema>;
@@ -31,7 +54,12 @@ export function validateEnv(raw: Record<string, unknown>): Env {
   const input = Object.fromEntries(
     Object.keys(envSchema.shape).map((key) => [key, emptyToUndefined(raw[key])]),
   );
-  const result = envSchema.safeParse(input);
+  const result = envSchema
+    .refine((env) => !(env.NODE_ENV === 'production' && env.SESSION_COOKIE_SECURE === 'false'), {
+      error: 'Must be true in production',
+      path: ['SESSION_COOKIE_SECURE'],
+    })
+    .safeParse(input);
   if (!result.success) {
     const problems = result.error.issues.map(
       (issue) => `${issue.path.join('.') || '(root)'}: ${issue.message}`,

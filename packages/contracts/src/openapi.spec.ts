@@ -24,7 +24,22 @@ describe('OpenAPI document', () => {
   });
 
   it('documents only the implemented endpoints', () => {
-    expect(Object.keys(document.paths as object)).toEqual(['/health/live', '/health/ready']);
+    expect(Object.keys(document.paths as object).sort()).toEqual([
+      '/api/v1/account',
+      '/api/v1/account/keys',
+      '/api/v1/auth/login/finish',
+      '/api/v1/auth/login/start',
+      '/api/v1/auth/logout',
+      '/api/v1/auth/register/finish',
+      '/api/v1/auth/register/start',
+      '/api/v1/devices',
+      '/api/v1/devices/current',
+      '/api/v1/sync/changes',
+      '/api/v1/sync/commits',
+      '/api/v1/vault',
+      '/health/live',
+      '/health/ready',
+    ]);
   });
 
   it('resolves every internal reference', () => {
@@ -38,8 +53,17 @@ describe('OpenAPI document', () => {
     }
   });
 
-  it('declares no security scheme, because no endpoint is protected', () => {
-    expect(document).not.toHaveProperty('security');
-    expect(document.components).not.toHaveProperty('securitySchemes');
+  it('marks every operation with its access level, and protected ones with the session cookie', () => {
+    for (const [path, operations] of Object.entries(document.paths as Record<string, object>)) {
+      for (const [method, op] of Object.entries(
+        operations as Record<string, Record<string, unknown>>,
+      )) {
+        if (path.startsWith('/health/')) continue;
+        const access = op['x-ruvee-access'];
+        expect(['none', 'session', 'active', 'step-up'], `${method} ${path}`).toContain(access);
+        if (access === 'none') expect(op.security, `${method} ${path}`).toBeUndefined();
+        else expect(op.security, `${method} ${path}`).toEqual([{ sessionCookie: [] }]);
+      }
+    }
   });
 });

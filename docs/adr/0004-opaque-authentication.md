@@ -1,6 +1,6 @@
 # ADR-0004: OPAQUE authentication, separate from vault keys
 
-- Status: Proposed
+- Status: Accepted for development (owner, 2026-10-25). Not independently reviewed; not approved for real data.
 - Date: 2026-10-22
 - Specification: [authentication.md](../security/authentication.md)
 

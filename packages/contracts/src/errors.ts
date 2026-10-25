@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { requestIdSchema } from './http.js';
+import { revisionConflictDetailsSchema, seqConflictDetailsSchema } from './sync.js';
 
 /**
  * The closed list of error codes the API currently returns, with their status
@@ -9,12 +10,30 @@ import { requestIdSchema } from './http.js';
 export const API_ERRORS = {
   invalid_request: { status: 400, message: 'The request does not match the expected format.' },
   malformed_json: { status: 400, message: 'The request body is not valid JSON.' },
+  unauthenticated: { status: 401, message: 'Authentication is required.' },
+  login_failed: { status: 401, message: 'Login failed.' },
+  bootstrap_failed: { status: 401, message: 'The setup token is not valid.' },
+  session_expired: { status: 401, message: 'The session has expired.' },
+  device_revoked: { status: 401, message: 'This device has been revoked.' },
+  forbidden: { status: 403, message: 'This request is not allowed.' },
+  step_up_required: { status: 403, message: 'Confirm your password to continue.' },
+  device_not_enrolled: { status: 403, message: 'This device is not enrolled yet.' },
+  csrf_rejected: { status: 403, message: 'The request origin is not allowed.' },
   not_found: { status: 404, message: 'The requested resource does not exist.' },
+  seq_conflict: { status: 409, message: 'The vault has changed; pull and try again.' },
+  revision_conflict: { status: 409, message: 'An item has changed on the server.' },
+  idempotency_mismatch: {
+    status: 409,
+    message: 'This commit id was already used for a different request.',
+  },
+  row_version_conflict: { status: 409, message: 'The account keys have changed; refetch them.' },
+  pairing_state: { status: 409, message: 'The pairing is not in the expected state.' },
   payload_too_large: { status: 413, message: 'The request body is too large.' },
   unsupported_media_type: {
     status: 415,
     message: 'Request bodies must be application/json encoded as UTF-8.',
   },
+  rate_limited: { status: 429, message: 'Too many attempts; try again later.' },
   internal_error: { status: 500, message: 'An internal error occurred.' },
 } as const;
 
@@ -61,24 +80,40 @@ function errorBody<C extends ApiErrorCode>(code: C) {
   });
 }
 
+const errorBodies = Object.fromEntries(
+  (Object.keys(API_ERRORS) as ApiErrorCode[]).map((code) => [code, errorBody(code)]),
+) as { [C in ApiErrorCode]: ReturnType<typeof errorBody<C>> };
+
+/** Codes whose body carries `details`, with the schema of those details. */
+export const ERROR_DETAILS = {
+  invalid_request: validationDetailsSchema,
+  seq_conflict: seqConflictDetailsSchema,
+  revision_conflict: revisionConflictDetailsSchema,
+} as const;
+
+export type ErrorDetails = {
+  [C in keyof typeof ERROR_DETAILS]: z.infer<(typeof ERROR_DETAILS)[C]>;
+};
+
 export const errorResponseSchemas = {
-  invalid_request: errorBody('invalid_request').extend({
+  ...errorBodies,
+  invalid_request: errorBodies.invalid_request.extend({
     details: validationDetailsSchema.optional(),
   }),
-  malformed_json: errorBody('malformed_json'),
-  not_found: errorBody('not_found'),
-  payload_too_large: errorBody('payload_too_large'),
-  unsupported_media_type: errorBody('unsupported_media_type'),
-  internal_error: errorBody('internal_error'),
+  seq_conflict: errorBodies.seq_conflict.extend({ details: seqConflictDetailsSchema }),
+  revision_conflict: errorBodies.revision_conflict.extend({
+    details: revisionConflictDetailsSchema,
+  }),
 } as const satisfies Record<ApiErrorCode, z.ZodType>;
 
-export const errorResponseSchema = z.discriminatedUnion('error', [
-  errorResponseSchemas.invalid_request,
-  errorResponseSchemas.malformed_json,
-  errorResponseSchemas.not_found,
-  errorResponseSchemas.payload_too_large,
-  errorResponseSchemas.unsupported_media_type,
-  errorResponseSchemas.internal_error,
-]);
+const errorSchemaList = Object.values(errorResponseSchemas);
+
+export const errorResponseSchema = z.discriminatedUnion(
+  'error',
+  errorSchemaList as unknown as [
+    (typeof errorSchemaList)[number],
+    ...(typeof errorSchemaList)[number][],
+  ],
+);
 
 export type ErrorResponse = z.infer<typeof errorResponseSchema>;

@@ -12,7 +12,6 @@ import {
   type ErrorResponse,
   REQUEST_ID_HEADER,
   REQUEST_ID_PATTERN,
-  type ValidationDetails,
 } from '@ruvee/contracts';
 import type { Request, Response } from 'express';
 import { ApiException } from './api-exception.js';
@@ -49,11 +48,11 @@ export function describeError(error: unknown): { errorKind: string; frames: stri
 export function errorResponse(
   code: ApiErrorCode,
   requestId: string,
-  details?: ValidationDetails,
+  details?: unknown,
 ): ErrorResponse {
   const { status, message } = API_ERRORS[code];
   const body = { statusCode: status, error: code, message, requestId };
-  return details && code === 'invalid_request' ? { ...body, details } : body;
+  return (details === undefined ? body : { ...body, details }) as ErrorResponse;
 }
 
 /**
@@ -73,6 +72,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
     const { code, details } = this.classify(exception);
 
     if (res.headersSent) return;
+    const retryAfter =
+      exception instanceof ApiException ? (exception as ApiException).retryAfterSeconds : undefined;
+    if (retryAfter !== undefined)
+      res.setHeader('Retry-After', String(Math.max(1, Math.ceil(retryAfter))));
     let requestId = req.id;
     if (typeof requestId !== 'string' || !REQUEST_ID_PATTERN.test(requestId)) {
       requestId = randomUUID();
@@ -81,14 +84,13 @@ export class AllExceptionsFilter implements ExceptionFilter {
     res.status(API_ERRORS[code].status).json(errorResponse(code, requestId, details));
   }
 
-  private classify(exception: unknown): { code: ApiErrorCode; details?: ValidationDetails } {
+  private classify(exception: unknown): { code: ApiErrorCode; details?: unknown } {
     if (exception instanceof ApiException) {
-      if (exception.code === 'internal_error') {
+      const { code, details } = exception as ApiException;
+      if (code === 'internal_error') {
         this.logger.error(describeError(exception), 'Internal error');
       }
-      return exception.details
-        ? { code: exception.code, details: exception.details }
-        : { code: exception.code };
+      return details === undefined ? { code } : { code, details: details };
     }
     if (exception instanceof HttpException) {
       const status = exception.getStatus();

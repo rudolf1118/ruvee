@@ -1,6 +1,6 @@
 # ADR-0005: Device enrollment by MAC-authenticated pairing
 
-- Status: Proposed
+- Status: Accepted for development (owner, 2026-10-25). Not independently reviewed; not approved for real data.
 - Date: 2026-10-22
 - Specification: [device-enrollment.md §3](../security/device-enrollment.md#3-adding-a-device-by-pairing)
 

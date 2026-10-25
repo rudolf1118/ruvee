@@ -90,6 +90,14 @@ enum SecurityEventType {
   @@map("security_event_type")
 }
 
+enum PairingState {
+  open
+  requested
+  approved
+
+  @@map("pairing_state")
+}
+
 enum CommitKind {
   normal
   reseed
@@ -109,6 +117,7 @@ model Account {
   sessions         Session[]
   securityEvents   SecurityEvent[]
   vaults           Vault[]
+  pairings         Pairing[]
 
   @@map("accounts")
 }
@@ -157,12 +166,14 @@ model Device {
   lastSeenAt         DateTime?      @map("last_seen_at") @db.Timestamptz(3)
   revokedAt          DateTime?      @map("revoked_at") @db.Timestamptz(3)
 
-  account        Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
-  approvedBy     Device?         @relation("DeviceApproval", fields: [approvedByDeviceId], references: [id], onDelete: SetNull)
-  approved       Device[]        @relation("DeviceApproval")
-  sessions       Session[]
-  securityEvents SecurityEvent[]
-  commits        VaultCommit[]
+  account           Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  approvedBy        Device?         @relation("DeviceApproval", fields: [approvedByDeviceId], references: [id], onDelete: SetNull)
+  approved          Device[]        @relation("DeviceApproval")
+  sessions          Session[]
+  securityEvents    SecurityEvent[]
+  commits           VaultCommit[]
+  initiatedPairings Pairing[]       @relation("PairingInitiator")
+  requestedPairings Pairing[]       @relation("PairingRequester")
 
   @@index([accountId])
   @@map("devices")
@@ -227,6 +238,32 @@ model SecurityEvent {
 
   @@index([accountId, createdAt])
   @@map("security_events")
+}
+
+/**
+ * One enrollment attempt (device-enrollment.md §3); deleted on completion, cancel or expiry.
+ */
+model Pairing {
+  pairingId          Bytes           @id @map("pairing_id")
+  accountId          String          @map("account_id") @db.Uuid
+  initiatorDeviceId  String          @map("initiator_device_id") @db.Uuid
+  state              PairingState
+  requesterDeviceId  String?         @map("requester_device_id") @db.Uuid
+  requestPlatform    DevicePlatform? @map("request_platform")
+  requestEpk         Bytes?          @map("request_epk")
+  requestMac         Bytes?          @map("request_mac")
+  requestedAt        DateTime?       @map("requested_at") @db.Timestamptz(3)
+  responseCiphertext Bytes?          @map("response_ciphertext")
+  responseMac        Bytes?          @map("response_mac")
+  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt          DateTime        @map("expires_at") @db.Timestamptz(3)
+
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  initiator Device  @relation("PairingInitiator", fields: [initiatorDeviceId], references: [id], onDelete: Cascade)
+  requester Device? @relation("PairingRequester", fields: [requesterDeviceId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@map("pairings")
 }
 
 model Vault {

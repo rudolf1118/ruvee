@@ -31,7 +31,9 @@ export interface TempDatabase {
 
 export async function createTempDatabase(): Promise<TempDatabase> {
   const name = `${PREFIX}${randomBytes(6).toString('hex')}`;
-  const admin = new pg.Client({ connectionString: adminUrl() });
+  // Captured now: a harness later points DATABASE_URL at the temporary database itself.
+  const serverUrl = adminUrl();
+  const admin = new pg.Client({ connectionString: serverUrl });
   await admin.connect();
   try {
     await admin.query(`CREATE DATABASE "${name}"`);
@@ -40,11 +42,11 @@ export async function createTempDatabase(): Promise<TempDatabase> {
   }
   return {
     name,
-    url: withDatabase(adminUrl(), name),
+    url: withDatabase(serverUrl, name),
     async drop() {
       if (!name.startsWith(PREFIX))
         throw new Error('refusing to drop a database the test did not create');
-      const client = new pg.Client({ connectionString: adminUrl() });
+      const client = new pg.Client({ connectionString: serverUrl });
       await client.connect();
       try {
         await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);

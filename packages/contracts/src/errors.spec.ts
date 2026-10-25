@@ -6,6 +6,8 @@ import {
 } from './errors.js';
 
 const codes = Object.keys(API_ERRORS) as ApiErrorCode[];
+/** Codes whose body always carries details; their fixed body alone is incomplete. */
+const withRequiredDetails = new Set<ApiErrorCode>(['seq_conflict', 'revision_conflict']);
 
 function body(code: ApiErrorCode) {
   return {
@@ -17,8 +19,36 @@ function body(code: ApiErrorCode) {
 }
 
 describe('error responses', () => {
-  it.each(codes)('accepts the fixed body for %s', (code) => {
-    expect(errorResponseSchema.safeParse(body(code)).success).toBe(true);
+  it.each(codes.filter((c) => !withRequiredDetails.has(c)))(
+    'accepts the fixed body for %s',
+    (code) => {
+      expect(errorResponseSchema.safeParse(body(code)).success).toBe(true);
+    },
+  );
+
+  it('requires the documented details on conflict codes', () => {
+    expect(errorResponseSchema.safeParse(body('seq_conflict')).success).toBe(false);
+    expect(
+      errorResponseSchema.safeParse({ ...body('seq_conflict'), details: { currentSeq: 4 } })
+        .success,
+    ).toBe(true);
+    const conflict = {
+      itemId: '7c0e5a3b-2f41-4d6e-8a9b-0c1d2e3f4a5b',
+      currentRevision: 3,
+      tombstone: false,
+    };
+    expect(
+      errorResponseSchema.safeParse({
+        ...body('revision_conflict'),
+        details: { conflicts: [conflict] },
+      }).success,
+    ).toBe(true);
+    expect(
+      errorResponseSchema.safeParse({
+        ...body('revision_conflict'),
+        details: { conflicts: [{ ...conflict, extra: 1 }] },
+      }).success,
+    ).toBe(false);
   });
 
   it('ties each code to its status and message', () => {
@@ -46,7 +76,7 @@ describe('error responses', () => {
     ).toBe(false);
   });
 
-  it('allows details only on invalid_request, with bounded issues', () => {
+  it('allows validation details only on invalid_request, with bounded issues', () => {
     const issue = { path: ['label'], code: 'too_big' };
     expect(
       errorResponseSchema.safeParse({ ...body('invalid_request'), details: { issues: [issue] } })

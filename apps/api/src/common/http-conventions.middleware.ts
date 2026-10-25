@@ -1,18 +1,24 @@
 import { Injectable, type NestMiddleware } from '@nestjs/common';
-import { JSON_MEDIA_TYPE, MAX_REQUEST_BODY_BYTES } from '@ruvee/contracts';
+import { JSON_MEDIA_TYPE, MAX_COMMIT_BODY_BYTES, MAX_REQUEST_BODY_BYTES } from '@ruvee/contracts';
 import express, { type NextFunction, type Request, type Response } from 'express';
 import { ApiException } from './api-exception.js';
 
 const METHODS_WITH_BODY = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
-const parseJson = express.json({
-  limit: MAX_REQUEST_BODY_BYTES,
-  // Compressed bodies are refused, so the limit is the number of bytes actually received.
-  inflate: false,
-  strict: true,
-  // The media type was already checked, more strictly than body-parser would.
-  type: () => true,
-});
+const jsonParser = (limit: number) =>
+  express.json({
+    limit,
+    // Compressed bodies are refused, so the limit is the number of bytes actually received.
+    inflate: false,
+    strict: true,
+    // The media type was already checked, more strictly than body-parser would.
+    type: () => true,
+  });
+
+const parseJson = jsonParser(MAX_REQUEST_BODY_BYTES);
+/** Sync commits carry up to 2 MiB of records (sync-protocol §4.2); every other route keeps 64 KiB. */
+const parseCommitJson = jsonParser(MAX_COMMIT_BODY_BYTES);
+export const COMMIT_PATH = '/api/v1/sync/commits';
 
 export function hasBody(req: Request): boolean {
   const length = req.headers['content-length'];
@@ -67,7 +73,8 @@ export class HttpConventionsMiddleware implements NestMiddleware<Request, Respon
       next(new ApiException('unsupported_media_type'));
       return;
     }
-    parseJson(req, res, (error?: unknown) => {
+    const parse = req.method === 'POST' && req.path === COMMIT_PATH ? parseCommitJson : parseJson;
+    parse(req, res, (error?: unknown) => {
       if (error === undefined) next();
       else next(fromBodyParserError(error));
     });

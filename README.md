@@ -119,14 +119,18 @@ PostgreSQL as a service container.
 Validated at startup by `apps/api/src/config/env.ts`. Invalid values stop the process with a
 message naming the variable but never printing its value.
 
-| Variable                  | Default     | Notes                                        |
-| ------------------------- | ----------- | -------------------------------------------- |
-| `DATABASE_URL`            | (required)  | `postgres://` or `postgresql://` URL         |
-| `NODE_ENV`                | development | `development`, `test` or `production`        |
-| `API_HOST`                | 127.0.0.1   | Bind address                                 |
-| `API_PORT`                | 4000        | 1–65535                                      |
-| `LOG_LEVEL`               | info        | pino level, or `silent`                      |
-| `READINESS_DB_TIMEOUT_MS` | 2000        | Upper bound for the readiness database check |
+| Variable                   | Default     | Notes                                                                                                 |
+| -------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`             | (required)  | `postgres://` or `postgresql://` URL                                                                  |
+| `NODE_ENV`                 | development | `development`, `test` or `production`                                                                 |
+| `API_HOST`                 | 127.0.0.1   | Bind address                                                                                          |
+| `API_PORT`                 | 4000        | 1–65535                                                                                               |
+| `LOG_LEVEL`                | info        | pino level, or `silent`                                                                               |
+| `READINESS_DB_TIMEOUT_MS`  | 2000        | Upper bound for the readiness database check                                                          |
+| `OPAQUE_SERVER_SETUP_FILE` | (required)  | OPAQUE server setup, created by `ruvee-admin opaque-setup`; mode 0600 in production                   |
+| `PUBLIC_ORIGIN`            | (required)  | Origin of the web app and API; state-changing requests must send it as `Origin`                       |
+| `SESSION_COOKIE_SECURE`    | true        | `false` only for loopback HTTP development (cookie `ruvee_session` instead of `__Host-ruvee_session`) |
+| `TRUSTED_PROXY_ADDRESS`    | (unset)     | Reverse proxy whose `X-Forwarded-For` is trusted for the client IP                                    |
 
 The API reads `.env` from `apps/api` or the repository root.
 
