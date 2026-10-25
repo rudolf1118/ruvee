@@ -4,6 +4,8 @@ import { next } from '@ruvee/eslint-config/next';
 export default [
   { ignores: ['dist/**', 'dist-test/**', 'playwright-report/**', 'test-results/**'] },
   ...next({ tsconfigRootDir: import.meta.dirname }),
+  // There are no Next.js pages here.
+  { rules: { '@next/next/no-html-link-for-pages': 'off' } },
   {
     files: ['src/**/*.{ts,tsx}'],
     rules: {

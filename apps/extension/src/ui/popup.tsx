@@ -239,6 +239,8 @@ function Pair({ onDone }: { onDone: () => void }) {
 
 function Unlock({ onDone }: { onDone: () => void }) {
   const [password, setPassword] = useState('');
+  // Set after `previous_password_required`: the password and SK both changed elsewhere.
+  const [previous, setPrevious] = useState<string | null>(null);
   const field = useRef<HTMLInputElement>(null);
   useEffect(() => {
     // The locked popup has one task, so its field takes focus, as on the web lock screen.
@@ -248,8 +250,18 @@ function Unlock({ onDone }: { onDone: () => void }) {
   return (
     <form
       onSubmit={run(async () => {
-        await call({ kind: 'vault', method: 'unlock', params: { password } });
+        try {
+          await call({
+            kind: 'vault',
+            method: 'unlock',
+            params: { password, ...(previous === null ? {} : { previousPassword: previous }) },
+          });
+        } catch (e) {
+          if (e instanceof CallError && e.code === 'previous_password_required') setPrevious('');
+          throw e;
+        }
         setPassword('');
+        setPrevious(null);
         onDone();
       })}
     >
@@ -266,6 +278,20 @@ function Unlock({ onDone }: { onDone: () => void }) {
           }}
         />
       </label>
+      {previous === null ? null : (
+        <label>
+          Previous master password
+          <input
+            type="password"
+            value={previous}
+            autoComplete="off"
+            onChange={(e) => {
+              setPrevious(e.target.value);
+            }}
+          />
+          <span className="muted">The one this browser used before the change. Needed once.</span>
+        </label>
+      )}
       {error ? (
         <p role="alert" className="error">
           {error}

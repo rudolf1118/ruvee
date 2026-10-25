@@ -45,7 +45,7 @@ export function messageFor(e: unknown): string {
     case 'password_required':
       return 'Enter your master password to finish adding this browser.';
     case 'previous_password_required':
-      return 'Your master password and Secret Key were changed elsewhere. Unlock once in the web app to move this browser over.';
+      return 'Your master password and Secret Key were both changed on another device. Also enter the master password this browser used before.';
     case 'locked':
       return 'The vault is locked.';
     default:

@@ -132,8 +132,7 @@ D-07, D-05, D-11 to D-15, D-18.
 
 - **Extension gaps:** no account setup or recovery (web only), no item editing, copy or search
   beyond the page's matches, no fill into same-origin frames, no Firefox or Safari, no store
-  packaging. A browser whose password and `SK` both changed elsewhere is told to unlock in the
-  web app; the popup has no previous-password field yet. The auto-lock alarm and a page
+  packaging. The auto-lock alarm and a page
   navigating during a fill are covered by unit checks, not by the browser test.
 - **Not built:** the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
   generator, cards and identities, import/export, SSE push, re-seeding, key rotation, the browser
@@ -151,8 +150,7 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-The extension's remaining Phase 5 work, in order: the previous-password field in the popup,
-copy-to-clipboard through an offscreen document, a browser test of the auto-lock alarm, and an
+The extension's remaining Phase 5 work, in order: copy-to-clipboard through an offscreen document, a browser test of the auto-lock alarm, and an
 extension-hosted vault page (ADR-0009, the higher-assurance client). Then backup and restore
 (Phase 7 export design first) and the Phase 2 independent review (D-19), which still gates real
 data. Mobile (Phase 6) waits on D-05.
