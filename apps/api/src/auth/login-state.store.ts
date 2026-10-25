@@ -13,6 +13,8 @@ export interface PendingLogin {
   readonly accountId: string | null;
   readonly deviceId: string | undefined;
   readonly platform: 'web';
+  /** Set for `reauth`: the state can only finish on this session. */
+  readonly sessionId?: string;
   readonly expiresAt: number;
 }
 

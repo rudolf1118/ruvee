@@ -446,6 +446,65 @@ describe('vault engine', () => {
     expect((await afterUpdate.engine.sync()).recoveryUsedAtMs).toBeUndefined();
   });
 
+  it('revokes another device after step-up; the revoked device wipes itself', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await secondDevice(server, a);
+    const bId = (await b.engine.phase()) as { deviceId: string };
+    const listed = await a.engine.devices();
+    expect(listed.map((d) => d.current)).toEqual([true, false]);
+    const self = listed[0]?.id ?? '';
+    expect(
+      await code(a.engine.revokeDevice({ deviceId: self, reason: 'retired', password: PASSWORD })),
+    ).toBe('cannot_revoke_current');
+    expect(
+      await code(
+        a.engine.revokeDevice({
+          deviceId: bId.deviceId,
+          reason: 'lost',
+          password: 'synthetic wrong',
+        }),
+      ),
+    ).toBe('wrong_password');
+    expect(server.devices.get(bId.deviceId)).toBe('active');
+    await a.engine.revokeDevice({ deviceId: bId.deviceId, reason: 'lost', password: PASSWORD });
+    expect(server.revokeReasons).toEqual(['lost']);
+    expect(await code(b.engine.sync())).toBe('device_revoked');
+    expect(b.events).toContainEqual({ event: 'ended', reason: 'device_revoked' });
+    expect(await b.store.device()).toBeUndefined();
+  });
+
+  it('changes the password: the same AK under a new wrap, here and on the other device', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await secondDevice(server, a);
+    await a.engine.save({ draft: login('Kept across the change') });
+    await a.engine.sync();
+    const NEW = 'synthetic changed passphrase 77b2';
+    expect(
+      await code(a.engine.changePassword({ currentPassword: PASSWORD, newPassword: 'short' })),
+    ).toBe('invalid_password');
+    expect(
+      await code(
+        a.engine.changePassword({ currentPassword: 'synthetic wrong guess', newPassword: NEW }),
+      ),
+    ).toBe('wrong_password');
+    await a.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW });
+    // This session continues; the local wrap now opens with the new password only.
+    expect((await a.engine.sync()).state).toBe('synced');
+    expect(
+      await code((await device(server, a.factory)).engine.unlock({ password: PASSWORD })),
+    ).toBe('wrong_password');
+    const reopened = await (await device(server, a.factory)).engine.unlock({ password: NEW });
+    expect(reopened.passwordUpdated).toBeUndefined();
+    expect(reopened.items.map((i) => i.title)).toEqual(['Kept across the change']);
+    // Device B's session ended; online with the new password it moves to the new wrap.
+    expect((await b.engine.sync()).state).toBe('session_expired');
+    const bAgain = await (await device(server, b.factory, b.api)).engine.unlock({ password: NEW });
+    expect(bAgain.passwordUpdated).toBe(true);
+    expect(bAgain.items.map((i) => i.title)).toEqual(['Kept across the change']);
+  });
+
   it('ends the unlocked session when the server session expires', async () => {
     const server = new FakeServer();
     const { a } = await createAccount(server);

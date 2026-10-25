@@ -187,3 +187,41 @@ export const SESSION_COOKIE_INSECURE_DEV = 'ruvee_session';
 /** CSRF header required on every state-changing cookie request (authentication.md §6). */
 export const CSRF_HEADER = 'x-ruvee-request';
 export const CSRF_HEADER_VALUE = '1';
+
+/** `POST /auth/reauth/start`: OPAQUE for the session's own account (step-up, INV-14). */
+export const reauthStartRequestSchema = z.strictObject({
+  startLoginRequest: base64urlBytes({ length: OPAQUE_BYTES.startLoginRequest }),
+});
+export type ReauthStartRequest = z.infer<typeof reauthStartRequestSchema>;
+
+export const reauthFinishResponseSchema = z.strictObject({ authAt: timestamp });
+export type ReauthFinishResponse = z.infer<typeof reauthFinishResponseSchema>;
+
+export const sessionInfoSchema = z.strictObject({
+  id: uuidSchema,
+  deviceId: uuidSchema,
+  kind: z.enum(['cookie', 'token', 'recovery']),
+  current: z.boolean(),
+  createdAt: timestamp,
+  lastUsedAt: timestamp,
+  idleExpiresAt: timestamp,
+  absoluteExpiresAt: timestamp,
+});
+export const sessionsResponseSchema = z.strictObject({
+  sessions: z.array(sessionInfoSchema).max(1000),
+});
+export type SessionsResponse = z.infer<typeof sessionsResponseSchema>;
+
+/** device-enrollment §6 step 3: retired, or lost or possibly compromised. */
+export const revokeDeviceRequestSchema = z.strictObject({ reason: z.enum(['retired', 'lost']) });
+export type RevokeDeviceRequest = z.infer<typeof revokeDeviceRequestSchema>;
+
+/** authentication.md §9: the new OPAQUE record and password wrap replace the old ones at once. */
+export const passwordChangeFinishRequestSchema = z.strictObject({
+  registrationRecord: base64urlBytes({ length: OPAQUE_BYTES.registrationRecord }),
+  kdfProfile: kdfProfileSchema,
+  saltPw: base64urlBytes({ length: 16 }),
+  wrappedAkPassword: base64urlBytes({ length: 93 }),
+  expectedRowVersion: z.int().min(1),
+});
+export type PasswordChangeFinishRequest = z.infer<typeof passwordChangeFinishRequestSchema>;

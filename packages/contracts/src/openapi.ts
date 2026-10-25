@@ -15,6 +15,11 @@ import {
   loginFinishRequestSchema,
   loginStartRequestSchema,
   loginStartResponseSchema,
+  passwordChangeFinishRequestSchema,
+  reauthFinishResponseSchema,
+  reauthStartRequestSchema,
+  revokeDeviceRequestSchema,
+  sessionsResponseSchema,
   registerFinishRequestSchema,
   registerStartRequestSchema,
   registerStartResponseSchema,
@@ -109,6 +114,14 @@ Conventions that apply to every request:
   Unknown paths return \`404 not_found\`.`;
 
 type Access = 'none' | 'session' | 'active' | 'step-up' | 'recovery';
+
+const idParameter = (name: string, description: string) => ({
+  name,
+  in: 'path',
+  required: true,
+  description,
+  schema: { type: 'string', format: 'uuid' },
+});
 
 const PAIRING_ID_PARAMETER = {
   name: 'pairingId',
@@ -308,6 +321,92 @@ export function buildOpenApiDocument(): JsonSchema {
           summary: 'Revokes the current session and clears the cookie.',
           access: 'session',
           success: { status: '204', description: 'Logged out.' },
+        }),
+      },
+      '/api/v1/auth/reauth/start': {
+        post: operation({
+          operationId: 'reauthStart',
+          summary:
+            'Step-up: OPAQUE again for the session account; the state is bound to this session.',
+          access: 'active',
+          request: 'ReauthStartRequest',
+          success: {
+            status: '200',
+            description: 'Login id and OPAQUE response.',
+            schema: 'LoginStartResponse',
+          },
+          errors: ['rate_limited'],
+        }),
+      },
+      '/api/v1/auth/reauth/finish': {
+        post: operation({
+          operationId: 'reauthFinish',
+          summary: 'Step-up: consumes the login id and refreshes auth_at for 5 minutes of step-up.',
+          access: 'active',
+          request: 'LoginFinishRequest',
+          success: {
+            status: '200',
+            description: 'The new auth_at.',
+            schema: 'ReauthFinishResponse',
+          },
+          errors: ['login_failed', 'rate_limited'],
+        }),
+      },
+      '/api/v1/sessions': {
+        get: operation({
+          operationId: 'listSessions',
+          summary: 'Live sessions of the account; the caller is marked current.',
+          access: 'active',
+          success: {
+            status: '200',
+            description: 'Sessions, most recently used first.',
+            schema: 'SessionsResponse',
+          },
+        }),
+      },
+      '/api/v1/sessions/{sessionId}': {
+        delete: operation({
+          operationId: 'endSession',
+          summary: 'Ends one session of the account.',
+          access: 'active',
+          parameters: [idParameter('sessionId', 'The session to end.')],
+          success: { status: '204', description: 'Ended.' },
+          errors: ['invalid_request', 'not_found'],
+        }),
+      },
+      '/api/v1/devices/{deviceId}/revoke': {
+        post: operation({
+          operationId: 'revokeDevice',
+          summary: 'Revokes another device and every session of it; cancels its pairings. Step-up.',
+          access: 'step-up',
+          parameters: [idParameter('deviceId', 'The device to revoke; never the caller.')],
+          request: 'RevokeDeviceRequest',
+          success: { status: '204', description: 'Revoked.' },
+          errors: ['not_found', 'forbidden'],
+        }),
+      },
+      '/api/v1/account/password/start': {
+        post: operation({
+          operationId: 'passwordChangeStart',
+          summary: 'OPAQUE registration step 1 for a new master password. Step-up.',
+          access: 'step-up',
+          request: 'RecoveryPasswordStartRequest',
+          success: {
+            status: '200',
+            description: 'OPAQUE registration response.',
+            schema: 'RegisterStartResponse',
+          },
+        }),
+      },
+      '/api/v1/account/password/finish': {
+        post: operation({
+          operationId: 'passwordChangeFinish',
+          summary:
+            'Replaces the OPAQUE record and password wrap; ends every other session. Step-up.',
+          access: 'step-up',
+          request: 'PasswordChangeFinishRequest',
+          success: { status: '204', description: 'Changed.' },
+          errors: ['row_version_conflict'],
         }),
       },
       '/api/v1/account': {
@@ -542,6 +641,11 @@ export function buildOpenApiDocument(): JsonSchema {
         CommitRequest: jsonSchema(commitRequestSchema),
         CommitResponse: jsonSchema(commitResponseSchema),
         CreatePairingRequest: jsonSchema(createPairingRequestSchema),
+        ReauthStartRequest: jsonSchema(reauthStartRequestSchema),
+        ReauthFinishResponse: jsonSchema(reauthFinishResponseSchema),
+        SessionsResponse: jsonSchema(sessionsResponseSchema),
+        RevokeDeviceRequest: jsonSchema(revokeDeviceRequestSchema),
+        PasswordChangeFinishRequest: jsonSchema(passwordChangeFinishRequestSchema),
         RecoveryStartRequest: jsonSchema(recoveryStartRequestSchema),
         RecoveryStartResponse: jsonSchema(recoveryStartResponseSchema),
         RecoveryMaterialResponse: jsonSchema(recoveryMaterialResponseSchema),

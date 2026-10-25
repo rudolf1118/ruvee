@@ -5,6 +5,7 @@ import {
   type LoginFinishRequest,
   type LoginStartRequest,
   type LoginStartResponse,
+  type ReauthStartRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
   type SessionResponse,
@@ -14,7 +15,7 @@ import { envelopeHeaderOk, fromBase64url, sha256 } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
-import { SessionService } from '../sessions/session.service.js';
+import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { LoginStateStore } from './login-state.store.js';
 import { OpaqueServerService } from './opaque-server.service.js';
 import { ThrottleService } from './throttle.service.js';
@@ -221,7 +222,8 @@ export class AuthService {
     this.throttle.assertIpAllowed(client.ip);
     // Consumed before anything else, so a replayed loginId always fails (INV-23).
     const pending = this.loginStates.consume(body.loginId);
-    if (!pending) throw new ApiException('login_failed');
+    // A step-up state is bound to its session and can never create a new one.
+    if (!pending || pending.sessionId !== undefined) throw new ApiException('login_failed');
     const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
     if (!verified || pending.accountId === null) {
       await this.throttle.recordLoginFailure(pending.username);
@@ -265,6 +267,67 @@ export class AuthService {
       body: { accountId, device: { id: result.device.id, status: result.device.status } },
       ...result.session,
     };
+  }
+
+  /**
+   * Step-up (authentication.md §5, INV-14): OPAQUE again for the session's own account. The
+   * login state is bound to this session and consumed once, like a login (INV-23).
+   */
+  async reauthStart(
+    session: AuthenticatedSession,
+    body: ReauthStartRequest,
+    client: ClientContext,
+  ) {
+    this.throttle.assertIpAllowed(client.ip);
+    const account = await this.prisma.account.findUniqueOrThrow({
+      where: { id: session.accountId },
+      select: {
+        usernameNormalized: true,
+        opaqueCredential: { select: { registrationRecord: true } },
+      },
+    });
+    await this.throttle.assertLoginAllowed(account.usernameNormalized);
+    const record = account.opaqueCredential
+      ? Buffer.from(account.opaqueCredential.registrationRecord).toString('base64url')
+      : null;
+    let started: { serverLoginState: string; loginResponse: string };
+    try {
+      started = this.opaque.startLogin(account.usernameNormalized, record, body.startLoginRequest);
+    } catch {
+      throw new ApiException('invalid_request');
+    }
+    const loginId = this.loginStates.put({
+      serverLoginState: started.serverLoginState,
+      username: account.usernameNormalized,
+      accountId: session.accountId,
+      deviceId: session.deviceId,
+      platform: 'web',
+      sessionId: session.sessionId,
+    });
+    return { loginId, loginResponse: started.loginResponse };
+  }
+
+  async reauthFinish(
+    session: AuthenticatedSession,
+    body: LoginFinishRequest,
+    client: ClientContext,
+  ): Promise<{ authAt: string }> {
+    this.throttle.assertIpAllowed(client.ip);
+    const pending = this.loginStates.consume(body.loginId);
+    if (pending?.sessionId !== session.sessionId) throw new ApiException('login_failed');
+    if (!this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest)) {
+      await this.throttle.recordLoginFailure(pending.username);
+      await this.events.record('login_failed', {
+        accountId: session.accountId,
+        deviceId: session.deviceId,
+        ...client,
+      });
+      throw new ApiException('login_failed');
+    }
+    await this.throttle.resetLogin(pending.username);
+    const authAt = new Date();
+    await this.prisma.session.update({ where: { id: session.sessionId }, data: { authAt } });
+    return { authAt: authAt.toISOString() };
   }
 
   async logout(sessionId: string, accountId: string, deviceId: string, client: ClientContext) {

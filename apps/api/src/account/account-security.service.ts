@@ -1,0 +1,167 @@
+import { Injectable } from '@nestjs/common';
+import {
+  OPAQUE_CONFIG_ID,
+  type PasswordChangeFinishRequest,
+  type SessionsResponse,
+} from '@ruvee/contracts';
+import type { ClientContext } from '../auth/auth.service.js';
+import { OpaqueServerService } from '../auth/opaque-server.service.js';
+import { ApiException } from '../common/api-exception.js';
+import { envelopeHeaderOk, fromBase64url } from '../common/secrets.js';
+import { PrismaService } from '../database/prisma.service.js';
+import { SecurityEventsService } from '../security-events/security-events.service.js';
+import type { AuthenticatedSession } from '../sessions/session.service.js';
+
+/** Sessions, device revocation (device-enrollment §6) and password change (authentication §9). */
+@Injectable()
+export class AccountSecurityService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly opaque: OpaqueServerService,
+    private readonly events: SecurityEventsService,
+  ) {}
+
+  async sessions(session: AuthenticatedSession): Promise<SessionsResponse> {
+    const now = new Date();
+    const rows = await this.prisma.session.findMany({
+      where: {
+        accountId: session.accountId,
+        revokedAt: null,
+        idleExpiresAt: { gt: now },
+        absoluteExpiresAt: { gt: now },
+      },
+      orderBy: { lastUsedAt: 'desc' },
+      take: 1000,
+    });
+    return {
+      sessions: rows.map((r) => ({
+        id: r.id,
+        deviceId: r.deviceId,
+        kind: r.kind,
+        current: r.id === session.sessionId,
+        createdAt: r.createdAt.toISOString(),
+        lastUsedAt: r.lastUsedAt.toISOString(),
+        idleExpiresAt: r.idleExpiresAt.toISOString(),
+        absoluteExpiresAt: r.absoluteExpiresAt.toISOString(),
+      })),
+    };
+  }
+
+  async endSession(
+    session: AuthenticatedSession,
+    sessionId: string,
+    client: ClientContext,
+  ): Promise<void> {
+    const updated = await this.prisma.session.updateMany({
+      where: { id: sessionId, accountId: session.accountId, revokedAt: null },
+      data: { revokedAt: new Date(), revokeReason: 'user' },
+    });
+    if (updated.count !== 1) throw new ApiException('not_found');
+    await this.events.record('session_revoked', {
+      accountId: session.accountId,
+      deviceId: session.deviceId,
+      ...client,
+      details: { sessionId, reason: 'user' },
+    });
+  }
+
+  /**
+   * device-enrollment §6 step 1: the device is revoked, every session of it ends at once, and its
+   * pairings are cancelled. The caller cannot revoke itself; it logs out instead.
+   */
+  async revokeDevice(
+    session: AuthenticatedSession,
+    deviceId: string,
+    reason: 'retired' | 'lost',
+    client: ClientContext,
+  ): Promise<void> {
+    if (deviceId === session.deviceId) throw new ApiException('forbidden');
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.device.updateMany({
+        where: { id: deviceId, accountId: session.accountId, status: { not: 'revoked' } },
+        data: { status: 'revoked', revokedAt: now },
+      });
+      if (updated.count !== 1) throw new ApiException('not_found');
+      await tx.session.updateMany({
+        where: { deviceId, revokedAt: null },
+        data: { revokedAt: now, revokeReason: 'device_revoked' },
+      });
+      await tx.pairing.deleteMany({
+        where: { OR: [{ initiatorDeviceId: deviceId }, { requesterDeviceId: deviceId }] },
+      });
+      await this.events.record(
+        'device_revoked',
+        {
+          accountId: session.accountId,
+          deviceId: session.deviceId,
+          ...client,
+          details: { revokedDeviceId: deviceId, reason },
+        },
+        tx,
+      );
+    });
+  }
+
+  async passwordStart(session: AuthenticatedSession, registrationRequest: string): Promise<string> {
+    const account = await this.prisma.account.findUniqueOrThrow({
+      where: { id: session.accountId },
+    });
+    try {
+      return this.opaque.createRegistrationResponse(
+        account.usernameNormalized,
+        registrationRequest,
+      );
+    } catch {
+      throw new ApiException('invalid_request');
+    }
+  }
+
+  /**
+   * authentication.md §9 step 3: the OPAQUE record and the password wrap change together under
+   * `row_version`; every other session ends; this one continues.
+   */
+  async passwordFinish(
+    session: AuthenticatedSession,
+    body: PasswordChangeFinishRequest,
+    client: ClientContext,
+  ): Promise<void> {
+    const keys = await this.prisma.accountKeys.findUniqueOrThrow({
+      where: { accountId: session.accountId },
+    });
+    const wrappedAkPassword = fromBase64url(body.wrappedAkPassword);
+    if (!envelopeHeaderOk(wrappedAkPassword, 0x01, { min: 93, max: 93 }, keys.akId))
+      throw new ApiException('invalid_request');
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.accountKeys.updateMany({
+        where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
+        data: {
+          kdfProfile: body.kdfProfile,
+          saltPw: fromBase64url(body.saltPw),
+          wrappedAkPassword,
+          rowVersion: { increment: 1 },
+          updatedAt: now,
+        },
+      });
+      if (updated.count !== 1) throw new ApiException('row_version_conflict');
+      await tx.opaqueCredential.update({
+        where: { accountId: session.accountId },
+        data: {
+          registrationRecord: fromBase64url(body.registrationRecord),
+          configId: OPAQUE_CONFIG_ID,
+          updatedAt: now,
+        },
+      });
+      await tx.session.updateMany({
+        where: { accountId: session.accountId, revokedAt: null, id: { not: session.sessionId } },
+        data: { revokedAt: now, revokeReason: 'password_changed' },
+      });
+      await this.events.record(
+        'password_changed',
+        { accountId: session.accountId, deviceId: session.deviceId, ...client },
+        tx,
+      );
+    });
+  }
+}

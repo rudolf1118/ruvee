@@ -1,0 +1,300 @@
+import { uuidToBytes } from '@ruvee/crypto';
+import {
+  accountKeysResponseSchema,
+  API_ERRORS,
+  errorResponseSchema,
+  loginStartResponseSchema,
+  registerStartResponseSchema,
+  sessionResponseSchema,
+  sessionsResponseSchema,
+} from '@ruvee/contracts';
+import type request from 'supertest';
+import { ThrottleService } from '../src/auth/throttle.service.js';
+import {
+  registerAccount,
+  sessionCookie,
+  startHarness,
+  type Harness,
+} from './support/api-harness.js';
+import {
+  finishLogin,
+  finishRegistration,
+  startLogin,
+  startRegistration,
+  SYNTHETIC_PASSWORD,
+  syntheticAccount,
+  type SyntheticAccount,
+} from './support/synthetic-client.js';
+import { query } from './support/temp-database.js';
+
+const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
+const unb64 = (text: string) => new Uint8Array(Buffer.from(text, 'base64url'));
+const NEW_PASSWORD = 'synthetic changed passphrase 5d0c';
+
+function expectError(res: request.Response, code: keyof typeof API_ERRORS) {
+  expect(res.status, res.text).toBe(API_ERRORS[code].status);
+  expect(errorResponseSchema.parse(res.body).error).toBe(code);
+}
+
+describe('step-up, sessions, revocation and password change (real database)', () => {
+  let h: Harness;
+  let account: SyntheticAccount;
+  let cookieA: string;
+
+  beforeAll(async () => {
+    h = await startHarness();
+    account = await syntheticAccount('synthetic-security-owner');
+    cookieA = await registerAccount(h, account);
+  }, 60_000);
+
+  afterAll(async () => {
+    await h.close();
+  });
+
+  beforeEach(() => {
+    h.app.get(ThrottleService).clearIpWindows();
+  });
+
+  async function login(password = SYNTHETIC_PASSWORD, deviceId?: string) {
+    const client = startLogin(password);
+    const start = loginStartResponseSchema.parse(
+      (
+        await h
+          .post('/api/v1/auth/login/start', {
+            username: account.username,
+            startLoginRequest: client.startLoginRequest,
+            platform: 'web',
+            ...(deviceId ? { deviceId } : {}),
+          })
+          .expect(200)
+      ).body,
+    );
+    const finished = finishLogin(client.clientLoginState, start.loginResponse, password);
+    if (!finished) return undefined;
+    return h.post('/api/v1/auth/login/finish', {
+      loginId: start.loginId,
+      finishLoginRequest: finished.finishLoginRequest,
+    });
+  }
+
+  async function stepUp(cookie: string, password = SYNTHETIC_PASSWORD) {
+    const client = startLogin(password);
+    const start = loginStartResponseSchema.parse(
+      (
+        await h
+          .post(
+            '/api/v1/auth/reauth/start',
+            { startLoginRequest: client.startLoginRequest },
+            cookie,
+          )
+          .expect(200)
+      ).body,
+    );
+    const finished = finishLogin(client.clientLoginState, start.loginResponse, password);
+    return { start, finished };
+  }
+
+  /** Makes every session's last OPAQUE authentication older than the 5-minute step-up window. */
+  async function ageAuth() {
+    await query(h.db.url, `UPDATE sessions SET auth_at = now() - interval '10 minutes'`);
+  }
+
+  it('refuses step-up endpoints with a stale authentication, and allows them after reauth (INV-14)', async () => {
+    await ageAuth();
+    const other = account.crypto.generateUuid();
+    expectError(
+      await h.post(`/api/v1/devices/${other}/revoke`, { reason: 'retired' }, cookieA),
+      'step_up_required',
+    );
+    expectError(
+      await h.post(
+        '/api/v1/account/password/start',
+        { registrationRequest: startRegistration().registrationRequest },
+        cookieA,
+      ),
+      'step_up_required',
+    );
+    const { start, finished } = await stepUp(cookieA);
+    const body = { loginId: start.loginId, finishLoginRequest: finished?.finishLoginRequest };
+    // A step-up state can never be turned into a new session through login/finish.
+    expectError(await h.post('/api/v1/auth/login/finish', body), 'login_failed');
+    const again = await stepUp(cookieA);
+    const ok = await h.post(
+      '/api/v1/auth/reauth/finish',
+      { loginId: again.start.loginId, finishLoginRequest: again.finished?.finishLoginRequest },
+      cookieA,
+    );
+    expect(ok.status, ok.text).toBe(200);
+    // Single use (INV-23).
+    expectError(
+      await h.post(
+        '/api/v1/auth/reauth/finish',
+        { loginId: again.start.loginId, finishLoginRequest: again.finished?.finishLoginRequest },
+        cookieA,
+      ),
+      'login_failed',
+    );
+    expectError(
+      await h.post(`/api/v1/devices/${other}/revoke`, { reason: 'retired' }, cookieA),
+      'not_found',
+    );
+    // A wrong password cannot step up.
+    const wrong = await stepUp(cookieA, 'synthetic wrong guess');
+    expect(wrong.finished).toBeUndefined();
+  });
+
+  it('revokes a device at once for every one of its sessions, never the caller itself', async () => {
+    const first = await login();
+    const second = await login(
+      SYNTHETIC_PASSWORD,
+      sessionResponseSchema.parse(first?.body).device.id,
+    );
+    if (!first || !second) throw new Error('login failed');
+    const deviceId = sessionResponseSchema.parse(first.body).device.id;
+    const cookies = [sessionCookie(first), sessionCookie(second)];
+    const listed = sessionsResponseSchema.parse(
+      (await h.get('/api/v1/sessions', cookieA).expect(200)).body,
+    );
+    expect(listed.sessions.filter((s) => s.deviceId === deviceId)).toHaveLength(2);
+    expect(listed.sessions.filter((s) => s.current)).toHaveLength(1);
+
+    const up = await stepUp(cookieA);
+    await h
+      .post(
+        '/api/v1/auth/reauth/finish',
+        { loginId: up.start.loginId, finishLoginRequest: up.finished?.finishLoginRequest },
+        cookieA,
+      )
+      .expect(200);
+    expectError(
+      await h.post(`/api/v1/devices/${account.deviceId}/revoke`, { reason: 'retired' }, cookieA),
+      'forbidden',
+    );
+    expect(
+      (await h.post(`/api/v1/devices/${deviceId}/revoke`, { reason: 'lost' }, cookieA)).status,
+    ).toBe(204);
+    for (const cookie of cookies)
+      expectError(await h.get('/api/v1/devices/current', cookie), 'device_revoked');
+    const events = await query<{ details: { reason?: string } }>(
+      h.db.url,
+      `SELECT details FROM security_events WHERE type = 'device_revoked'`,
+    );
+    expect(events).toEqual([{ details: { revokedDeviceId: deviceId, reason: 'lost' } }]);
+  });
+
+  it('ends a single session from the list', async () => {
+    const res = await login();
+    if (!res) throw new Error('login failed');
+    const cookie = sessionCookie(res);
+    const listed = sessionsResponseSchema.parse((await h.get('/api/v1/sessions', cookieA)).body);
+    const target = listed.sessions.find(
+      (s) => !s.current && s.deviceId === sessionResponseSchema.parse(res.body).device.id,
+    );
+    if (!target) throw new Error('no session');
+    expect(
+      (
+        await h
+          .http()
+          .delete(`/api/v1/sessions/${target.id}`)
+          .set({ Origin: 'http://127.0.0.1:3100', 'X-Ruvee-Request': '1' })
+          .set('Cookie', cookieA)
+      ).status,
+    ).toBe(204);
+    expectError(await h.get('/api/v1/account', cookie), 'unauthenticated');
+  });
+
+  it('changes the password: same AK, new wrap, other sessions ended, this one kept', async () => {
+    const other = await login(SYNTHETIC_PASSWORD, account.deviceId);
+    if (!other) throw new Error('login failed');
+    const otherCookie = sessionCookie(other);
+    const up = await stepUp(cookieA);
+    await h
+      .post(
+        '/api/v1/auth/reauth/finish',
+        { loginId: up.start.loginId, finishLoginRequest: up.finished?.finishLoginRequest },
+        cookieA,
+      )
+      .expect(200);
+    const keys = accountKeysResponseSchema.parse(
+      (await h.get('/api/v1/account/keys', cookieA)).body,
+    );
+    const reg = startRegistration(NEW_PASSWORD);
+    const regStart = await h
+      .post(
+        '/api/v1/account/password/start',
+        { registrationRequest: reg.registrationRequest },
+        cookieA,
+      )
+      .expect(200);
+    const record = finishRegistration(
+      reg.clientRegistrationState,
+      registerStartResponseSchema.parse(regStart.body).registrationResponse,
+      NEW_PASSWORD,
+    );
+    const { crypto } = account;
+    const accountId = uuidToBytes(account.accountId);
+    const saltPw = crypto.generatePasswordSalt();
+    const auk = crypto.deriveAccountUnlockKey({
+      password: NEW_PASSWORD,
+      passwordSalt: saltPw,
+      profile: 1,
+      secretKey: account.secretKey,
+      accountId,
+    });
+    const body = {
+      registrationRecord: record,
+      kdfProfile: 1,
+      saltPw: b64(saltPw),
+      wrappedAkPassword: b64(
+        crypto.wrapAccountKey({
+          accountUnlockKey: auk,
+          accountKey: account.accountKey,
+          accountId,
+          accountKeyId: unb64(keys.akId),
+          accountKeyEpoch: keys.akEpoch,
+          profile: 1,
+          passwordSalt: saltPw,
+        }),
+      ),
+      expectedRowVersion: keys.rowVersion,
+    };
+    expectError(
+      await h.post(
+        '/api/v1/account/password/finish',
+        { ...body, expectedRowVersion: keys.rowVersion + 1 },
+        cookieA,
+      ),
+      'row_version_conflict',
+    );
+    expect((await h.post('/api/v1/account/password/finish', body, cookieA)).status).toBe(204);
+    await h.get('/api/v1/account', cookieA).expect(200);
+    expectError(await h.get('/api/v1/account', otherCookie), 'unauthenticated');
+    expect(await login(SYNTHETIC_PASSWORD)).toBeUndefined();
+    expect((await login(NEW_PASSWORD))?.status).toBe(200);
+    // The new server wrap opens with the new password and SK, to the same AK (§9, §6.1).
+    const after = accountKeysResponseSchema.parse(
+      (await h.get('/api/v1/account/keys', cookieA)).body,
+    );
+    const ak = crypto.unwrapAccountKey({
+      accountUnlockKey: crypto.deriveAccountUnlockKey({
+        password: NEW_PASSWORD,
+        passwordSalt: unb64(after.saltPw),
+        profile: 1,
+        secretKey: account.secretKey,
+        accountId,
+      }),
+      accountId,
+      accountKeyId: unb64(after.akId),
+      accountKeyEpoch: after.akEpoch,
+      profile: 1,
+      passwordSalt: unb64(after.saltPw),
+      envelope: unb64(after.wrappedAkPassword),
+    });
+    expect(b64(ak)).toBe(b64(account.accountKey));
+    const changed = await query(
+      h.db.url,
+      `SELECT 1 FROM security_events WHERE type = 'password_changed'`,
+    );
+    expect(changed).toHaveLength(1);
+  });
+});

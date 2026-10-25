@@ -42,7 +42,8 @@ export class FakeServer {
       .update(Buffer.from(recoveryAuthKey, 'base64url'))
       .digest('base64url');
   }
-  devices = new Map<string, 'pending' | 'active'>();
+  devices = new Map<string, 'pending' | 'active' | 'revoked'>();
+  revokeReasons: string[] = [];
   pairings = new Map<
     string,
     {
@@ -79,9 +80,11 @@ export class FakeServer {
     let sessionGeneration = this.generation;
     let loginDevice: string | undefined;
     let loginTag: string | undefined;
+    let reauthTag: string | undefined;
     const requireSession = () => {
       if (!this.sessionValid || !sessionDevice || sessionGeneration !== this.generation)
         this.fail(401, 'session_expired');
+      if (this.devices.get(sessionDevice) === 'revoked') this.fail(401, 'device_revoked');
       return sessionDevice;
     };
     const requireActive = () => {
@@ -162,7 +165,7 @@ export class FakeServer {
           wrappedAkPassword: keys.wrappedAkPassword,
           keysetVersion: keys.keysetVersion,
           keyset: keys.keyset,
-          rowVersion: 1,
+          rowVersion: this.rowVersion,
         };
         return Promise.resolve(response);
       },
@@ -338,6 +341,93 @@ export class FakeServer {
       pairingCancel: (pairingId) => {
         this.check({});
         this.pairings.delete(pairingId);
+        return Promise.resolve(undefined);
+      },
+      reauthStart: (body) => {
+        this.check(body);
+        requireSession();
+        reauthTag = body.startLoginRequest.slice(0, 43);
+        return Promise.resolve({ loginId: 'S'.repeat(22), loginResponse: 'R'.repeat(427) });
+      },
+      reauthFinish: (body) => {
+        this.check(body);
+        requireSession();
+        if (reauthTag !== this.passwordTag) this.fail(401, 'login_failed');
+        return Promise.resolve({ authAt: new Date().toISOString() });
+      },
+      devices: () => {
+        this.check();
+        requireActive();
+        const at = new Date(0).toISOString();
+        return Promise.resolve({
+          devices: [...this.devices].map(([id, status]) => ({
+            id,
+            platform: 'web' as const,
+            status,
+            enrolledVia: null,
+            label: null,
+            createdAt: at,
+            enrolledAt: null,
+            lastSeenAt: at,
+            revokedAt: status === 'revoked' ? at : null,
+          })),
+        });
+      },
+      sessions: () => {
+        this.check();
+        const id = requireActive();
+        const at = new Date(0).toISOString();
+        return Promise.resolve({
+          sessions: [
+            {
+              id: '00000000-0000-4000-8000-00000000aaaa',
+              deviceId: id,
+              kind: 'cookie' as const,
+              current: true,
+              createdAt: at,
+              lastUsedAt: at,
+              idleExpiresAt: at,
+              absoluteExpiresAt: at,
+            },
+          ],
+        });
+      },
+      endSession: () => {
+        this.check({});
+        requireActive();
+        return Promise.resolve(undefined);
+      },
+      revokeDevice: (deviceId, body) => {
+        this.check(body);
+        const id = requireActive();
+        if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
+        if (deviceId === id) this.fail(403, 'forbidden');
+        if (!this.devices.has(deviceId)) this.fail(404, 'not_found');
+        this.devices.set(deviceId, 'revoked');
+        this.revokeReasons.push(body.reason);
+        return Promise.resolve(undefined);
+      },
+      passwordStart: () => {
+        this.check({});
+        requireActive();
+        if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
+        return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
+      },
+      passwordFinish: (body) => {
+        this.check(body);
+        requireActive();
+        const account = this.account;
+        if (!account) this.fail(404, 'not_found');
+        if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
+        this.account = {
+          ...account,
+          keys: { ...account.keys, saltPw: body.saltPw, wrappedAkPassword: body.wrappedAkPassword },
+        };
+        this.rowVersion++;
+        this.passwordTag = body.registrationRecord.slice(0, 43);
+        // Every other session ends; this client's stays.
+        this.generation++;
+        sessionGeneration = this.generation;
         return Promise.resolve(undefined);
       },
     };

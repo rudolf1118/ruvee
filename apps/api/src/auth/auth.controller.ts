@@ -3,11 +3,14 @@ import { ConfigService } from '@nestjs/config';
 import {
   loginFinishRequestSchema,
   loginStartRequestSchema,
+  reauthStartRequestSchema,
   registerFinishRequestSchema,
   registerStartRequestSchema,
   type LoginFinishRequest,
   type LoginStartRequest,
   type LoginStartResponse,
+  type ReauthFinishResponse,
+  type ReauthStartRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
   type RegisterStartResponse,
@@ -81,6 +84,28 @@ export class AuthController {
     const session = await this.auth.loginFinish(body, this.client(req));
     this.sessions.setCookie(res, session.token, session.absoluteExpiresAt);
     return session.body;
+  }
+
+  @Post('reauth/start')
+  @HttpCode(200)
+  @Access('active')
+  reauthStart(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(reauthStartRequestSchema)) body: ReauthStartRequest,
+    @Req() req: Request,
+  ): Promise<LoginStartResponse> {
+    return this.auth.reauthStart(session, body, this.client(req));
+  }
+
+  @Post('reauth/finish')
+  @HttpCode(200)
+  @Access('active')
+  reauthFinish(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(loginFinishRequestSchema)) body: LoginFinishRequest,
+    @Req() req: Request,
+  ): Promise<ReauthFinishResponse> {
+    return this.auth.reauthFinish(session, body, this.client(req));
   }
 
   @Post('logout')

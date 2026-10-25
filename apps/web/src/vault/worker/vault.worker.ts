@@ -90,6 +90,10 @@ const HANDLERS: Record<VaultMethod, Handler> = {
     e.recoveryVerifyKit(p),
   recoveryFinish: (e) => e.recoveryFinish(),
   acknowledgeRecoveryNotice: (e) => e.acknowledgeRecoveryNotice(),
+  devices: (e) => e.devices(),
+  endSession: (e, p: Parameters<VaultEngine['endSession']>[0]) => e.endSession(p),
+  revokeDevice: (e, p: Parameters<VaultEngine['revokeDevice']>[0]) => e.revokeDevice(p),
+  changePassword: (e, p: Parameters<VaultEngine['changePassword']>[0]) => e.changePassword(p),
   logout: (e) => e.logout(),
   wipe: (e) => {
     e.wipeMemory();

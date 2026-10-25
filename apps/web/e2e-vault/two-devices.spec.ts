@@ -15,6 +15,7 @@ const MASTER = 'synthetic e2e harbor lantern 58';
 const ITEM_PASSWORD = 'synthetic-e2e-item-secret-3e9';
 const NOTE_TEXT = 'synthetic note body 41f';
 const RECOVERED = 'synthetic recovered lantern 93';
+const CHANGED = 'synthetic changed lantern 27';
 
 interface Captured {
   readonly urls: string[];
@@ -82,7 +83,9 @@ async function expectAccessible(page: Page) {
 
 test.describe.configure({ mode: 'serial' });
 
-test('devices: setup, items, pairing, sync, conflict, lock, recovery', async ({ browser }) => {
+test('devices: setup, items, pairing, sync, conflict, lock, recovery, password change, removal', async ({
+  browser,
+}) => {
   test.setTimeout(300_000);
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
@@ -155,6 +158,7 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery', async ({ 
   await b.getByRole('button', { name: 'Log in' }).click();
   await expect(b.getByRole('heading', { name: 'Add this device' })).toBeVisible();
 
+  await a.getByRole('button', { name: 'Devices' }).click();
   await a.getByRole('button', { name: 'Add a device' }).click();
   const codeBox = a.getByTestId('pairing-code');
   await expect(codeBox).toHaveText(/^PC1-/);
@@ -280,8 +284,50 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery', async ({ 
   await b.getByRole('button', { name: 'Unlock' }).click();
   await expect(b.getByText(/couldn't sign in, so it won't sync/)).toBeVisible({ timeout: 30_000 });
 
+  // ---- A changes the master password; C moves to it (authentication.md §9) ----
+  await a.getByRole('button', { name: 'Master password' }).click();
+  await a.getByRole('textbox', { name: 'Current master password', exact: true }).fill(MASTER);
+  await a.getByRole('textbox', { name: 'New master password', exact: true }).fill(CHANGED);
+  await a.getByRole('textbox', { name: 'Type the new password again', exact: true }).fill(CHANGED);
+  await a.getByRole('button', { name: 'Change password' }).click();
+  await expect(a.getByText(/not the right master password/)).toBeVisible({ timeout: 30_000 });
+  await a.getByRole('textbox', { name: 'Current master password', exact: true }).fill(RECOVERED);
+  await a.getByRole('button', { name: 'Change password' }).click();
+  await expect(a.getByText('Your master password was changed.')).toBeVisible({
+    timeout: 30_000,
+  });
+  await a.getByRole('button', { name: 'Done' }).click();
+  await c.getByRole('button', { name: 'Sync now' }).click();
+  await expect(c.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await c.getByRole('textbox', { name: 'Master password', exact: true }).fill(CHANGED);
+  await c.getByRole('button', { name: 'Unlock' }).click();
+  await expect(
+    c.getByText(/changed on another device. This device now uses the new one/),
+  ).toBeVisible({ timeout: 30_000 });
+
+  // ---- A removes B as lost (device-enrollment §6); B wipes itself when it next connects ----
+  await a.getByRole('button', { name: 'Devices' }).click();
+  await expect(a.getByText(/^Active, /)).toHaveCount(3, { timeout: 15_000 });
+  await expectAccessible(a);
+  const deviceB = a.getByRole('listitem').filter({ hasText: 'added with a pairing code' });
+  await deviceB.getByRole('button', { name: /^Remove/ }).click();
+  await a.getByLabel(/lost or stolen/).check();
+  await expect(a.getByText(/A compromised device can ignore the erase/)).toBeVisible();
+  await a.getByRole('textbox', { name: 'Master password', exact: true }).fill(CHANGED);
+  await a.getByRole('button', { name: 'Remove device' }).click();
+  await expect(a.getByText(/may be in someone else's hands/)).toBeVisible({ timeout: 30_000 });
+  await expect(a.getByText(/^Removed/)).toBeVisible();
+  await b.getByRole('button', { name: 'Sync now' }).click();
+  await expect(b.getByRole('button', { name: 'Create an account' })).toBeVisible({
+    timeout: 15_000,
+  });
+  expect(await indexedDbText(b)).not.toContain('"deviceId"');
+
   // ---- Capture checks: nothing secret on the wire or at rest ----
   const forbidden = [
+    CHANGED,
     RECOVERED,
     newKit,
     newKit.replace(/-/g, ''),

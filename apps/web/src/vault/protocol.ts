@@ -123,6 +123,8 @@ export type VaultErrorCode =
   | 'pairing_failed'
   | 'password_required'
   | 'recovery_failed'
+  | 'cannot_revoke_current'
+  | 'changed_elsewhere'
   | 'integrity'
   | 'internal';
 
@@ -145,6 +147,28 @@ export interface PairingCode {
   readonly code: string;
   readonly pairingId: string;
   readonly expiresAtMs: number;
+}
+
+/** A device of the account, for the Devices screen. Times are server times. */
+export interface DeviceView {
+  readonly id: string;
+  readonly platform: 'web' | 'extension' | 'ios' | 'android';
+  readonly status: 'pending' | 'active' | 'revoked';
+  readonly enrolledVia: 'bootstrap' | 'pairing' | 'recovery' | null;
+  /** This browser. */
+  readonly current: boolean;
+  readonly createdAtMs: number;
+  readonly enrolledAtMs: number | null;
+  readonly lastSeenAtMs: number | null;
+  readonly revokedAtMs: number | null;
+  readonly sessions: readonly SessionView[];
+}
+
+export interface SessionView {
+  readonly id: string;
+  readonly current: boolean;
+  readonly createdAtMs: number;
+  readonly lastUsedAtMs: number;
 }
 
 export type PairingJoinStatus =
@@ -184,6 +208,10 @@ export interface VaultMethods {
   recoveryVerifyKit(params: { recoveryKey: string }): true;
   recoveryFinish(): UnlockedVault;
   acknowledgeRecoveryNotice(): true;
+  devices(): readonly DeviceView[];
+  endSession(params: { sessionId: string }): true;
+  revokeDevice(params: { deviceId: string; reason: 'retired' | 'lost'; password: string }): true;
+  changePassword(params: { currentPassword: string; newPassword: string }): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

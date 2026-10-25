@@ -49,6 +49,10 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return 'Enter your master password to finish adding this device.';
     case 'recovery_failed':
       return "That username and Recovery Key don't work together. Check both and try again.";
+    case 'cannot_revoke_current':
+      return "You can't remove the device you are using. Log out on it instead.";
+    case 'changed_elsewhere':
+      return 'Your account changed on another device in the meantime. Nothing was changed here. Try again.';
     case 'integrity':
       return "The server's copy of your keys didn't pass Ruvee's checks. Nothing was changed.";
     case 'internal':

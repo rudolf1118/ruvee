@@ -1,5 +1,7 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { AccountSecurityController } from '../account/account-security.controller.js';
+import { AccountSecurityService } from '../account/account-security.service.js';
 import { AccountController } from '../account/account.controller.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { PairingController } from '../pairing/pairing.controller.js';
@@ -26,6 +28,7 @@ import { ThrottleService } from './throttle.service.js';
     VaultController,
     PairingController,
     RecoveryController,
+    AccountSecurityController,
   ],
   providers: [
     AuthService,
@@ -37,6 +40,7 @@ import { ThrottleService } from './throttle.service.js';
     SyncService,
     PairingService,
     RecoveryService,
+    AccountSecurityService,
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
   exports: [SessionService, SecurityEventsService, ThrottleService],

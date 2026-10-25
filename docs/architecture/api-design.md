@@ -14,9 +14,12 @@ Implemented locally (remote CI not yet run): the health endpoints and transport 
 `/api/v1/auth/{register,login}/{start,finish}`, `/api/v1/auth/logout`, `GET /api/v1/account`,
 `GET /api/v1/account/keys`, `GET /api/v1/devices` and `/devices/current`, `GET /api/v1/vault`,
 `GET /api/v1/sync/changes`, `POST /api/v1/sync/commits`, `/api/v1/pairings/*`, and
-`/api/v1/recovery/{start,material,password/start,complete}`. Everything else in this document
-(reauth, refresh, password change, revocation, sessions, events, SSE, re-seeding) is still
-**proposed** and has no contract. `GET /account` also returns `lastRecoveryAt`, the time of the
+`/api/v1/recovery/{start,material,password/start,complete}`, and step-up and account security:
+`/api/v1/auth/reauth/{start,finish}`, `GET /api/v1/sessions`, `DELETE /api/v1/sessions/{id}`,
+`POST /api/v1/devices/{id}/revoke` and `/api/v1/account/password/{start,finish}`. Everything else
+in this document (refresh, `PUT /account/recovery`, events, SSE, re-seeding) is still
+**proposed** and has no contract. A step-up login state is bound to its session: `login/finish`
+refuses it, so step-up can never mint a new session. `GET /account` also returns `lastRecoveryAt`, the time of the
 latest `recovery_started` event, which is how every device learns that the Recovery Kit was used;
 recovery sessions use their own cookie (`__Host-ruvee_recovery`).
 

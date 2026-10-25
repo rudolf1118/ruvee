@@ -5,14 +5,17 @@ import {
   CSRF_HEADER,
   CSRF_HEADER_VALUE,
   deviceSchema,
+  devicesResponseSchema,
   errorResponseSchema,
   accountResponseSchema,
   loginStartResponseSchema,
   recoveryMaterialResponseSchema,
   recoveryStartResponseSchema,
   pairingStateResponseSchema,
+  reauthFinishResponseSchema,
   registerStartResponseSchema,
   sessionResponseSchema,
+  sessionsResponseSchema,
   syncChangesResponseSchema,
   vaultStateResponseSchema,
   type ApiErrorCode,
@@ -21,10 +24,13 @@ import {
   type LoginStartRequest,
   type PairingApproveRequest,
   type PairingJoinRequest,
+  type PasswordChangeFinishRequest,
   type RecoveryCompleteRequest,
   type RecoveryStartRequest,
+  type ReauthStartRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
+  type RevokeDeviceRequest,
 } from '@ruvee/contracts';
 import { z } from 'zod';
 
@@ -138,6 +144,21 @@ export const api = {
     request('POST', `/pairings/${pairingId}/complete`, null, {}),
   pairingCancel: (pairingId: string, reason: 'user' | 'mac_failed') =>
     request('DELETE', `/pairings/${pairingId}`, null, { reason }),
+  reauthStart: (body: ReauthStartRequest) =>
+    request('POST', '/auth/reauth/start', loginStartResponseSchema, body),
+  reauthFinish: (body: LoginFinishRequest) =>
+    request('POST', '/auth/reauth/finish', reauthFinishResponseSchema, body),
+  devices: () => request('GET', '/devices', devicesResponseSchema),
+  sessions: () => request('GET', '/sessions', sessionsResponseSchema),
+  endSession: (sessionId: string) => request('DELETE', `/sessions/${sessionId}`, null),
+  revokeDevice: (deviceId: string, body: RevokeDeviceRequest) =>
+    request('POST', `/devices/${deviceId}/revoke`, null, body),
+  passwordStart: (registrationRequest: string) =>
+    request('POST', '/account/password/start', registerStartResponseSchema, {
+      registrationRequest,
+    }),
+  passwordFinish: (body: PasswordChangeFinishRequest) =>
+    request('POST', '/account/password/finish', null, body),
 };
 
 export type Api = typeof api;

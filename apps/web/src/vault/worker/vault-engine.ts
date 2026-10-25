@@ -16,6 +16,7 @@ import { decodeItemBody, encodeItemBody, ITEM_SCHEMA_VERSION, type ItemBody } fr
 import { checkMasterPassword } from '../password-policy';
 import type {
   ConflictView,
+  DeviceView,
   DevicePhase,
   PairingCode,
   PairingHostStatus,
@@ -206,6 +207,10 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('device_revoked');
       case 'device_not_enrolled':
         return new VaultError('device_not_enrolled');
+      case 'not_found':
+        return new VaultError('not_found');
+      case 'row_version_conflict':
+        return new VaultError('changed_elsewhere');
       default:
         return new VaultError('internal');
     }
@@ -1865,6 +1870,180 @@ export class VaultEngine {
       this.emitStatus(session);
       return true as const;
     });
+  }
+
+  // ---- Devices, sessions and password change (device-enrollment §6, authentication.md §9) ----
+
+  /** Every device of the account with its sessions, newest activity first. */
+  async devices(): Promise<DeviceView[]> {
+    const session = this.requireSession();
+    const { api } = this.deps;
+    let devices, sessions;
+    try {
+      [{ devices }, { sessions }] = await Promise.all([api.devices(), api.sessions()]);
+    } catch (error) {
+      return this.onlineFailure(error);
+    }
+    const ms = (t: string | null) => (t === null ? null : Date.parse(t));
+    return devices
+      .map((d) => ({
+        id: d.id,
+        platform: d.platform,
+        status: d.status,
+        enrolledVia: d.enrolledVia,
+        current: d.id === session.device.deviceId,
+        createdAtMs: Date.parse(d.createdAt),
+        enrolledAtMs: ms(d.enrolledAt),
+        lastSeenAtMs: ms(d.lastSeenAt),
+        revokedAtMs: ms(d.revokedAt),
+        sessions: sessions
+          .filter((s) => s.deviceId === d.id)
+          .map((s) => ({
+            id: s.id,
+            current: s.current,
+            createdAtMs: Date.parse(s.createdAt),
+            lastUsedAtMs: Date.parse(s.lastUsedAt),
+          })),
+      }))
+      .sort(
+        (a, b) =>
+          Number(b.current) - Number(a.current) || (b.lastSeenAtMs ?? 0) - (a.lastSeenAtMs ?? 0),
+      );
+  }
+
+  async endSession(params: { sessionId: string }): Promise<true> {
+    this.requireSession();
+    try {
+      await this.deps.api.endSession(params.sessionId);
+    } catch (error) {
+      return this.onlineFailure(error);
+    }
+    return true;
+  }
+
+  /**
+   * Step-up (INV-14) right before a sensitive call: OPAQUE again for this session's account. A
+   * wrong password is reported as such; the session itself stays as it was.
+   */
+  private async stepUp(password: string): Promise<void> {
+    const { api, opaque } = this.deps;
+    let normalized: string;
+    try {
+      normalized = normalizePassword(password);
+    } catch {
+      throw new VaultError('wrong_password');
+    }
+    const client = opaque.startLogin(normalized);
+    try {
+      const start = await api.reauthStart({ startLoginRequest: client.startLoginRequest });
+      const finish = opaque.finishLogin(client.clientLoginState, start.loginResponse, normalized);
+      if (finish === undefined) throw new VaultError('wrong_password');
+      await api.reauthFinish({ loginId: start.loginId, finishLoginRequest: finish });
+    } catch (error) {
+      const e = vaultErrorFrom(error);
+      throw e.code === 'login_failed' ? new VaultError('wrong_password') : e;
+    }
+  }
+
+  /**
+   * device-enrollment §6. The server revokes the device and its sessions at once. Revoking this
+   * device from itself is refused: that is what logging out is for.
+   */
+  revokeDevice(params: {
+    deviceId: string;
+    reason: 'retired' | 'lost';
+    password: string;
+  }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      if (params.deviceId === session.device.deviceId)
+        throw new VaultError('cannot_revoke_current');
+      try {
+        await this.stepUp(params.password);
+        await this.deps.api.revokeDevice(params.deviceId, { reason: params.reason });
+      } catch (error) {
+        return this.onlineFailure(error);
+      }
+      return true as const;
+    });
+  }
+
+  /**
+   * authentication.md §9 and cryptographic-design §6.1: the same `AK` under a new password wrap
+   * and a new OPAQUE record. The server ends every other session; this one continues, and the
+   * local wrap is replaced only after the server accepted the change.
+   */
+  changePassword(params: { currentPassword: string; newPassword: string }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      if (!checkMasterPassword(params.newPassword).ok) throw new VaultError('invalid_password');
+      const password = normalizePassword(params.newPassword);
+      const { crypto, api, opaque } = this.deps;
+      try {
+        await this.stepUp(params.currentPassword);
+        const keys = await api.accountKeys();
+        const enrolled = session.device.enrolled;
+        if (
+          !same(fromB64(keys.akId), enrolled.akId) ||
+          keys.akEpoch !== enrolled.akEpoch ||
+          keys.keysetVersion < enrolled.keysetVersion
+        )
+          throw new VaultError('changed_elsewhere');
+        const registration = opaque.startRegistration(password);
+        const { registrationResponse } = await api.passwordStart(registration.registrationRequest);
+        const registrationRecord = opaque.finishRegistration(
+          registration.clientRegistrationState,
+          registrationResponse,
+          password,
+        );
+        const accountId = uuidToBytes(session.device.accountId);
+        const saltPw = crypto.generatePasswordSalt();
+        const auk = crypto.deriveAccountUnlockKey({
+          password,
+          passwordSalt: saltPw,
+          profile: DEFAULT_KDF_PROFILE,
+          secretKey: enrolled.secretKey,
+          accountId,
+        });
+        let wrappedAkPassword: Uint8Array;
+        try {
+          wrappedAkPassword = crypto.wrapAccountKey({
+            accountUnlockKey: auk,
+            accountKey: session.accountKey,
+            accountId,
+            accountKeyId: enrolled.akId,
+            accountKeyEpoch: enrolled.akEpoch,
+            profile: DEFAULT_KDF_PROFILE,
+            passwordSalt: saltPw,
+          });
+        } finally {
+          auk.fill(0);
+        }
+        await api.passwordFinish({
+          registrationRecord,
+          kdfProfile: 1,
+          saltPw: toB64(saltPw),
+          wrappedAkPassword: toB64(wrappedAkPassword),
+          expectedRowVersion: keys.rowVersion,
+        });
+        const device = {
+          ...session.device,
+          enrolled: { ...enrolled, kdfProfile: 1, saltPw, wrappedAkPassword },
+        };
+        await this.deps.store.putDevice(device);
+        session.device = device;
+      } catch (error) {
+        return this.onlineFailure(error);
+      }
+      return true as const;
+    });
+  }
+
+  /** A failed online call: a revoked device wipes itself (INV-15); anything else is reported. */
+  private async onlineFailure(error: unknown): Promise<never> {
+    const e = vaultErrorFrom(error);
+    if (e.code === 'device_revoked') return this.revoked();
+    throw e;
   }
 
   // ---- Sync ----

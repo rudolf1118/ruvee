@@ -10,12 +10,13 @@ import type {
   UnlockedVault,
 } from '@/vault/protocol';
 import { VaultClient } from '@/vault/client';
-import { DevicesIcon, LogoutIcon } from '../ui/icons';
+import { DevicesIcon, LogoutIcon, ShieldIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';
 import { VaultShell } from '../vault/vault-shell';
 import { AuthCard } from './auth-layout';
 import { clearClipboard } from './clipboard';
 import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
+import { ChangePasswordPanel, DevicesPanel } from './devices';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
 import { AddDevicePanel } from './pairing';
@@ -229,7 +230,7 @@ function UnlockedApp({
   const [items, setItems] = useState<readonly ItemSummary[]>(vault.items);
   const [status, setStatus] = useState<SyncStatus>(vault.sync);
   const [editing, setEditing] = useState<{ existing: ItemDetail | null } | null>(null);
-  const [addingDevice, setAddingDevice] = useState(false);
+  const [panel, setPanel] = useState<'devices' | 'add-device' | 'password' | null>(null);
   const [selectId, setSelectId] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const lastActivity = useRef(0);
@@ -327,7 +328,7 @@ function UnlockedApp({
       live={{
         onAddItem: () => {
           if (readOnly) return;
-          setAddingDevice(false);
+          setPanel(null);
           setEditing({ existing: null });
         },
         onLock: () => {
@@ -338,11 +339,20 @@ function UnlockedApp({
           <>
             <NavButton
               icon={DevicesIcon}
-              label="Add a device"
-              current={addingDevice}
+              label="Devices"
+              current={panel === 'devices' || panel === 'add-device'}
               onSelect={() => {
                 setEditing(null);
-                setAddingDevice(true);
+                setPanel('devices');
+              }}
+            />
+            <NavButton
+              icon={ShieldIcon}
+              label="Master password"
+              current={panel === 'password'}
+              onSelect={() => {
+                setEditing(null);
+                setPanel('password');
               }}
             />
             <NavButton
@@ -381,16 +391,37 @@ function UnlockedApp({
             onChanged={refresh}
           />
         ),
-        ...(addingDevice
+        ...(panel
           ? {
-              detailOverride: (
-                <AddDevicePanel
-                  client={client}
-                  onClose={() => {
-                    setAddingDevice(false);
-                  }}
-                />
-              ),
+              detailOverride:
+                panel === 'add-device' ? (
+                  <AddDevicePanel
+                    client={client}
+                    onClose={() => {
+                      setPanel(null);
+                    }}
+                  />
+                ) : panel === 'devices' ? (
+                  <DevicesPanel
+                    client={client}
+                    onClose={() => {
+                      setPanel(null);
+                    }}
+                    onAddDevice={() => {
+                      setPanel('add-device');
+                    }}
+                    onChangePassword={() => {
+                      setPanel('password');
+                    }}
+                  />
+                ) : (
+                  <ChangePasswordPanel
+                    client={client}
+                    onClose={() => {
+                      setPanel(null);
+                    }}
+                  />
+                ),
             }
           : editing
             ? {
@@ -433,7 +464,7 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
     out.push({
       id: 'recovered',
       tone: 'brand',
-      text: `Recovery is complete. This device had no earlier record of your vault, so check that it looks current: ${where} If you lost devices, they still hold a copy of your vault; removing them is not available in this build yet.`,
+      text: `Recovery is complete. This device had no earlier record of your vault, so check that it looks current: ${where} If you lost devices, they still hold a copy of your vault: remove them under Devices.`,
     });
   }
   if (status.recoveryUsedAtMs !== undefined)

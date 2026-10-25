@@ -906,6 +906,1201 @@
         }
       }
     },
+    "/api/v1/auth/reauth/start": {
+      "post": {
+        "operationId": "reauthStart",
+        "summary": "Step-up: OPAQUE again for the session account; the state is bound to this session.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReauthStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Login id and OPAQUE response.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/reauth/finish": {
+      "post": {
+        "operationId": "reauthFinish",
+        "summary": "Step-up: consumes the login id and refreshes auth_at for 5 minutes of step-up.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginFinishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The new auth_at.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReauthFinishResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / Login failed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorLoginFailed"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions": {
+      "get": {
+        "operationId": "listSessions",
+        "summary": "Live sessions of the account; the caller is marked current.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Sessions, most recently used first.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/sessions/{sessionId}": {
+      "delete": {
+        "operationId": "endSession",
+        "summary": "Ends one session of the account.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "sessionId",
+            "in": "path",
+            "required": true,
+            "description": "The session to end.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Ended.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInvalidRequest"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/devices/{deviceId}/revoke": {
+      "post": {
+        "operationId": "revokeDevice",
+        "summary": "Revokes another device and every session of it; cancels its pairings. Step-up.",
+        "x-ruvee-access": "step-up",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "deviceId",
+            "in": "path",
+            "required": true,
+            "description": "The device to revoke; never the caller.",
+            "schema": {
+              "type": "string",
+              "format": "uuid"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeDeviceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue. / This request is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorStepUpRequired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorForbidden"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/password/start": {
+      "post": {
+        "operationId": "passwordChangeStart",
+        "summary": "OPAQUE registration step 1 for a new master password. Step-up.",
+        "x-ruvee-access": "step-up",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryPasswordStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OPAQUE registration response.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorStepUpRequired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/account/password/finish": {
+      "post": {
+        "operationId": "passwordChangeFinish",
+        "summary": "Replaces the OPAQUE record and password wrap; ends every other session. Step-up.",
+        "x-ruvee-access": "step-up",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PasswordChangeFinishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Changed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorStepUpRequired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account keys have changed; refetch them.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/account": {
       "get": {
         "operationId": "getAccount",
@@ -4373,6 +5568,163 @@
         },
         "required": [
           "pairingId"
+        ],
+        "additionalProperties": false
+      },
+      "ReauthStartRequest": {
+        "type": "object",
+        "properties": {
+          "startLoginRequest": {
+            "type": "string",
+            "minLength": 128,
+            "maxLength": 128,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          }
+        },
+        "required": [
+          "startLoginRequest"
+        ],
+        "additionalProperties": false
+      },
+      "ReauthFinishResponse": {
+        "type": "object",
+        "properties": {
+          "authAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "authAt"
+        ],
+        "additionalProperties": false
+      },
+      "SessionsResponse": {
+        "type": "object",
+        "properties": {
+          "sessions": {
+            "maxItems": 1000,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "deviceId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "kind": {
+                  "type": "string",
+                  "enum": [
+                    "cookie",
+                    "token",
+                    "recovery"
+                  ]
+                },
+                "current": {
+                  "type": "boolean"
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "lastUsedAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "idleExpiresAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                },
+                "absoluteExpiresAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                }
+              },
+              "required": [
+                "id",
+                "deviceId",
+                "kind",
+                "current",
+                "createdAt",
+                "lastUsedAt",
+                "idleExpiresAt",
+                "absoluteExpiresAt"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "sessions"
+        ],
+        "additionalProperties": false
+      },
+      "RevokeDeviceRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "retired",
+              "lost"
+            ]
+          }
+        },
+        "required": [
+          "reason"
+        ],
+        "additionalProperties": false
+      },
+      "PasswordChangeFinishRequest": {
+        "type": "object",
+        "properties": {
+          "registrationRecord": {
+            "type": "string",
+            "minLength": 256,
+            "maxLength": 256,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "kdfProfile": {
+            "type": "number",
+            "const": 1
+          },
+          "saltPw": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "wrappedAkPassword": {
+            "type": "string",
+            "minLength": 124,
+            "maxLength": 124,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "expectedRowVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          }
+        },
+        "required": [
+          "registrationRecord",
+          "kdfProfile",
+          "saltPw",
+          "wrappedAkPassword",
+          "expectedRowVersion"
         ],
         "additionalProperties": false
       },

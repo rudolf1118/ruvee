@@ -33,7 +33,7 @@ function useCountdown(deadlineMs: number | null): string {
   return `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
 }
 
-const PLATFORM_NAMES: Record<string, string> = {
+export const PLATFORM_NAMES: Record<string, string> = {
   web: 'web browser',
   extension: 'browser extension',
   ios: 'iPhone or iPad',
