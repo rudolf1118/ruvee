@@ -38,6 +38,13 @@ import {
   syncChangesResponseSchema,
   vaultStateResponseSchema,
 } from './sync.js';
+import {
+  createPairingRequestSchema,
+  pairingApproveRequestSchema,
+  pairingCancelRequestSchema,
+  pairingJoinRequestSchema,
+  pairingStateResponseSchema,
+} from './pairing.js';
 
 type JsonSchema = Record<string, unknown>;
 
@@ -95,6 +102,15 @@ Conventions that apply to every request:
   Unknown paths return \`404 not_found\`.`;
 
 type Access = 'none' | 'session' | 'active' | 'step-up';
+
+const PAIRING_ID_PARAMETER = {
+  name: 'pairingId',
+  in: 'path',
+  required: true,
+  description:
+    'pairing_id, 16 bytes in unpadded base64url. Not a secret; logged only as a template.',
+  schema: { type: 'string', pattern: '^[A-Za-z0-9_-]{22}$' },
+};
 
 const ACCESS_ERRORS: Record<Access, ApiErrorCode[]> = {
   none: [],
@@ -371,6 +387,68 @@ export function buildOpenApiDocument(): JsonSchema {
           errors: ['not_found', 'seq_conflict', 'revision_conflict', 'idempotency_mismatch'],
         }),
       },
+      '/api/v1/pairings': {
+        post: operation({
+          operationId: 'createPairing',
+          summary: 'Device A opens a pairing under pairing_id = MAC(S, …)[0..16]; 10 minutes.',
+          access: 'active',
+          request: 'CreatePairingRequest',
+          success: { status: '201', description: 'Opened.', schema: 'PairingCreated' },
+          errors: ['rate_limited', 'pairing_state'],
+        }),
+      },
+      '/api/v1/pairings/{pairingId}': {
+        get: operation({
+          operationId: 'getPairing',
+          summary:
+            "State for the caller's role: A sees the request, B sees the reply after approval.",
+          access: 'session',
+          parameters: [PAIRING_ID_PARAMETER],
+          success: { status: '200', description: 'Pairing state.', schema: 'PairingStateResponse' },
+          errors: ['invalid_request', 'not_found'],
+        }),
+        delete: operation({
+          operationId: 'cancelPairing',
+          summary: 'Either device cancels; reason mac_failed records a failed request MAC.',
+          access: 'session',
+          parameters: [PAIRING_ID_PARAMETER],
+          request: 'PairingCancelRequest',
+          success: { status: '204', description: 'Cancelled.' },
+          errors: ['not_found'],
+        }),
+      },
+      '/api/v1/pairings/{pairingId}/request': {
+        post: operation({
+          operationId: 'requestPairing',
+          summary: 'Device B (pending) sends epk, platform and req_mac; exactly one request.',
+          access: 'session',
+          parameters: [PAIRING_ID_PARAMETER],
+          request: 'PairingJoinRequest',
+          success: { status: '204', description: 'Stored; device_id_B comes from the session.' },
+          errors: ['not_found', 'pairing_state', 'forbidden'],
+        }),
+      },
+      '/api/v1/pairings/{pairingId}/approve': {
+        post: operation({
+          operationId: 'approvePairing',
+          summary: 'Device A stores the sealed reply and resp_mac; B becomes active.',
+          access: 'active',
+          parameters: [PAIRING_ID_PARAMETER],
+          request: 'PairingApproveRequest',
+          success: { status: '204', description: 'Approved.' },
+          errors: ['not_found', 'pairing_state'],
+        }),
+      },
+      '/api/v1/pairings/{pairingId}/complete': {
+        post: operation({
+          operationId: 'completePairing',
+          summary: 'Device B, now active, deletes the pairing after storing its keys.',
+          access: 'active',
+          parameters: [PAIRING_ID_PARAMETER],
+          success: { status: '204', description: 'Completed.' },
+          errors: ['not_found', 'pairing_state'],
+        }),
+      },
     },
     components: {
       securitySchemes: {
@@ -392,6 +470,17 @@ export function buildOpenApiDocument(): JsonSchema {
         SyncChangesResponse: jsonSchema(syncChangesResponseSchema),
         CommitRequest: jsonSchema(commitRequestSchema),
         CommitResponse: jsonSchema(commitResponseSchema),
+        CreatePairingRequest: jsonSchema(createPairingRequestSchema),
+        PairingCreated: {
+          type: 'object',
+          properties: { expiresAt: { type: 'string', format: 'date-time' } },
+          required: ['expiresAt'],
+          additionalProperties: false,
+        },
+        PairingStateResponse: jsonSchema(pairingStateResponseSchema),
+        PairingJoinRequest: jsonSchema(pairingJoinRequestSchema),
+        PairingApproveRequest: jsonSchema(pairingApproveRequestSchema),
+        PairingCancelRequest: jsonSchema(pairingCancelRequestSchema),
         LivenessResponse: jsonSchema(livenessResponseSchema),
         ReadyResponse: jsonSchema(readyResponseSchema),
         NotReadyResponse: jsonSchema(notReadyResponseSchema),

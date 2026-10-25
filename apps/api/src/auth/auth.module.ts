@@ -2,6 +2,8 @@ import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { AccountController } from '../account/account.controller.js';
 import { DatabaseModule } from '../database/database.module.js';
+import { PairingController } from '../pairing/pairing.controller.js';
+import { PairingService } from '../pairing/pairing.service.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
 import { AccessGuard } from '../sessions/access.guard.js';
 import { SessionService } from '../sessions/session.service.js';
@@ -16,7 +18,7 @@ import { ThrottleService } from './throttle.service.js';
 /** Authentication, sessions, account and vault endpoints, behind the global access guard. */
 @Module({
   imports: [DatabaseModule],
-  controllers: [AuthController, AccountController, VaultController],
+  controllers: [AuthController, AccountController, VaultController, PairingController],
   providers: [
     AuthService,
     OpaqueServerService,
@@ -25,6 +27,7 @@ import { ThrottleService } from './throttle.service.js';
     ThrottleService,
     SecurityEventsService,
     SyncService,
+    PairingService,
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
   exports: [SessionService, SecurityEventsService, ThrottleService],

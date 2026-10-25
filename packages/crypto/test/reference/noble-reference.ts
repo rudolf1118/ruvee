@@ -269,3 +269,37 @@ export function refLocalContext(deviceId: Uint8Array, name: string): Uint8Array 
   const n = te.encode(name);
   return cat(deviceId, u32(n.length), n);
 }
+
+// ---- Pairing (device-enrollment §3.1 and §3.2) ----
+
+function crockford(bytes: Uint8Array): string {
+  const alphabet = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let bits = '';
+  for (const b of bytes) bits += b.toString(2).padStart(8, '0');
+  while (bits.length % 5 !== 0) bits += '0';
+  let out = '';
+  for (let i = 0; i < bits.length; i += 5)
+    out += alphabet.charAt(parseInt(bits.slice(i, i + 5), 2));
+  return out;
+}
+
+export function refPairingCode(secret: Uint8Array): string {
+  const symbols = crockford(cat(secret, h(te.encode('ruvee/v1/pc-check'), secret).slice(0, 2)));
+  const groups: string[] = [];
+  for (let i = 0; i < symbols.length; i += 5) groups.push(symbols.slice(i, i + 5));
+  return ['PC1', ...groups].join('-');
+}
+
+export function refPairing(secret: Uint8Array, accountId: Uint8Array) {
+  const mac = (message: Uint8Array, key: Uint8Array) => blake2b(message, { key, dkLen: 32 });
+  const pairingId = mac(te.encode('ruvee/v1/pairing-id'), secret).slice(0, 16);
+  const pairKey = mac(cat(te.encode('ruvee/v1/pairing-mac'), accountId), secret);
+  return {
+    pairingId,
+    pairKey,
+    requestMac: (deviceId: Uint8Array, platform: number, epk: Uint8Array) =>
+      mac(cat(te.encode('ruvee/v1/pair-req'), pairingId, deviceId, [platform], epk), pairKey),
+    responseMac: (deviceId: Uint8Array, epk: Uint8Array, ct: Uint8Array) =>
+      mac(cat(te.encode('ruvee/v1/pair-resp'), pairingId, deviceId, epk, ct), pairKey),
+  };
+}

@@ -64,3 +64,11 @@ export type {
 export { padPlaintext, unpadPlaintext, PADDED_MAX_BYTES, PADDING_BLOCK_BYTES } from './padding.js';
 export { normalizePassword, PASSWORD_MAX_BYTES } from './password.js';
 export { DEFAULT_KDF_PROFILE } from './profiles.js';
+export {
+  PAIRING_ID_BYTES,
+  PAIRING_SECRET_BYTES,
+  PLATFORM_CODES,
+  type PairingOperations,
+  type PairingPayload,
+  type PairingPlatform,
+} from './pairing-operations.js';

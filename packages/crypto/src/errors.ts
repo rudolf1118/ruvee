@@ -14,6 +14,7 @@ export const CRYPTO_ERROR_CODES = [
   'integrity_failure',
   'malformed_plaintext',
   'invalid_recovery_key',
+  'invalid_pairing_code',
   'library_failure',
 ] as const;
 
@@ -30,6 +31,7 @@ const MESSAGES: Record<CryptoErrorCode, string> = {
   integrity_failure: 'The envelope could not be authenticated.',
   malformed_plaintext: 'The decrypted plaintext is not valid for its purpose.',
   invalid_recovery_key: 'The Recovery Key is not in the expected format or its check fails.',
+  invalid_pairing_code: 'The pairing code is not in the expected format or its check fails.',
   library_failure: 'The cryptographic library failed or is not the pinned version.',
 };
 

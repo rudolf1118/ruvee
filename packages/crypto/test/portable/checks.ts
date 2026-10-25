@@ -17,7 +17,7 @@ import { cat, hex, pattern, randomBytesFrom, same, seededRandom } from '../suppo
 import { loadXChaChaVectors, type ReadVectorFile } from '../support/published-vectors.js';
 import { recordingPrimitives } from '../support/recording.js';
 import { packageOutputs, referenceOutputs, type ProvisionalVectorFile } from './provisional.js';
-import { VAULT_CHECKS } from './vault-checks.js';
+import { PAIRING_CHECKS, VAULT_CHECKS } from './vault-checks.js';
 
 /** The parts of libsodium.js used directly by checks, never by the package outside src/libsodium.ts. */
 export interface LibsodiumForChecks {
@@ -67,11 +67,15 @@ function flip(bytes: Uint8Array, index: number, mask = 0x01): Uint8Array {
 }
 
 const PUBLIC_METHODS = [
+  'createPairingRequest',
+  'createPairingResponse',
   'deriveAccountUnlockKey',
   'deriveRecoveryKeys',
+  'formatPairingCode',
   'formatRecoveryKey',
   'generateKey',
   'generateKeyId',
+  'generatePairingSecret',
   'generatePasswordSalt',
   'generateRecoveryKey',
   'generateUuid',
@@ -81,6 +85,9 @@ const PUBLIC_METHODS = [
   'openKeyset',
   'openLocalRecord',
   'openManifest',
+  'openPairingResponse',
+  'pairingId',
+  'parsePairingCode',
   'parseRecoveryKey',
   'recordHash',
   'recoveryVerifier',
@@ -90,6 +97,7 @@ const PUBLIC_METHODS = [
   'sealManifest',
   'unwrapAccountKey',
   'unwrapAccountKeyForRecovery',
+  'verifyPairingRequest',
   'wrapAccountKey',
   'wrapAccountKeyForRecovery',
 ];
@@ -459,7 +467,7 @@ const BASE_CHECKS: readonly PortableCheck[] = [
         'invalid_argument',
         'string key',
       );
-      expectCode(() => p.mac(32, pattern(1, 1025), key), 'invalid_argument', 'mac message bound');
+      expectCode(() => p.mac(32, pattern(1, 8193), key), 'invalid_argument', 'mac message bound');
       // Argon2id: memlimit rounding and no ceiling; parameters only from the registry.
       for (const forged of [
         { ...profile },
@@ -822,4 +830,8 @@ function createCryptoOver(raw: RawPrimitives) {
   return buildRuveeCrypto(p, randomNonces(p));
 }
 
-export const PORTABLE_CHECKS: readonly PortableCheck[] = [...BASE_CHECKS, ...VAULT_CHECKS];
+export const PORTABLE_CHECKS: readonly PortableCheck[] = [
+  ...BASE_CHECKS,
+  ...VAULT_CHECKS,
+  ...PAIRING_CHECKS,
+];

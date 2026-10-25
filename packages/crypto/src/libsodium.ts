@@ -15,6 +15,10 @@ const REQUIRED_FUNCTIONS = [
   'crypto_pwhash',
   'crypto_generichash',
   'crypto_hash_sha256',
+  'crypto_box_keypair',
+  'crypto_box_seal',
+  'crypto_box_seal_open',
+  'memcmp',
   'crypto_kdf_derive_from_key',
   'crypto_aead_xchacha20poly1305_ietf_encrypt',
   'crypto_aead_xchacha20poly1305_ietf_decrypt',
@@ -29,6 +33,16 @@ export function libsodiumPrimitives(sodium: Libsodium): RawPrimitives {
     genericHash: (outputLength, message, key) =>
       sodium.crypto_generichash(outputLength, message, key),
     sha256: (message) => sodium.crypto_hash_sha256(message),
+    boxKeypair: () => sodium.crypto_box_keypair(),
+    boxSeal: (message, publicKey) => sodium.crypto_box_seal(message, publicKey),
+    boxSealOpen: (ciphertext, publicKey, privateKey) => {
+      try {
+        return sodium.crypto_box_seal_open(ciphertext, publicKey, privateKey);
+      } catch {
+        return null;
+      }
+    },
+    memcmp: (a, b) => sodium.memcmp(a, b),
     kdfDeriveFromKey: (subkeyLength, subkeyId, context, key) =>
       sodium.crypto_kdf_derive_from_key(subkeyLength, subkeyId, context, key),
     aeadEncrypt: (message, additionalData, nonce, key) =>

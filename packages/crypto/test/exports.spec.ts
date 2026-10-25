@@ -31,7 +31,10 @@ describe('public surface (INV-02)', () => {
       'MANIFEST_ENVELOPE_BYTES',
       'PADDED_MAX_BYTES',
       'PADDING_BLOCK_BYTES',
+      'PAIRING_ID_BYTES',
+      'PAIRING_SECRET_BYTES',
       'PASSWORD_MAX_BYTES',
+      'PLATFORM_CODES',
       'RECOVERY_KEY_BYTES',
       'RuveeCryptoError',
       'UUID_BYTES',
@@ -71,7 +74,11 @@ describe('public surface (INV-02)', () => {
   });
 
   it('no public operation input has a nonce field', async () => {
-    for (const file of ['src/operations.ts', 'src/vault-operations.ts']) {
+    for (const file of [
+      'src/operations.ts',
+      'src/vault-operations.ts',
+      'src/pairing-operations.ts',
+    ]) {
       const operations = await readFile(new URL(file, root), 'utf8');
       expect(operations, file).not.toMatch(/\bnonce\??\s*:/i);
     }

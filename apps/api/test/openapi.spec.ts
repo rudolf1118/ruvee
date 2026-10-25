@@ -27,7 +27,8 @@ describe('OpenAPI document', () => {
       .flatMap(({ route }) =>
         route && typeof route.path === 'string' && !route.path.includes('*')
           ? Object.keys(route.methods).map(
-              (method) => `${method.toUpperCase()} ${String(route.path)}`,
+              (method) =>
+                `${method.toUpperCase()} ${String(route.path).replace(/:([A-Za-z]+)/g, '{$1}')}`,
             )
           : [],
       )

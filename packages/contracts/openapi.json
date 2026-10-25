@@ -1757,6 +1757,1104 @@
           }
         }
       }
+    },
+    "/api/v1/pairings": {
+      "post": {
+        "operationId": "createPairing",
+        "summary": "Device A opens a pairing under pairing_id = MAC(S, …)[0..16]; 10 minutes.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePairingRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "Opened.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingCreated"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The pairing is not in the expected state.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPairingState"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pairings/{pairingId}": {
+      "get": {
+        "operationId": "getPairing",
+        "summary": "State for the caller's role: A sees the request, B sees the reply after approval.",
+        "x-ruvee-access": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pairingId",
+            "in": "path",
+            "required": true,
+            "description": "pairing_id, 16 bytes in unpadded base64url. Not a secret; logged only as a template.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pairing state.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PairingStateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInvalidRequest"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "operationId": "cancelPairing",
+        "summary": "Either device cancels; reason mac_failed records a failed request MAC.",
+        "x-ruvee-access": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pairingId",
+            "in": "path",
+            "required": true,
+            "description": "pairing_id, 16 bytes in unpadded base64url. Not a secret; logged only as a template.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingCancelRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Cancelled.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pairings/{pairingId}/request": {
+      "post": {
+        "operationId": "requestPairing",
+        "summary": "Device B (pending) sends epk, platform and req_mac; exactly one request.",
+        "x-ruvee-access": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pairingId",
+            "in": "path",
+            "required": true,
+            "description": "pairing_id, 16 bytes in unpadded base64url. Not a secret; logged only as a template.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingJoinRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Stored; device_id_B comes from the session.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This request is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorForbidden"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The pairing is not in the expected state.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPairingState"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pairings/{pairingId}/approve": {
+      "post": {
+        "operationId": "approvePairing",
+        "summary": "Device A stores the sealed reply and resp_mac; B becomes active.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pairingId",
+            "in": "path",
+            "required": true,
+            "description": "pairing_id, 16 bytes in unpadded base64url. Not a secret; logged only as a template.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PairingApproveRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Approved.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The pairing is not in the expected state.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPairingState"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/pairings/{pairingId}/complete": {
+      "post": {
+        "operationId": "completePairing",
+        "summary": "Device B, now active, deletes the pairing after storing its keys.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "pairingId",
+            "in": "path",
+            "required": true,
+            "description": "pairing_id, 16 bytes in unpadded base64url. Not a secret; logged only as a template.",
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Completed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "The requested resource does not exist.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorNotFound"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The pairing is not in the expected state.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPairingState"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -2639,6 +3737,216 @@
         "required": [
           "seq"
         ],
+        "additionalProperties": false
+      },
+      "CreatePairingRequest": {
+        "type": "object",
+        "properties": {
+          "pairingId": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          }
+        },
+        "required": [
+          "pairingId"
+        ],
+        "additionalProperties": false
+      },
+      "PairingCreated": {
+        "type": "object",
+        "properties": {
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "PairingStateResponse": {
+        "type": "object",
+        "properties": {
+          "pairingId": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "open",
+              "requested",
+              "approved"
+            ]
+          },
+          "role": {
+            "type": "string",
+            "enum": [
+              "initiator",
+              "requester"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "request": {
+            "type": "object",
+            "properties": {
+              "requesterDeviceId": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "platform": {
+                "type": "string",
+                "enum": [
+                  "web",
+                  "extension",
+                  "ios",
+                  "android"
+                ]
+              },
+              "epk": {
+                "type": "string",
+                "minLength": 43,
+                "maxLength": 43,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "mac": {
+                "type": "string",
+                "minLength": 43,
+                "maxLength": 43,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "requestedAt": {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              }
+            },
+            "required": [
+              "requesterDeviceId",
+              "platform",
+              "epk",
+              "mac",
+              "requestedAt"
+            ],
+            "additionalProperties": false
+          },
+          "response": {
+            "type": "object",
+            "properties": {
+              "ciphertext": {
+                "type": "string",
+                "minLength": 66,
+                "maxLength": 5462,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "mac": {
+                "type": "string",
+                "minLength": 43,
+                "maxLength": 43,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "ciphertext",
+              "mac"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "pairingId",
+          "state",
+          "role",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "PairingJoinRequest": {
+        "type": "object",
+        "properties": {
+          "epk": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "platform": {
+            "type": "string",
+            "const": "web"
+          },
+          "mac": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          }
+        },
+        "required": [
+          "epk",
+          "platform",
+          "mac"
+        ],
+        "additionalProperties": false
+      },
+      "PairingApproveRequest": {
+        "type": "object",
+        "properties": {
+          "ciphertext": {
+            "type": "string",
+            "minLength": 66,
+            "maxLength": 5462,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "mac": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "label": {
+            "type": "string",
+            "minLength": 82,
+            "maxLength": 252,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          }
+        },
+        "required": [
+          "ciphertext",
+          "mac"
+        ],
+        "additionalProperties": false
+      },
+      "PairingCancelRequest": {
+        "type": "object",
+        "properties": {
+          "reason": {
+            "type": "string",
+            "enum": [
+              "user",
+              "mac_failed"
+            ]
+          }
+        },
         "additionalProperties": false
       },
       "LivenessResponse": {

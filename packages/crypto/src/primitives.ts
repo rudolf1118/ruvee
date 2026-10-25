@@ -29,6 +29,18 @@ export interface RawPrimitives {
     context: string,
     key: Uint8Array,
   ): Uint8Array;
+  /** `crypto_box_keypair`: an X25519 key pair for one pairing. */
+  boxKeypair(): { publicKey: Uint8Array; privateKey: Uint8Array };
+  /** `crypto_box_seal`. */
+  boxSeal(message: Uint8Array, publicKey: Uint8Array): Uint8Array;
+  /** `crypto_box_seal_open`; `null` when the box does not open. */
+  boxSealOpen(
+    ciphertext: Uint8Array,
+    publicKey: Uint8Array,
+    privateKey: Uint8Array,
+  ): Uint8Array | null;
+  /** `sodium_memcmp`: constant-time equality of two equal-length buffers. */
+  memcmp(a: Uint8Array, b: Uint8Array): boolean;
   /** `crypto_aead_xchacha20poly1305_ietf_encrypt` in combined mode. */
   aeadEncrypt(
     message: Uint8Array,
@@ -71,8 +83,15 @@ export const KDF_CONTEXTS = {
 } as const;
 const ALLOWED_KDF_CONTEXTS: ReadonlySet<string> = new Set(Object.values(KDF_CONTEXTS));
 
-/** Largest message given to the MAC; the `AUK` input is 77 bytes. */
-export const MAC_MESSAGE_MAX_BYTES = 1024;
+/**
+ * Largest message given to the MAC: the pairing response MAC covers the sealed box (at most
+ * 4,096 bytes) plus 67 bytes of labels and ids.
+ */
+export const MAC_MESSAGE_MAX_BYTES = 8192;
+export const BOX_PUBLIC_KEY_BYTES = 32;
+export const BOX_SEAL_OVERHEAD_BYTES = 48;
+/** Largest sealed-box plaintext: the pairing payload (device-enrollment §3.2 step 8). */
+export const BOX_PLAINTEXT_MAX_BYTES = 4096 - BOX_SEAL_OVERHEAD_BYTES;
 /**
  * Largest message given to the unkeyed hash: `items_digest` over 57-byte entries. 8 MiB covers
  * about 147,000 items, far above the V1 vault size; a larger vault fails closed.
@@ -99,6 +118,15 @@ export interface Primitives {
   /** Unkeyed BLAKE2b-256, `H(msg)` in §2. */
   hash(message: Uint8Array): Uint8Array;
   sha256(message: Uint8Array): Uint8Array;
+  boxKeypair(): { publicKey: Uint8Array; privateKey: Uint8Array };
+  boxSeal(message: Uint8Array, publicKey: Uint8Array): Uint8Array;
+  boxSealOpen(
+    ciphertext: Uint8Array,
+    publicKey: Uint8Array,
+    privateKey: Uint8Array,
+  ): Uint8Array | null;
+  /** Constant-time comparison of two 32-byte MACs. */
+  macEqual(a: Uint8Array, b: Uint8Array): boolean;
   kdf(subkeyLength: number, subkeyId: number, context: string, key: Uint8Array): Uint8Array;
   aeadEncrypt(
     plaintext: Uint8Array,
@@ -198,6 +226,44 @@ export function guardPrimitives(raw: RawPrimitives): Primitives {
         call(() => raw.sha256(message)),
         SHA256_BYTES,
       );
+    },
+
+    boxKeypair() {
+      const pair = call(() => raw.boxKeypair());
+      return {
+        publicKey: expectLength(pair.publicKey, BOX_PUBLIC_KEY_BYTES),
+        privateKey: expectLength(pair.privateKey, BOX_PUBLIC_KEY_BYTES),
+      };
+    },
+
+    boxSeal(message: Uint8Array, publicKey: Uint8Array): Uint8Array {
+      boundedBytes(message, 'message', 0, BOX_PLAINTEXT_MAX_BYTES);
+      exactBytes(publicKey, 'publicKey', BOX_PUBLIC_KEY_BYTES);
+      return expectLength(
+        call(() => raw.boxSeal(message, publicKey)),
+        message.length + BOX_SEAL_OVERHEAD_BYTES,
+      );
+    },
+
+    boxSealOpen(ciphertext: Uint8Array, publicKey: Uint8Array, privateKey: Uint8Array) {
+      boundedBytes(
+        ciphertext,
+        'ciphertext',
+        BOX_SEAL_OVERHEAD_BYTES,
+        BOX_PLAINTEXT_MAX_BYTES + BOX_SEAL_OVERHEAD_BYTES,
+      );
+      exactBytes(publicKey, 'publicKey', BOX_PUBLIC_KEY_BYTES);
+      exactBytes(privateKey, 'privateKey', BOX_PUBLIC_KEY_BYTES);
+      const plaintext = call(() => raw.boxSealOpen(ciphertext, publicKey, privateKey));
+      return plaintext === null
+        ? null
+        : expectLength(plaintext, ciphertext.length - BOX_SEAL_OVERHEAD_BYTES);
+    },
+
+    macEqual(a: Uint8Array, b: Uint8Array): boolean {
+      exactBytes(a, 'mac', MAC_BYTES);
+      exactBytes(b, 'mac', MAC_BYTES);
+      return call(() => raw.memcmp(a, b));
     },
 
     kdf(subkeyLength: number, subkeyId: number, context: string, key: Uint8Array): Uint8Array {

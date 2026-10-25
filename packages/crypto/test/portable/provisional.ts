@@ -20,6 +20,8 @@ import {
   refManifestContext,
   refManifestHash,
   refManifestPlaintext,
+  refPairing,
+  refPairingCode,
   refPasswordBytes,
   refPasswordKey,
   refRecordHash,
@@ -62,7 +64,13 @@ export const INPUTS = {
   localName: 'checkpoint',
   localPlaintext: '{"seq":1}',
   localNonce: pattern(21, 24),
+  pairingSecret: pattern(22, 16),
+  pairingEphemeralPublicKey: pattern(23, 32),
+  pairingEphemeralPrivateKey: pattern(24, 32),
 } as const;
+
+/** Stands in for a sealed box of the right length: the MAC covers whatever bytes the box has. */
+const fakeBox = (plaintextLength: number) => pattern(25, plaintextLength + 48);
 
 /** Two more digest entries for the three-item case: an earlier live item and a tombstone. */
 const OTHER_ITEMS = [
@@ -99,6 +107,13 @@ export interface ProvisionalOutputs {
   itemsDigest: { empty: string; one: string; three: string };
   manifest: { manifestKey: string; plaintext: string; envelope: string; hash: string };
   localRecord: { localKey: string; envelope: string };
+  pairing: {
+    code: string;
+    pairingId: string;
+    requestMac: string;
+    payload: string;
+    responseMac: string;
+  };
 }
 
 function utf16(text: string): string {
@@ -260,6 +275,58 @@ export function packageOutputs(raw: RawPrimitives): ProvisionalOutputs {
       localKey: hex(p.kdf(32, 1, KDF_CONTEXTS.local, INPUTS.accountKey)),
       envelope: hex(localEnvelope),
     },
+    pairing: packagePairing(raw),
+  };
+}
+
+/** The ephemeral key pair and the sealed box come from fixed bytes, so the MACs are reproducible. */
+function packagePairing(raw: RawPrimitives): ProvisionalOutputs['pairing'] {
+  let sealed = new Uint8Array(0);
+  const crypto = createFixedNonceCrypto(
+    {
+      ...raw,
+      boxKeypair: () => ({
+        publicKey: INPUTS.pairingEphemeralPublicKey.slice(),
+        privateKey: INPUTS.pairingEphemeralPrivateKey.slice(),
+      }),
+      boxSeal: (message) => {
+        sealed = message.slice();
+        return fakeBox(message.length);
+      },
+    },
+    [],
+  );
+  const deviceId = uuidHex(INPUTS.deviceId);
+  const request = crypto.createPairingRequest({
+    secret: INPUTS.pairingSecret,
+    accountId: INPUTS.accountId,
+    deviceId,
+    platform: 'web',
+  });
+  const response = crypto.createPairingResponse({
+    secret: INPUTS.pairingSecret,
+    accountId: INPUTS.accountId,
+    pairingId: request.pairingId,
+    deviceId,
+    ephemeralPublicKey: request.ephemeralPublicKey,
+    payload: {
+      accountId: INPUTS.vaultId,
+      deviceId: INPUTS.deviceId,
+      secretKey: INPUTS.secretKey,
+      checkpoint: {
+        vaultId: INPUTS.vaultId,
+        seq: 0,
+        manifestHash: new Uint8Array(32),
+        keysetVersion: 1,
+      },
+    },
+  });
+  return {
+    code: crypto.formatPairingCode(INPUTS.pairingSecret),
+    pairingId: hex(request.pairingId),
+    requestMac: hex(request.mac),
+    payload: hex(sealed),
+    responseMac: hex(response.mac),
   };
 }
 
@@ -329,7 +396,7 @@ export function referenceOutputs(): ProvisionalOutputs {
 
 function referenceVaultOutputs(): Pick<
   ProvisionalOutputs,
-  'recovery' | 'item' | 'itemsDigest' | 'manifest' | 'localRecord'
+  'recovery' | 'item' | 'itemsDigest' | 'manifest' | 'localRecord' | 'pairing'
 > {
   const te = new TextEncoder();
   const vaultId = uuidHex(INPUTS.vaultId);
@@ -414,6 +481,27 @@ function referenceVaultOutputs(): Pick<
         ),
       ),
     },
+    pairing: (() => {
+      const ref = refPairing(INPUTS.pairingSecret, INPUTS.accountId);
+      const deviceId = uuidHex(INPUTS.deviceId);
+      const b64 = (bytes: Uint8Array) =>
+        btoa(String.fromCharCode(...bytes))
+          .replace(/\+/g, '-')
+          .replace(/\//g, '_')
+          .replace(/=+$/, '');
+      const payload = te.encode(
+        `{"v":1,"accountId":"${INPUTS.vaultId}","deviceId":"${INPUTS.deviceId}","secretKey":"${b64(INPUTS.secretKey)}","checkpoint":{"vaultId":"${INPUTS.vaultId}","seq":0,"manifestHash":"${b64(new Uint8Array(32))}","keysetVersion":1}}`,
+      );
+      return {
+        code: refPairingCode(INPUTS.pairingSecret),
+        pairingId: hex(ref.pairingId),
+        requestMac: hex(ref.requestMac(deviceId, 1, INPUTS.pairingEphemeralPublicKey)),
+        payload: hex(payload),
+        responseMac: hex(
+          ref.responseMac(deviceId, INPUTS.pairingEphemeralPublicKey, fakeBox(payload.length)),
+        ),
+      };
+    })(),
   };
 }
 
@@ -433,7 +521,8 @@ export function vectorFile(outputs: ProvisionalOutputs): ProvisionalVectorFile {
       'The byte format has not been reviewed or frozen; this file is regenerated whenever it ' +
       'changes and is not a compatibility promise. Synthetic inputs only; fixed nonces come from ' +
       'the test-only entry point.',
-    specification: 'docs/security/cryptographic-design.md §3.1-§4.4 and §5.1-§5.4',
+    specification:
+      'docs/security/cryptographic-design.md §3.1-§4.4 and §5.1-§5.4; device-enrollment.md §3.1-§3.2',
     inputs: Object.fromEntries(
       Object.entries(INPUTS).map(([k, v]) => [k, v instanceof Uint8Array ? hex(v) : v]),
     ),

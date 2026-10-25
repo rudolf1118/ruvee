@@ -375,3 +375,147 @@ export const VAULT_CHECKS: readonly PortableCheck[] = [
     },
   },
 ];
+
+export const PAIRING_CHECKS: readonly PortableCheck[] = [
+  {
+    id: 'pairing-code-format',
+    category: 'protocol',
+    async run() {
+      const crypto = await initRuveeCrypto();
+      const secret = crypto.generatePairingSecret();
+      assert(secret.length === 16, 'S is 16 bytes');
+      const code = crypto.formatPairingCode(secret);
+      assert(/^PC1(-[0-9A-HJKMNP-TV-Z]{5}){5}-[0-9A-HJKMNP-TV-Z]{4}$/.test(code), code);
+      assert(same(crypto.parsePairingCode(code.toLowerCase()), secret), 'round trip');
+      const body = code.slice(4).replace(/-/g, '');
+      const symbols = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+      for (let i = 0; i < body.length; i++) {
+        const typo = `PC1${body.slice(0, i)}${symbols[(symbols.indexOf(body[i] ?? '0') + 7) % 32] ?? '0'}${body.slice(i + 1)}`;
+        expectCode(() => crypto.parsePairingCode(typo), 'invalid_pairing_code', `typo at ${i}`);
+      }
+      expectCode(
+        () => crypto.parsePairingCode(`RK1${body}`),
+        'invalid_pairing_code',
+        'Recovery Key prefix',
+      );
+      assert(crypto.pairingId(secret).length === 16, 'pairing id is 16 bytes');
+      assert(!same(crypto.pairingId(secret), secret), 'pairing id is not S');
+    },
+  },
+  {
+    id: 'pairing-round-trip-and-binding',
+    category: 'negative',
+    async run() {
+      const crypto = await initRuveeCrypto();
+      const secret = crypto.generatePairingSecret();
+      const accountId = pattern(1, 16);
+      const deviceId = pattern(2, 16);
+      const req = crypto.createPairingRequest({ secret, accountId, deviceId, platform: 'web' });
+      assert(same(req.pairingId, crypto.pairingId(secret)), 'request names the pairing');
+      const transcript = {
+        secret,
+        accountId,
+        pairingId: req.pairingId,
+        deviceId,
+        ephemeralPublicKey: req.ephemeralPublicKey,
+      };
+      assert(
+        crypto.verifyPairingRequest({ ...transcript, platform: 'web', mac: req.mac }),
+        'A verifies B',
+      );
+      // A server that swaps the key, the device, the platform or the account is caught (§3.3).
+      for (const [label, over] of [
+        ['substituted ephemeral key', { ephemeralPublicKey: crypto.generateKey() }],
+        ['other device', { deviceId: pattern(3, 16) }],
+        ['other account', { accountId: pattern(4, 16) }],
+        ['other pairing id', { pairingId: pattern(5, 16) }],
+        ['wrong secret', { secret: crypto.generatePairingSecret() }],
+      ] as const)
+        assert(
+          !crypto.verifyPairingRequest({ ...transcript, ...over, platform: 'web', mac: req.mac }),
+          label,
+        );
+      assert(
+        !crypto.verifyPairingRequest({ ...transcript, platform: 'ios', mac: req.mac }),
+        'other platform',
+      );
+
+      const payload = {
+        accountId: '01010101-0101-4101-8101-010101010101',
+        deviceId: '02020202-0202-4202-8202-020202020202',
+        secretKey: crypto.generateKey(),
+        checkpoint: {
+          vaultId: crypto.generateUuid(),
+          seq: 7,
+          manifestHash: pattern(9, 32),
+          keysetVersion: 1,
+        },
+      };
+      // Ids in the payload are compared with the transcript, so build matching byte ids.
+      const ids = {
+        accountId: uuidToBytes(payload.accountId),
+        deviceId: uuidToBytes(payload.deviceId),
+      };
+      const req2 = crypto.createPairingRequest({ secret, ...ids, platform: 'web' });
+      const t2 = {
+        secret,
+        ...ids,
+        pairingId: req2.pairingId,
+        ephemeralPublicKey: req2.ephemeralPublicKey,
+      };
+      const res = crypto.createPairingResponse({ ...t2, payload });
+      const opened = crypto.openPairingResponse({
+        ...t2,
+        ephemeralPrivateKey: req2.ephemeralPrivateKey,
+        ciphertext: res.ciphertext,
+        mac: res.mac,
+      });
+      assert(
+        same(opened.secretKey, payload.secretKey) && opened.checkpoint.seq === 7,
+        'B opens the reply',
+      );
+      const open = (over: Record<string, unknown>) =>
+        crypto.openPairingResponse({
+          ...t2,
+          ephemeralPrivateKey: req2.ephemeralPrivateKey,
+          ciphertext: res.ciphertext,
+          mac: res.mac,
+          ...over,
+        });
+      expectCode(
+        () => open({ ciphertext: flip(res.ciphertext, 60) }),
+        'integrity_failure',
+        'tampered box',
+      );
+      expectCode(() => open({ mac: flip(res.mac, 0) }), 'integrity_failure', 'tampered MAC');
+      // A reply the server made itself, sealed to B's key, has no valid MAC.
+      const forged = crypto.createPairingResponse({
+        ...t2,
+        secret: crypto.generatePairingSecret(),
+        payload,
+      });
+      expectCode(
+        () => open({ ciphertext: forged.ciphertext, mac: forged.mac }),
+        'integrity_failure',
+        'forged reply',
+      );
+      // The request MAC is never accepted as a response MAC (reflection).
+      expectCode(() => open({ mac: req2.mac }), 'integrity_failure', 'reflected MAC');
+      // A payload for another device is refused even with a valid MAC.
+      const other = crypto.createPairingResponse({
+        ...t2,
+        payload: { ...payload, deviceId: crypto.generateUuid() },
+      });
+      expectCode(
+        () => open({ ciphertext: other.ciphertext, mac: other.mac }),
+        'integrity_failure',
+        'other device',
+      );
+      expectCode(
+        () => crypto.createPairingRequest({ secret, accountId, deviceId, platform: 'tv' as 'web' }),
+        'invalid_argument',
+        'unknown platform',
+      );
+    },
+  },
+];
