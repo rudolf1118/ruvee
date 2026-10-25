@@ -42,6 +42,7 @@ export interface VaultShellLive {
   onLock: () => void;
   statusPanel: ReactNode;
   extraNav?: ReactNode;
+  security?: { readonly current: boolean; readonly onSelect: () => void };
   renderDetail: (item: VaultItemView, context: DetailContext) => ReactNode;
   /** When set, replaces the detail pane (the item editor, a conflict, devices). */
   detailOverride?: ReactNode;
@@ -224,7 +225,12 @@ export function VaultShell({ items, vaults, initialSelectedId, banner, live }: V
     vaultId: listQuery.vaultId,
     onVault,
     ...(live
-      ? { onLock: live.onLock, statusPanel: live.statusPanel, extraNav: live.extraNav }
+      ? {
+          onLock: live.onLock,
+          statusPanel: live.statusPanel,
+          extraNav: live.extraNav,
+          ...(live.security ? { security: live.security } : {}),
+        }
       : {}),
   };
 

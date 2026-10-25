@@ -17,6 +17,7 @@ const DETAIL_FIELDS: Readonly<Record<SecurityEventType, readonly string[]>> = {
   recovery_failed: [],
   recovery_completed: [],
   recovery_key_rotated: [],
+  secret_key_rotated: [],
   device_pairing_requested: ['requesterDeviceId'],
   device_enrolled: ['enrolledDeviceId', 'via'],
   device_revoked: ['revokedDeviceId', 'reason'],

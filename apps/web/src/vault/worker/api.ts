@@ -31,6 +31,7 @@ import {
   type RegisterFinishRequest,
   type RegisterStartRequest,
   type RevokeDeviceRequest,
+  type SecretKeyRotateRequest,
 } from '@ruvee/contracts';
 import { z } from 'zod';
 
@@ -159,6 +160,8 @@ export const api = {
     }),
   passwordFinish: (body: PasswordChangeFinishRequest) =>
     request('POST', '/account/password/finish', null, body),
+  rotateSecretKey: (body: SecretKeyRotateRequest) =>
+    request('POST', '/account/secret-key', null, body),
 };
 
 export type Api = typeof api;

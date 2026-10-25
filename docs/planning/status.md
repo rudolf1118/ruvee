@@ -39,6 +39,10 @@ A complete single-user web vault across several browsers, against the real API a
 - **Master password change** (authentication.md §9): step-up, the same `AK` under a new wrap and
   OPAQUE record, every other session ended; the other devices move to the new password the next
   time they unlock online.
+- **Secret Key rotation** (D-24): removing a device as lost replaces `SK` in the same step-up;
+  **Security** replaces it on request, and the notice after a recovery leads to Devices. Other
+  devices adopt the new `SK` when they next unlock online; one that missed both an `SK` and a
+  password change asks once for its previous password.
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -47,17 +51,17 @@ A complete single-user web vault across several browsers, against the real API a
 
 ## Verified (locally, 2026-10-25)
 
-| Check                                                                                                                                                                   | Result                          |
-| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                      | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 68, crypto 60)                                                                                                                   | Pass                            |
-| `pnpm test:integration` (37; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                    | Pass                            |
-| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                       | Pass                            |
-| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                     | Pass                            |
-| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                   | Pass                            |
-| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal; INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
-| Remote CI                                                                                                                                                               | **Not run** (nothing pushed)    |
-| Safari, a real Caddy binary, phones, older laptops                                                                                                                      | **Not run**                     |
+| Check                                                                                                                                                                                  | Result                          |
+| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                     | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 70, crypto 60)                                                                                                                                  | Pass                            |
+| `pnpm test:integration` (38; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                   | Pass                            |
+| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                      | Pass                            |
+| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                    | Pass                            |
+| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                  | Pass                            |
+| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` rotation; INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
+| Remote CI                                                                                                                                                                              | **Not run** (nothing pushed)    |
+| Safari, a real Caddy binary, phones, older laptops                                                                                                                                     | **Not run**                     |
 
 ## Running it
 
@@ -91,7 +95,8 @@ RUVEE_E2E_ADMIN_DATABASE_URL=postgresql://…@127.0.0.1:5433/ruvee RUVEE_E2E_BRO
 ## Decisions
 
 Approved by the owner **for development only** on 2026-10-25: D-02 (OPAQUE), D-21 (pairing),
-D-22 (`RAK` recovery verifier), and the product defaults D-17, D-09, D-06, D-08, D-10, D-23.
+D-22 (`RAK` recovery verifier), D-24 (`SK` rotation on lost removal, offered after recovery),
+and the product defaults D-17, D-09, D-06, D-08, D-10, D-23.
 Earlier: D-25, D-01, D-04, D-20. D-16 resolved for development by evidence. Interpretations made
 while building, to confirm in review:
 
@@ -103,13 +108,11 @@ while building, to confirm in review:
 - Zod runs in jitless mode so it never probes `new Function` under the CSP.
 
 Still open: D-03 and D-26 (profile 1 stays provisional; no phone measured), D-19 (who reviews),
-D-07, D-24, D-05, D-11 to D-15, D-18.
+D-07, D-05, D-11 to D-15, D-18.
 
 ## Known gaps and risks
 
-- **Not built:** `SK` rotation when a device is revoked as lost, and its offer after a recovery
-  (D-24 is still open; until then the lost device's `SK` keeps working with any later database
-  copy for offline guessing of the current password, V-08), Recovery Key rotation from settings
+- **Not built:** Recovery Key rotation from settings
   (the rest of P2-14), the activity screen (P2-15), the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
   generator, cards and identities, import/export, SSE push, re-seeding, key rotation, the browser
   extension, mobile.
@@ -123,8 +126,9 @@ D-07, D-24, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**D-24, then `SK` rotation** (cryptographic-design §6.2): rotate `SK` when a device is revoked as
-lost and offer it at the end of a recovery after device loss. It needs the owner's decision, a
-keyset re-encryption and re-wrap, and clients that accept a newer keyset carrying a new `SK`
-(today they stop with `keyset_changed`). Then Recovery Key rotation from settings
-(`PUT /account/recovery`, the rest of P2-14), then the browser extension.
+**Recovery Key rotation from settings** (`PUT /account/recovery`, account-recovery.md §5; the
+rest of P2-14), then the browser extension (Phase 5: secure manual autofill with strict origin
+matching).
+
+Interpretation to confirm in review: other devices adopt a rotated `SK` at their next online
+**unlock** (where the password is in hand to re-wrap locally), not during a background sync.

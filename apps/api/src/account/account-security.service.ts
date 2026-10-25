@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   OPAQUE_CONFIG_ID,
   type PasswordChangeFinishRequest,
+  type SecretKeyRotateRequest,
   type SessionsResponse,
 } from '@ruvee/contracts';
 import type { ClientContext } from '../auth/auth.service.js';
@@ -159,6 +160,55 @@ export class AccountSecurityService {
       });
       await this.events.record(
         'password_changed',
+        { accountId: session.accountId, deviceId: session.deviceId, ...client },
+        tx,
+      );
+    });
+  }
+
+  /**
+   * D-24 and cryptographic-design §6.2. The server checks only what it can: the envelope headers
+   * and that the keyset version is exactly the next one (INV-09); it cannot open either envelope.
+   */
+  async rotateSecretKey(
+    session: AuthenticatedSession,
+    body: SecretKeyRotateRequest,
+    client: ClientContext,
+  ): Promise<void> {
+    const keys = await this.prisma.accountKeys.findUniqueOrThrow({
+      where: { accountId: session.accountId },
+    });
+    // A concurrent change elsewhere (another rotation, a password change) is a conflict first.
+    if (BigInt(body.expectedRowVersion) !== keys.rowVersion)
+      throw new ApiException('row_version_conflict');
+    const keyset = fromBase64url(body.keyset);
+    const wrappedAkPassword = fromBase64url(body.wrappedAkPassword);
+    if (
+      !envelopeHeaderOk(keyset, 0x03, { min: 61, max: 16_445 }, keys.akId) ||
+      !envelopeHeaderOk(wrappedAkPassword, 0x01, { min: 93, max: 93 }, keys.akId) ||
+      BigInt(body.keysetVersion) !== keys.keysetVersion + 1n
+    )
+      throw new ApiException('invalid_request');
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.accountKeys.updateMany({
+        where: {
+          accountId: session.accountId,
+          rowVersion: BigInt(body.expectedRowVersion),
+          keysetVersion: keys.keysetVersion,
+        },
+        data: {
+          keysetVersion: BigInt(body.keysetVersion),
+          keyset,
+          kdfProfile: body.kdfProfile,
+          saltPw: fromBase64url(body.saltPw),
+          wrappedAkPassword,
+          rowVersion: { increment: 1 },
+          updatedAt: new Date(),
+        },
+      });
+      if (updated.count !== 1) throw new ApiException('row_version_conflict');
+      await this.events.record(
+        'secret_key_rotated',
         { accountId: session.accountId, deviceId: session.deviceId, ...client },
         tx,
       );

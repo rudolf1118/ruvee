@@ -10,13 +10,13 @@ import type {
   UnlockedVault,
 } from '@/vault/protocol';
 import { VaultClient } from '@/vault/client';
-import { DevicesIcon, LogoutIcon, ShieldIcon } from '../ui/icons';
+import { DevicesIcon, LogoutIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';
 import { VaultShell } from '../vault/vault-shell';
 import { AuthCard } from './auth-layout';
 import { clearClipboard } from './clipboard';
 import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
-import { ChangePasswordPanel, DevicesPanel } from './devices';
+import { DevicesPanel, SecurityPanel } from './devices';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
 import { AddDevicePanel } from './pairing';
@@ -310,6 +310,17 @@ function UnlockedApp({
               <Notice key={n.id} tone={n.tone}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span>{n.text}</span>
+                  {n.id === 'recovered' ? (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setEditing(null);
+                        setPanel('devices');
+                      }}
+                    >
+                      Review devices
+                    </Button>
+                  ) : null}
                   <Button
                     size="sm"
                     onClick={() => {
@@ -335,6 +346,13 @@ function UnlockedApp({
           onLock();
         },
         statusPanel: <SyncPanel status={status} onSync={syncNow} />,
+        security: {
+          current: panel === 'password',
+          onSelect: () => {
+            setEditing(null);
+            setPanel('password');
+          },
+        },
         extraNav: (
           <>
             <NavButton
@@ -344,15 +362,6 @@ function UnlockedApp({
               onSelect={() => {
                 setEditing(null);
                 setPanel('devices');
-              }}
-            />
-            <NavButton
-              icon={ShieldIcon}
-              label="Master password"
-              current={panel === 'password'}
-              onSelect={() => {
-                setEditing(null);
-                setPanel('password');
               }}
             />
             <NavButton
@@ -415,7 +424,7 @@ function UnlockedApp({
                     }}
                   />
                 ) : (
-                  <ChangePasswordPanel
+                  <SecurityPanel
                     client={client}
                     onClose={() => {
                       setPanel(null);
@@ -464,7 +473,7 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
     out.push({
       id: 'recovered',
       tone: 'brand',
-      text: `Recovery is complete. This device had no earlier record of your vault, so check that it looks current: ${where} If you lost devices, they still hold a copy of your vault: remove them under Devices.`,
+      text: `Recovery is complete. This device had no earlier record of your vault, so check that it looks current: ${where} If you lost devices, they still hold a copy of your vault and your Secret Key: remove them as lost under Devices, which also replaces your Secret Key.`,
     });
   }
   if (status.recoveryUsedAtMs !== undefined)
@@ -478,6 +487,12 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       id: 'password-updated',
       tone: 'brand',
       text: 'Your master password was changed on another device. This device now uses the new one.',
+    });
+  if (vault.secretKeyUpdated)
+    out.push({
+      id: 'secret-key-updated',
+      tone: 'brand',
+      text: 'Your Secret Key was replaced on another device. This device now uses the new one.',
     });
   if (vault.sessionProblem === 'login_failed')
     out.push({

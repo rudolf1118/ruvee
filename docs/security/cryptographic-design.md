@@ -394,6 +394,14 @@ A password change re-wraps `AK`. It does not re-encrypt any item:
   any later database copy allows offline guessing of the current password until `SK` is
   rotated ([validation V-08](architecture-validation.md#1-findings)). Rotating `SK` does not
   help against a device that already holds `AK`; only full rotation does.
+  **As built (2026-10-25):** `POST /account/secret-key` (step-up) stores the next keyset version
+  and the new password wrap; the server checks the envelope headers, that the version is exactly
+  the next one, and `row_version`. Another device adopts `SK'` when it next unlocks online: it
+  reads the keyset under `AK` from its old wrap and writes a new local wrap with the password it
+  was just given, then erases the old `SK`. If the password **and** `SK` both changed before it
+  synced, its old wrap opens only with the old password, so it asks for that once
+  (`previous_password_required`) and keeps the server's wrap only if the new password and `SK'`
+  open it to the same `AK`.
 
 ### 6.3 Full rotation (new `AK`, `VK` and every `IK`)
 

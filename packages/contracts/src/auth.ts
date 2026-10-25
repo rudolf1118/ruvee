@@ -225,3 +225,17 @@ export const passwordChangeFinishRequestSchema = z.strictObject({
   expectedRowVersion: z.int().min(1),
 });
 export type PasswordChangeFinishRequest = z.infer<typeof passwordChangeFinishRequestSchema>;
+
+/**
+ * cryptographic-design §6.2: a new `SK` inside the next keyset version, and the password wrap
+ * under `AUK'` derived with it. The OPAQUE record and the Recovery Key wrap are unchanged.
+ */
+export const secretKeyRotateRequestSchema = z.strictObject({
+  keysetVersion: z.int().min(1).max(U32_MAX),
+  keyset: base64urlBytes({ min: 61, max: 16_445 }),
+  kdfProfile: kdfProfileSchema,
+  saltPw: base64urlBytes({ length: 16 }),
+  wrappedAkPassword: base64urlBytes({ length: 93 }),
+  expectedRowVersion: z.int().min(1),
+});
+export type SecretKeyRotateRequest = z.infer<typeof secretKeyRotateRequestSchema>;

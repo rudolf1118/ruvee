@@ -94,6 +94,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   endSession: (e, p: Parameters<VaultEngine['endSession']>[0]) => e.endSession(p),
   revokeDevice: (e, p: Parameters<VaultEngine['revokeDevice']>[0]) => e.revokeDevice(p),
   changePassword: (e, p: Parameters<VaultEngine['changePassword']>[0]) => e.changePassword(p),
+  rotateSecretKey: (e, p: Parameters<VaultEngine['rotateSecretKey']>[0]) => e.rotateSecretKey(p),
   logout: (e) => e.logout(),
   wipe: (e) => {
     e.wipeMemory();

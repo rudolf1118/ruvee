@@ -16,6 +16,7 @@ import {
   loginStartRequestSchema,
   loginStartResponseSchema,
   passwordChangeFinishRequestSchema,
+  secretKeyRotateRequestSchema,
   reauthFinishResponseSchema,
   reauthStartRequestSchema,
   revokeDeviceRequestSchema,
@@ -409,6 +410,17 @@ export function buildOpenApiDocument(): JsonSchema {
           errors: ['row_version_conflict'],
         }),
       },
+      '/api/v1/account/secret-key': {
+        post: operation({
+          operationId: 'rotateSecretKey',
+          summary:
+            'Stores the next keyset version with a new SK and the password wrap under it. Step-up.',
+          access: 'step-up',
+          request: 'SecretKeyRotateRequest',
+          success: { status: '204', description: 'Rotated.' },
+          errors: ['row_version_conflict'],
+        }),
+      },
       '/api/v1/account': {
         get: operation({
           operationId: 'getAccount',
@@ -646,6 +658,7 @@ export function buildOpenApiDocument(): JsonSchema {
         SessionsResponse: jsonSchema(sessionsResponseSchema),
         RevokeDeviceRequest: jsonSchema(revokeDeviceRequestSchema),
         PasswordChangeFinishRequest: jsonSchema(passwordChangeFinishRequestSchema),
+        SecretKeyRotateRequest: jsonSchema(secretKeyRotateRequestSchema),
         RecoveryStartRequest: jsonSchema(recoveryStartRequestSchema),
         RecoveryStartResponse: jsonSchema(recoveryStartResponseSchema),
         RecoveryMaterialResponse: jsonSchema(recoveryMaterialResponseSchema),

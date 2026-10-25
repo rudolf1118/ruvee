@@ -149,6 +149,8 @@ export function LockScreen({
   onRecover: () => void;
 }) {
   const [password, setPassword] = useState('');
+  // Set after `previous_password_required`: the password and SK both changed elsewhere.
+  const [previous, setPrevious] = useState<string | null>(null);
   const { busy, error, run } = useSubmit();
   const formRef = useRef<HTMLFormElement>(null);
   useEffect(() => {
@@ -158,8 +160,19 @@ export function LockScreen({
   const submit = (event: SubmitEvent) => {
     event.preventDefault();
     void run(async () => {
-      const vault = await client.call('unlock', { password });
+      let vault;
+      try {
+        vault = await client.call('unlock', {
+          password,
+          ...(previous === null ? {} : { previousPassword: previous }),
+        });
+      } catch (e) {
+        if (e instanceof VaultClientError && e.code === 'previous_password_required')
+          setPrevious('');
+        throw e;
+      }
       setPassword('');
+      setPrevious(null);
       onUnlocked(vault);
     });
   };
@@ -196,6 +209,17 @@ export function LockScreen({
           autoComplete="current-password"
           error={error ?? undefined}
         />
+        {previous === null ? null : (
+          <PasswordField
+            label="Previous master password"
+            value={previous}
+            onChange={(e) => {
+              setPrevious(e.target.value);
+            }}
+            autoComplete="off"
+            hint="The one this device used before the change. Needed once."
+          />
+        )}
         <Button
           variant="primary"
           type="submit"

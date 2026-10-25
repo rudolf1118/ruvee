@@ -79,6 +79,7 @@ enum SecurityEventType {
   recovery_failed
   recovery_completed
   recovery_key_rotated
+  secret_key_rotated
   device_pairing_requested
   device_enrolled
   device_revoked

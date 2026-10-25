@@ -4,11 +4,13 @@ import {
   passwordChangeFinishRequestSchema,
   recoveryPasswordStartRequestSchema,
   revokeDeviceRequestSchema,
+  secretKeyRotateRequestSchema,
   uuidSchema,
   type PasswordChangeFinishRequest,
   type RecoveryPasswordStartRequest,
   type RegisterStartResponse,
   type RevokeDeviceRequest,
+  type SecretKeyRotateRequest,
   type SessionsResponse,
 } from '@ruvee/contracts';
 import type { Request } from 'express';
@@ -90,5 +92,17 @@ export class AccountSecurityController {
     @Req() req: Request,
   ): Promise<void> {
     await this.security.passwordFinish(session, body, this.client(req));
+  }
+
+  /** D-24: after revoking a lost device, and offered at the end of a recovery. Step-up. */
+  @Post('account/secret-key')
+  @HttpCode(204)
+  @Access('step-up')
+  async rotateSecretKey(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(secretKeyRotateRequestSchema)) body: SecretKeyRotateRequest,
+    @Req() req: Request,
+  ): Promise<void> {
+    await this.security.rotateSecretKey(session, body, this.client(req));
   }
 }

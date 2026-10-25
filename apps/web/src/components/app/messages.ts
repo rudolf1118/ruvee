@@ -53,6 +53,8 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return "You can't remove the device you are using. Log out on it instead.";
     case 'changed_elsewhere':
       return 'Your account changed on another device in the meantime. Nothing was changed here. Try again.';
+    case 'previous_password_required':
+      return 'Your master password and Secret Key were both changed on another device. To move this device over, also enter the master password you used here before.';
     case 'integrity':
       return "The server's copy of your keys didn't pass Ruvee's checks. Nothing was changed.";
     case 'internal':

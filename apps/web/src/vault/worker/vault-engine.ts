@@ -570,7 +570,11 @@ export class VaultEngine {
 
   // ---- Unlock (offline-capable) and session restore ----
 
-  unlock(params: { password: string }): Promise<UnlockedVault> {
+  /**
+   * `previousPassword` is asked for only after `previous_password_required`: the password and
+   * `SK` both changed elsewhere, so this device's old wrap opens only with the old password.
+   */
+  unlock(params: { password: string; previousPassword?: string }): Promise<UnlockedVault> {
     return this.exclusive(async () => {
       const device = await this.deps.store.device();
       if (!device?.enrolled || device.status !== 'active')
@@ -578,14 +582,19 @@ export class VaultEngine {
       let enrolled = device.enrolled;
       const { crypto } = this.deps;
       let password: string;
+      let localPassword: string;
       try {
         password = normalizePassword(params.password);
+        localPassword =
+          params.previousPassword === undefined
+            ? password
+            : normalizePassword(params.previousPassword);
       } catch {
         throw new VaultError('wrong_password');
       }
       const accountId = uuidToBytes(device.accountId);
       const auk = crypto.deriveAccountUnlockKey({
-        password,
+        password: localPassword,
         passwordSalt: enrolled.saltPw,
         profile: enrolled.kdfProfile,
         secretKey: enrolled.secretKey,
@@ -606,12 +615,20 @@ export class VaultEngine {
       } catch {
         // The local wrap did not open: a wrong password, or a password changed on another
         // device (a password change or a recovery). Only the server can tell which.
+        if (params.previousPassword !== undefined) throw new VaultError('wrong_password');
         const updated = await this.unlockWithServerWrap(device, enrolled, password);
         if (!updated) throw new VaultError('wrong_password');
         ({ accountKey, enrolled } = updated);
         passwordUpdated = true;
       } finally {
         auk.fill(0);
+      }
+      if (params.previousPassword !== undefined) {
+        // The old wrap opened; the new password must open the server's wrap under the new SK.
+        const updated = await this.adoptServerKeys(device, enrolled, password, accountKey);
+        if (!updated) throw new VaultError('wrong_password');
+        enrolled = updated;
+        passwordUpdated = true;
       }
       const keyset = crypto.openKeyset({
         accountKey,
@@ -632,14 +649,16 @@ export class VaultEngine {
       this.session = session;
       await this.loadLocalState();
       const sessionProblem = await this.restoreSession(device, password);
+      let secretKeyUpdated = false;
       if (sessionProblem === undefined) {
-        await this.refreshKeyset(session);
+        secretKeyUpdated = await this.refreshKeyset(session, password);
         await this.syncNow();
       } else session.state = sessionProblem === 'offline' ? 'offline' : 'session_expired';
       return {
         ...this.unlockedView(),
         ...(sessionProblem ? { sessionProblem } : {}),
         ...(passwordUpdated ? { passwordUpdated } : {}),
+        ...(secretKeyUpdated ? { secretKeyUpdated } : {}),
       };
     });
   }
@@ -669,6 +688,10 @@ export class VaultEngine {
     } catch {
       return undefined;
     }
+    // OPAQUE accepted the password, but a newer keyset means `SK` changed too: this device
+    // cannot open the server wrap until its old wrap gives it `AK` to read the new keyset.
+    if (keys.keysetVersion > enrolled.keysetVersion)
+      throw new VaultError('previous_password_required');
     const accountId = uuidToBytes(device.accountId);
     const saltPw = fromB64(keys.saltPw);
     const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
@@ -735,45 +758,156 @@ export class VaultEngine {
   }
 
   /**
-   * INV-09: the keyset version never goes backwards. A newer keyset (vault creation, `SK` or
-   * full rotation, none of which this client performs yet) must open under the current `AK` and
-   * carry the same `SK` and vault; anything else stops sync instead of being trusted.
+   * INV-09: the keyset version never goes backwards. A newer keyset must open under the current
+   * `AK` and name the same vault. If it carries a new `SK` (rotated on another device, D-24), this
+   * device adopts it and re-wraps `AK` locally with the password just typed, so the old `SK` is
+   * no longer stored here. Anything else stops sync instead of being trusted. Returns whether
+   * `SK` was replaced.
    */
-  private async refreshKeyset(session: Session): Promise<void> {
+  private async refreshKeyset(session: Session, password: string): Promise<boolean> {
     let remote;
     try {
       remote = await this.deps.api.accountKeys();
     } catch {
-      return;
+      return false;
     }
     const local = session.device.enrolled;
     if (remote.keysetVersion < local.keysetVersion) {
       this.integrity(session, 'keyset_rollback');
-      return;
+      return false;
     }
-    if (remote.keysetVersion === local.keysetVersion) return;
+    if (remote.keysetVersion === local.keysetVersion) return false;
+    const { crypto } = this.deps;
+    const accountId = uuidToBytes(session.device.accountId);
+    let keyset;
     try {
-      const keyset = this.deps.crypto.openKeyset({
+      keyset = crypto.openKeyset({
         accountKey: session.accountKey,
         accountKeyId: fromB64(remote.akId),
-        accountId: uuidToBytes(session.device.accountId),
+        accountId,
         keysetVersion: remote.keysetVersion,
         envelope: fromB64(remote.keyset),
       });
-      if (!same(keyset.secretKey, local.secretKey) || keyset.vaults[0].vaultId !== local.vaultId) {
-        this.integrity(session, 'keyset_changed');
-        return;
-      }
     } catch {
       this.integrity(session, 'keyset_invalid');
-      return;
+      return false;
     }
-    const device = {
-      ...session.device,
-      enrolled: { ...local, keysetVersion: remote.keysetVersion, keyset: fromB64(remote.keyset) },
+    if (keyset.vaults[0].vaultId !== local.vaultId) {
+      this.integrity(session, 'keyset_changed');
+      return false;
+    }
+    let enrolled: EnrolledKeys = {
+      ...local,
+      keysetVersion: remote.keysetVersion,
+      keyset: fromB64(remote.keyset),
     };
+    const rotated = !same(keyset.secretKey, local.secretKey);
+    if (rotated) {
+      const saltPw = crypto.generatePasswordSalt();
+      const auk = crypto.deriveAccountUnlockKey({
+        password,
+        passwordSalt: saltPw,
+        profile: DEFAULT_KDF_PROFILE,
+        secretKey: keyset.secretKey,
+        accountId,
+      });
+      try {
+        enrolled = {
+          ...enrolled,
+          secretKey: keyset.secretKey,
+          kdfProfile: DEFAULT_KDF_PROFILE,
+          saltPw,
+          wrappedAkPassword: crypto.wrapAccountKey({
+            accountUnlockKey: auk,
+            accountKey: session.accountKey,
+            accountId,
+            accountKeyId: local.akId,
+            accountKeyEpoch: local.akEpoch,
+            profile: DEFAULT_KDF_PROFILE,
+            passwordSalt: saltPw,
+          }),
+        };
+      } finally {
+        auk.fill(0);
+      }
+    }
+    const device = { ...session.device, enrolled };
     await this.deps.store.putDevice(device);
     session.device = device;
+    if (rotated) local.secretKey.fill(0);
+    return rotated;
+  }
+
+  /**
+   * The `previous_password_required` path: `AK` came from the old local wrap. Logs in with the
+   * new password, reads the newer keyset under `AK`, and keeps the server's wrap only if the new
+   * password and the new `SK` open it to the same `AK`.
+   */
+  private async adoptServerKeys(
+    device: DeviceRecord,
+    enrolled: EnrolledKeys,
+    password: string,
+    accountKey: Uint8Array,
+  ): Promise<EnrolledKeys | undefined> {
+    const { crypto, api } = this.deps;
+    let keys;
+    try {
+      await this.opaqueLogin(device.username, password, device.deviceId);
+      keys = await api.accountKeys();
+    } catch (error) {
+      const e = vaultErrorFrom(error);
+      if (e.code === 'device_revoked') return this.revoked();
+      if (e.code === 'rate_limited' || e.code === 'offline') throw e;
+      return undefined;
+    }
+    if (keys.keysetVersion <= enrolled.keysetVersion) return undefined;
+    const accountId = uuidToBytes(device.accountId);
+    let auk: Uint8Array | undefined;
+    try {
+      const keyset = crypto.openKeyset({
+        accountKey,
+        accountKeyId: fromB64(keys.akId),
+        accountId,
+        keysetVersion: keys.keysetVersion,
+        envelope: fromB64(keys.keyset),
+      });
+      if (keyset.vaults[0].vaultId !== enrolled.vaultId) return undefined;
+      const saltPw = fromB64(keys.saltPw);
+      const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
+      auk = crypto.deriveAccountUnlockKey({
+        password,
+        passwordSalt: saltPw,
+        profile: keys.kdfProfile,
+        secretKey: keyset.secretKey,
+        accountId,
+      });
+      const opened = crypto.unwrapAccountKey({
+        accountUnlockKey: auk,
+        accountId,
+        accountKeyId: fromB64(keys.akId),
+        accountKeyEpoch: keys.akEpoch,
+        profile: keys.kdfProfile,
+        passwordSalt: saltPw,
+        envelope: wrappedAkPassword,
+      });
+      if (!same(opened, accountKey)) return undefined;
+      const updated: EnrolledKeys = {
+        ...enrolled,
+        secretKey: keyset.secretKey,
+        kdfProfile: keys.kdfProfile,
+        saltPw,
+        wrappedAkPassword,
+        keysetVersion: keys.keysetVersion,
+        keyset: fromB64(keys.keyset),
+      };
+      await this.deps.store.putDevice({ ...device, enrolled: updated });
+      enrolled.secretKey.fill(0);
+      return updated;
+    } catch {
+      return undefined;
+    } finally {
+      auk?.fill(0);
+    }
   }
 
   /** The server revoked this device: the client wipes itself (P2-11) and the UI locks. */
@@ -1947,13 +2081,15 @@ export class VaultEngine {
 
   /**
    * device-enrollment §6. The server revokes the device and its sessions at once. Revoking this
-   * device from itself is refused: that is what logging out is for.
+   * device from itself is refused: that is what logging out is for. A device revoked as lost
+   * also gets `SK` rotated in the same step-up (D-24); if only that part fails, the revocation
+   * stands and the result says so, so the UI can offer the rotation again.
    */
   revokeDevice(params: {
     deviceId: string;
     reason: 'retired' | 'lost';
     password: string;
-  }): Promise<true> {
+  }): Promise<{ secretKeyRotated: boolean }> {
     return this.exclusive(async () => {
       const session = this.requireSession();
       if (params.deviceId === session.device.deviceId)
@@ -1964,7 +2100,14 @@ export class VaultEngine {
       } catch (error) {
         return this.onlineFailure(error);
       }
-      return true as const;
+      if (params.reason === 'retired') return { secretKeyRotated: false };
+      try {
+        await this.rotateSecretKeyNow(session, params.password);
+        return { secretKeyRotated: true };
+      } catch (error) {
+        if (vaultErrorFrom(error).code === 'device_revoked') return this.revoked();
+        return { secretKeyRotated: false };
+      }
     });
   }
 
@@ -2037,6 +2180,103 @@ export class VaultEngine {
       }
       return true as const;
     });
+  }
+
+  /**
+   * D-24 and cryptographic-design §6.2: a new `SK` in the next keyset version, and `AK` re-wrapped
+   * under `AUK'`. The password, the OPAQUE record and the Recovery Kit stay the same. Other
+   * devices adopt the new `SK` the next time they unlock online. It does not help against a
+   * device that already holds `AK`; only full rotation does (Phase 4).
+   */
+  rotateSecretKey(params: { password: string }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      try {
+        await this.stepUp(params.password);
+        await this.rotateSecretKeyNow(session, params.password);
+      } catch (error) {
+        return this.onlineFailure(error);
+      }
+      return true as const;
+    });
+  }
+
+  /** The rotation itself, after a step-up. */
+  private async rotateSecretKeyNow(session: Session, rawPassword: string): Promise<void> {
+    const { crypto, api } = this.deps;
+    const password = normalizePassword(rawPassword);
+    const keys = await api.accountKeys();
+    const enrolled = session.device.enrolled;
+    if (
+      !same(fromB64(keys.akId), enrolled.akId) ||
+      keys.akEpoch !== enrolled.akEpoch ||
+      keys.keysetVersion !== enrolled.keysetVersion
+    )
+      throw new VaultError('changed_elsewhere');
+    const accountId = uuidToBytes(session.device.accountId);
+    const secretKey = crypto.generateKey();
+    const keysetVersion = enrolled.keysetVersion + 1;
+    const keyset = crypto.sealKeyset({
+      accountKey: session.accountKey,
+      accountKeyId: enrolled.akId,
+      accountId,
+      keysetVersion,
+      keyset: {
+        secretKey,
+        vaults: [
+          {
+            vaultId: session.vault.vaultId,
+            vkId: session.vault.vaultKeyId,
+            vk: session.vault.vaultKey,
+          },
+        ],
+      },
+    });
+    const saltPw = crypto.generatePasswordSalt();
+    const auk = crypto.deriveAccountUnlockKey({
+      password,
+      passwordSalt: saltPw,
+      profile: DEFAULT_KDF_PROFILE,
+      secretKey,
+      accountId,
+    });
+    let wrappedAkPassword: Uint8Array;
+    try {
+      wrappedAkPassword = crypto.wrapAccountKey({
+        accountUnlockKey: auk,
+        accountKey: session.accountKey,
+        accountId,
+        accountKeyId: enrolled.akId,
+        accountKeyEpoch: enrolled.akEpoch,
+        profile: DEFAULT_KDF_PROFILE,
+        passwordSalt: saltPw,
+      });
+    } finally {
+      auk.fill(0);
+    }
+    await api.rotateSecretKey({
+      keysetVersion,
+      keyset: toB64(keyset),
+      kdfProfile: 1,
+      saltPw: toB64(saltPw),
+      wrappedAkPassword: toB64(wrappedAkPassword),
+      expectedRowVersion: keys.rowVersion,
+    });
+    const device = {
+      ...session.device,
+      enrolled: {
+        ...enrolled,
+        secretKey,
+        kdfProfile: 1,
+        saltPw,
+        wrappedAkPassword,
+        keysetVersion,
+        keyset,
+      },
+    };
+    await this.deps.store.putDevice(device);
+    session.device = device;
+    enrolled.secretKey.fill(0);
   }
 
   /** A failed online call: a revoked device wipes itself (INV-15); anything else is reported. */

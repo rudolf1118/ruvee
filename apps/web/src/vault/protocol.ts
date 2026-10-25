@@ -88,6 +88,8 @@ export interface UnlockedVault {
   readonly recovered?: { readonly lastChange: SyncStatus['lastChange'] };
   /** The local password wrap was replaced because the password changed on another device. */
   readonly passwordUpdated?: boolean;
+  /** The Secret Key was replaced on another device, and this device now uses the new one. */
+  readonly secretKeyUpdated?: boolean;
 }
 
 export interface RecoveryKitView {
@@ -125,6 +127,7 @@ export type VaultErrorCode =
   | 'recovery_failed'
   | 'cannot_revoke_current'
   | 'changed_elsewhere'
+  | 'previous_password_required'
   | 'integrity'
   | 'internal';
 
@@ -184,7 +187,7 @@ export interface VaultMethods {
   setupVerifyKit(params: { recoveryKey: string }): true;
   setupFinish(): UnlockedVault;
   login(params: { username: string; password: string }): DevicePhase;
-  unlock(params: { password: string }): UnlockedVault;
+  unlock(params: { password: string; previousPassword?: string }): UnlockedVault;
   items(): readonly ItemSummary[];
   detail(params: { id: string }): ItemDetail;
   secret(params: { id: string }): string;
@@ -210,8 +213,11 @@ export interface VaultMethods {
   acknowledgeRecoveryNotice(): true;
   devices(): readonly DeviceView[];
   endSession(params: { sessionId: string }): true;
-  revokeDevice(params: { deviceId: string; reason: 'retired' | 'lost'; password: string }): true;
+  revokeDevice(params: { deviceId: string; reason: 'retired' | 'lost'; password: string }): {
+    secretKeyRotated: boolean;
+  };
   changePassword(params: { currentPassword: string; newPassword: string }): true;
+  rotateSecretKey(params: { password: string }): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

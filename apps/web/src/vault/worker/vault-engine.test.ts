@@ -467,8 +467,12 @@ describe('vault engine', () => {
       ),
     ).toBe('wrong_password');
     expect(server.devices.get(bId.deviceId)).toBe('active');
-    await a.engine.revokeDevice({ deviceId: bId.deviceId, reason: 'lost', password: PASSWORD });
+    expect(
+      await a.engine.revokeDevice({ deviceId: bId.deviceId, reason: 'lost', password: PASSWORD }),
+    ).toEqual({ secretKeyRotated: true });
     expect(server.revokeReasons).toEqual(['lost']);
+    // Revoking as lost rotates SK in the same step-up (D-24).
+    expect(server.account?.keys.keysetVersion).toBe(2);
     expect(await code(b.engine.sync())).toBe('device_revoked');
     expect(b.events).toContainEqual({ event: 'ended', reason: 'device_revoked' });
     expect(await b.store.device()).toBeUndefined();
@@ -503,6 +507,75 @@ describe('vault engine', () => {
     const bAgain = await (await device(server, b.factory, b.api)).engine.unlock({ password: NEW });
     expect(bAgain.passwordUpdated).toBe(true);
     expect(bAgain.items.map((i) => i.title)).toEqual(['Kept across the change']);
+  });
+
+  it('rotates SK; another device adopts it at its next online unlock (D-24)', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await secondDevice(server, a);
+    await a.engine.save({ draft: login('Survives the rotation') });
+    await a.engine.sync();
+    const skOf = async (d: Device) => (await d.store.device())?.enrolled?.secretKey.slice();
+    const oldSk = await skOf(a);
+    expect(await code(a.engine.rotateSecretKey({ password: 'synthetic wrong guess' }))).toBe(
+      'wrong_password',
+    );
+    await a.engine.rotateSecretKey({ password: PASSWORD });
+    const newSk = await skOf(a);
+    expect(newSk).toBeDefined();
+    expect(Buffer.from(newSk ?? []).equals(Buffer.from(oldSk ?? []))).toBe(false);
+    expect(server.account?.keys.keysetVersion).toBe(2);
+    // A unlocks with the same password under the new SK.
+    const aAgain = await (
+      await device(server, a.factory, a.api)
+    ).engine.unlock({
+      password: PASSWORD,
+    });
+    expect(aAgain.secretKeyUpdated).toBeUndefined();
+
+    // B still holds the old SK; its online unlock reads the new keyset and re-wraps locally.
+    expect(Buffer.from((await skOf(b)) ?? []).equals(Buffer.from(oldSk ?? []))).toBe(true);
+    const bAgain = await (
+      await device(server, b.factory, b.api)
+    ).engine.unlock({
+      password: PASSWORD,
+    });
+    expect(bAgain.secretKeyUpdated).toBe(true);
+    expect(bAgain.items.map((i) => i.title)).toEqual(['Survives the rotation']);
+    expect(Buffer.from((await skOf(b)) ?? []).equals(Buffer.from(newSk ?? []))).toBe(true);
+    // Offline now, B opens with the local wrap it just made.
+    server.offline = true;
+    const bOffline = await (
+      await device(server, b.factory, b.api)
+    ).engine.unlock({
+      password: PASSWORD,
+    });
+    expect(bOffline.sessionProblem).toBe('offline');
+  });
+
+  it('asks for the previous password when SK and the password both changed elsewhere', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await secondDevice(server, a);
+    const NEW = 'synthetic rotated passphrase 0d4f';
+    await a.engine.rotateSecretKey({ password: PASSWORD });
+    await a.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW });
+    const fresh = () => device(server, b.factory, b.api);
+    expect(await code((await fresh()).engine.unlock({ password: NEW }))).toBe(
+      'previous_password_required',
+    );
+    expect(
+      await code(
+        (await fresh()).engine.unlock({ password: NEW, previousPassword: 'synthetic wrong one' }),
+      ),
+    ).toBe('wrong_password');
+    const moved = await (
+      await fresh()
+    ).engine.unlock({ password: NEW, previousPassword: PASSWORD });
+    expect(moved.passwordUpdated).toBe(true);
+    const later = await (await fresh()).engine.unlock({ password: NEW });
+    expect(later.passwordUpdated).toBeUndefined();
+    expect(later.sync.state).toBe('synced');
   });
 
   it('ends the unlocked session when the server session expires', async () => {

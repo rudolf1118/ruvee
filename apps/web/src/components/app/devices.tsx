@@ -80,7 +80,7 @@ export function DevicesPanel({
   const [devices, setDevices] = useState<readonly DeviceView[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<DeviceView | null>(null);
-  const [revokedLost, setRevokedLost] = useState(false);
+  const [revokedLost, setRevokedLost] = useState<{ secretKeyRotated: boolean } | null>(null);
 
   const load = useCallback(() => {
     client.call('devices').then(
@@ -105,9 +105,9 @@ export function DevicesPanel({
           onCancel={() => {
             setRevoking(null);
           }}
-          onDone={(reason) => {
+          onDone={(reason, result) => {
             setRevoking(null);
-            setRevokedLost(reason === 'lost');
+            setRevokedLost(reason === 'lost' ? result : null);
             load();
           }}
         />
@@ -132,12 +132,14 @@ export function DevicesPanel({
         <Notice tone="caution">
           <div className="flex flex-col gap-2">
             <span>
-              The device was removed. Because it may be in someone else&apos;s hands, change your
-              master password now, then change the important passwords stored in your vault. This
-              build can&apos;t yet replace your Secret Key, which the lost device also holds.
+              {revokedLost.secretKeyRotated
+                ? 'The device was removed and your Secret Key was replaced, so a copy of the server data no longer works with the old one. '
+                : "The device was removed, but your Secret Key couldn't be replaced. Replace it under Security. "}
+              Because the device may be in someone else&apos;s hands, also change your master
+              password now, then the important passwords stored in your vault.
             </span>
             <Button size="sm" className="self-start" onClick={onChangePassword}>
-              Change master password
+              Open Security
             </Button>
           </div>
         </Notice>
@@ -188,7 +190,7 @@ export function DevicesPanel({
                     size="sm"
                     aria-label={`Remove ${deviceName(d)} ${d.id.slice(0, 8)}`}
                     onClick={() => {
-                      setRevokedLost(false);
+                      setRevokedLost(null);
                       setRevoking(d);
                     }}
                   >
@@ -240,7 +242,7 @@ function RevokeForm({
   client: VaultClient;
   device: DeviceView;
   onCancel: () => void;
-  onDone: (reason: 'retired' | 'lost') => void;
+  onDone: (reason: 'retired' | 'lost', result: { secretKeyRotated: boolean }) => void;
 }) {
   const [reason, setReason] = useState<'retired' | 'lost'>('retired');
   const [password, setPassword] = useState('');
@@ -255,9 +257,9 @@ function RevokeForm({
     client
       .call('revokeDevice', { deviceId: device.id, reason, password })
       .then(
-        () => {
+        (result) => {
           setPassword('');
-          onDone(reason);
+          onDone(reason, result);
         },
         (e: unknown) => {
           setError(errorText(e));
@@ -320,8 +322,8 @@ function RevokeForm({
           </ul>
           {reason === 'lost' ? (
             <span>
-              Afterwards, change your master password and the important passwords stored in your
-              vault.
+              Ruvee also replaces your Secret Key, which the lost device holds. Afterwards, change
+              your master password and the important passwords stored in your vault.
             </span>
           ) : null}
         </div>
@@ -348,14 +350,88 @@ function RevokeForm({
   );
 }
 
+/** Master password change (authentication.md §9) and Secret Key replacement (D-24). */
+export function SecurityPanel({ client, onClose }: { client: VaultClient; onClose: () => void }) {
+  return (
+    <Panel title="Security" onClose={onClose}>
+      <ChangePasswordSection client={client} onClose={onClose} />
+      <hr className="border-line" />
+      <SecretKeySection client={client} />
+    </Panel>
+  );
+}
+
+function SecretKeySection({ client }: { client: VaultClient }) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const submit = (event: SubmitEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    client
+      .call('rotateSecretKey', { password })
+      .then(
+        () => {
+          setPassword('');
+          setDone(true);
+        },
+        (e: unknown) => {
+          setError(errorText(e));
+        },
+      )
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  return (
+    <section className="flex flex-col gap-4" aria-labelledby="secret-key-heading">
+      <h3 id="secret-key-heading" className="text-title font-bold">
+        Secret Key
+      </h3>
+      {done ? (
+        <Notice tone="brand">
+          Your Secret Key was replaced. Your other devices switch to the new one the next time they
+          unlock while online.
+        </Notice>
+      ) : (
+        <form className="flex flex-col gap-4" onSubmit={submit}>
+          <p className="text-body text-ink-muted">
+            Every device you added holds your Secret Key. Replace it if you lost a device or think
+            one was used by someone else: a later copy of the server&apos;s data then can&apos;t be
+            combined with the old key to guess your password. It doesn&apos;t help against a device
+            that already opened your vault, and it doesn&apos;t change your master password or
+            Recovery Kit.
+          </p>
+          <PasswordField
+            label="Master password"
+            value={password}
+            autoComplete="current-password"
+            onChange={(e) => {
+              setPassword(e.target.value);
+            }}
+          />
+          {error ? <Notice>{error}</Notice> : null}
+          <Button
+            variant="primary"
+            type="submit"
+            className="self-end"
+            aria-disabled={busy || undefined}
+          >
+            {busy ? 'Replacing…' : 'Replace Secret Key'}
+          </Button>
+        </form>
+      )}
+    </section>
+  );
+}
+
 /** authentication.md §9: a new master password for the same keys; other sessions end. */
-export function ChangePasswordPanel({
-  client,
-  onClose,
-}: {
-  client: VaultClient;
-  onClose: () => void;
-}) {
+function ChangePasswordSection({ client, onClose }: { client: VaultClient; onClose: () => void }) {
   const [current, setCurrent] = useState('');
   const [next, setNext] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -396,7 +472,10 @@ export function ChangePasswordPanel({
   };
 
   return (
-    <Panel title="Change master password" onClose={onClose}>
+    <section className="flex flex-col gap-4" aria-labelledby="password-heading">
+      <h3 id="password-heading" className="text-title font-bold">
+        Change master password
+      </h3>
       {done ? (
         <>
           <Notice tone="brand">
@@ -451,6 +530,6 @@ export function ChangePasswordPanel({
           </Button>
         </form>
       )}
-    </Panel>
+    </section>
   );
 }

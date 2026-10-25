@@ -104,6 +104,8 @@ export interface SidebarProps {
   statusPanel?: ReactNode;
   /** Extra navigation entries above Settings, e.g. devices. */
   extraNav?: ReactNode;
+  /** Makes the "Security" entry available. */
+  security?: { readonly current: boolean; readonly onSelect: () => void };
 }
 
 export function Sidebar({
@@ -117,6 +119,7 @@ export function Sidebar({
   onLock,
   statusPanel,
   extraNav,
+  security,
 }: SidebarProps) {
   const nav = (target: Section, icon: IconComponent, withCount = true) => (
     <NavButton
@@ -152,7 +155,16 @@ export function Sidebar({
       {nav('identity', PersonIcon)}
 
       <div aria-hidden="true" className="mx-1.5 my-3 h-px bg-line" />
-      <UnavailableNavItem icon={ShieldIcon} label="Security" />
+      {security ? (
+        <NavButton
+          icon={ShieldIcon}
+          label="Security"
+          current={security.current}
+          onSelect={security.onSelect}
+        />
+      ) : (
+        <UnavailableNavItem icon={ShieldIcon} label="Security" />
+      )}
       <UnavailableNavItem icon={DiceIcon} label="Password generator" />
       {nav('trash', TrashIcon)}
 

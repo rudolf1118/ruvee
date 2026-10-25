@@ -16,7 +16,8 @@ Implemented locally (remote CI not yet run): the health endpoints and transport 
 `GET /api/v1/sync/changes`, `POST /api/v1/sync/commits`, `/api/v1/pairings/*`, and
 `/api/v1/recovery/{start,material,password/start,complete}`, and step-up and account security:
 `/api/v1/auth/reauth/{start,finish}`, `GET /api/v1/sessions`, `DELETE /api/v1/sessions/{id}`,
-`POST /api/v1/devices/{id}/revoke` and `/api/v1/account/password/{start,finish}`. Everything else
+`POST /api/v1/devices/{id}/revoke`, `/api/v1/account/password/{start,finish}` and
+`POST /api/v1/account/secret-key` (`SK` rotation, D-24). Everything else
 in this document (refresh, `PUT /account/recovery`, events, SSE, re-seeding) is still
 **proposed** and has no contract. A step-up login state is bound to its session: `login/finish`
 refuses it, so step-up can never mint a new session. `GET /account` also returns `lastRecoveryAt`, the time of the
@@ -105,15 +106,16 @@ The "session" result is a `Set-Cookie` header for a web request. For a token cli
 
 ## Account
 
-| Method and path                 | Level     | Body to the server, and response                                                                                                                                                           | Phase |
-| ------------------------------- | --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----- |
-| `GET /account`                  | `session` | → `{ accountId, username, createdAt, passwordChangedAt }`                                                                                                                                  | 2     |
-| `GET /account/keys`             | `active`  | → `{ kdfProfile, saltPw, akId, akEpoch, wrappedAkPassword, keysetVersion, keyset, rowVersion }`. The recovery wrap is not returned here.                                                   | 2     |
-| `POST /account/password/start`  | `step-up` | `{ registrationRequest }` → `{ registrationResponse }`                                                                                                                                     | 2     |
-| `POST /account/password/finish` | `step-up` | `{ registrationRecord, kdfProfile, saltPw, wrappedAkPassword, expectedRowVersion }`. Revokes all other sessions ([authentication.md §9](../security/authentication.md#9-password-change)). | 2     |
-| `PUT /account/recovery`         | `step-up` | `{ recoveryKeyId, wrappedAkRecovery, recoveryVerifier, expectedRowVersion }` ([account-recovery.md §5](../security/account-recovery.md#5-recovery-key-rotation))                           | 2     |
-| `GET /account/events?cursor=`   | `active`  | → security events, newest first, 50 per page.                                                                                                                                              | 2     |
-| `POST /account/vault-reset`     | `step-up` | `{ confirmUsername, newKeys: { … as at registration … } }` ([account-recovery.md §6.1](../security/account-recovery.md#61-vault-reset-by-the-user))                                        | 3     |
+| Method and path                 | Level     | Body to the server, and response                                                                                                                                                                                                          | Phase |
+| ------------------------------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----- |
+| `GET /account`                  | `session` | → `{ accountId, username, createdAt, passwordChangedAt }`                                                                                                                                                                                 | 2     |
+| `GET /account/keys`             | `active`  | → `{ kdfProfile, saltPw, akId, akEpoch, wrappedAkPassword, keysetVersion, keyset, rowVersion }`. The recovery wrap is not returned here.                                                                                                  | 2     |
+| `POST /account/password/start`  | `step-up` | `{ registrationRequest }` → `{ registrationResponse }`                                                                                                                                                                                    | 2     |
+| `POST /account/password/finish` | `step-up` | `{ registrationRecord, kdfProfile, saltPw, wrappedAkPassword, expectedRowVersion }`. Revokes all other sessions ([authentication.md §9](../security/authentication.md#9-password-change)).                                                | 2     |
+| `POST /account/secret-key`      | `step-up` | `{ keysetVersion, keyset, kdfProfile, saltPw, wrappedAkPassword, expectedRowVersion }`. The next keyset version only; sessions are not revoked ([cryptographic-design.md §6.2](../security/cryptographic-design.md#62-narrow-rotations)). | 2     |
+| `PUT /account/recovery`         | `step-up` | `{ recoveryKeyId, wrappedAkRecovery, recoveryVerifier, expectedRowVersion }` ([account-recovery.md §5](../security/account-recovery.md#5-recovery-key-rotation))                                                                          | 2     |
+| `GET /account/events?cursor=`   | `active`  | → security events, newest first, 50 per page.                                                                                                                                                                                             | 2     |
+| `POST /account/vault-reset`     | `step-up` | `{ confirmUsername, newKeys: { … as at registration … } }` ([account-recovery.md §6.1](../security/account-recovery.md#61-vault-reset-by-the-user))                                                                                       | 3     |
 
 A stale `expectedRowVersion` returns `409 row_version_conflict`, and the client refetches.
 

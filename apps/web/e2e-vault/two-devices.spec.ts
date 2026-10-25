@@ -83,7 +83,7 @@ async function expectAccessible(page: Page) {
 
 test.describe.configure({ mode: 'serial' });
 
-test('devices: setup, items, pairing, sync, conflict, lock, recovery, password change, removal', async ({
+test('devices: setup, items, pairing, sync, conflict, lock, recovery, password change, removal, SK rotation', async ({
   browser,
 }) => {
   test.setTimeout(300_000);
@@ -285,7 +285,7 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   await expect(b.getByText(/couldn't sign in, so it won't sync/)).toBeVisible({ timeout: 30_000 });
 
   // ---- A changes the master password; C moves to it (authentication.md §9) ----
-  await a.getByRole('button', { name: 'Master password' }).click();
+  await a.getByRole('button', { name: 'Security' }).click();
   await a.getByRole('textbox', { name: 'Current master password', exact: true }).fill(MASTER);
   await a.getByRole('textbox', { name: 'New master password', exact: true }).fill(CHANGED);
   await a.getByRole('textbox', { name: 'Type the new password again', exact: true }).fill(CHANGED);
@@ -318,12 +318,22 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   await a.getByRole('textbox', { name: 'Master password', exact: true }).fill(CHANGED);
   await a.getByRole('button', { name: 'Remove device' }).click();
   await expect(a.getByText(/may be in someone else's hands/)).toBeVisible({ timeout: 30_000 });
+  await expect(a.getByText(/your Secret Key was replaced/)).toBeVisible();
   await expect(a.getByText(/^Removed/)).toBeVisible();
   await b.getByRole('button', { name: 'Sync now' }).click();
   await expect(b.getByRole('button', { name: 'Create an account' })).toBeVisible({
     timeout: 15_000,
   });
   expect(await indexedDbText(b)).not.toContain('"deviceId"');
+
+  // C still holds the old Secret Key; its next online unlock adopts the new one (D-24).
+  await c.getByRole('button', { name: 'Lock now' }).click();
+  await c.getByRole('textbox', { name: 'Master password', exact: true }).fill(CHANGED);
+  await c.getByRole('button', { name: 'Unlock' }).click();
+  await expect(c.getByText(/Secret Key was replaced on another device/)).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(c.getByText('3 items in all vaults')).toBeVisible();
 
   // ---- Capture checks: nothing secret on the wire or at rest ----
   const forbidden = [

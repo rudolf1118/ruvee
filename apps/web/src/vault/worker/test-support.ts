@@ -430,6 +430,28 @@ export class FakeServer {
         sessionGeneration = this.generation;
         return Promise.resolve(undefined);
       },
+      rotateSecretKey: (body) => {
+        this.check(body);
+        requireActive();
+        if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
+        const account = this.account;
+        if (!account) this.fail(404, 'not_found');
+        if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
+        if (body.keysetVersion !== account.keys.keysetVersion + 1)
+          this.fail(400, 'invalid_request');
+        this.account = {
+          ...account,
+          keys: {
+            ...account.keys,
+            keysetVersion: body.keysetVersion,
+            keyset: body.keyset,
+            saltPw: body.saltPw,
+            wrappedAkPassword: body.wrappedAkPassword,
+          },
+        };
+        this.rowVersion++;
+        return Promise.resolve(undefined);
+      },
     };
   }
 

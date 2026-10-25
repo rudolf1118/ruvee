@@ -297,4 +297,99 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     );
     expect(changed).toHaveLength(1);
   });
+
+  it('rotates SK: the next keyset version, a wrap only the new SK opens (D-24)', async () => {
+    const { crypto } = account;
+    const accountId = uuidToBytes(account.accountId);
+    const keys = accountKeysResponseSchema.parse(
+      (await h.get('/api/v1/account/keys', cookieA)).body,
+    );
+    const newSecretKey = crypto.generateKey();
+    const keysetVersion = keys.keysetVersion + 1;
+    const saltPw = crypto.generatePasswordSalt();
+    const auk = crypto.deriveAccountUnlockKey({
+      password: NEW_PASSWORD,
+      passwordSalt: saltPw,
+      profile: 1,
+      secretKey: newSecretKey,
+      accountId,
+    });
+    const body = {
+      keysetVersion,
+      keyset: b64(
+        crypto.sealKeyset({
+          accountKey: account.accountKey,
+          accountKeyId: unb64(keys.akId),
+          accountId,
+          keysetVersion,
+          keyset: {
+            secretKey: newSecretKey,
+            vaults: [{ vaultId: account.vaultId, vkId: account.vaultKeyId, vk: account.vaultKey }],
+          },
+        }),
+      ),
+      kdfProfile: 1,
+      saltPw: b64(saltPw),
+      wrappedAkPassword: b64(
+        crypto.wrapAccountKey({
+          accountUnlockKey: auk,
+          accountKey: account.accountKey,
+          accountId,
+          accountKeyId: unb64(keys.akId),
+          accountKeyEpoch: keys.akEpoch,
+          profile: 1,
+          passwordSalt: saltPw,
+        }),
+      ),
+      expectedRowVersion: keys.rowVersion,
+    };
+    await ageAuth();
+    expectError(await h.post('/api/v1/account/secret-key', body, cookieA), 'step_up_required');
+    const up = await stepUp(cookieA, NEW_PASSWORD);
+    await h
+      .post(
+        '/api/v1/auth/reauth/finish',
+        { loginId: up.start.loginId, finishLoginRequest: up.finished?.finishLoginRequest },
+        cookieA,
+      )
+      .expect(200);
+    // The version must be exactly the next one: no rollback and no gap (INV-09).
+    for (const v of [keys.keysetVersion, keysetVersion + 1])
+      expectError(
+        await h.post('/api/v1/account/secret-key', { ...body, keysetVersion: v }, cookieA),
+        'invalid_request',
+      );
+    expect((await h.post('/api/v1/account/secret-key', body, cookieA)).status).toBe(204);
+    expectError(await h.post('/api/v1/account/secret-key', body, cookieA), 'row_version_conflict');
+
+    const after = accountKeysResponseSchema.parse(
+      (await h.get('/api/v1/account/keys', cookieA)).body,
+    );
+    expect(after.keysetVersion).toBe(keysetVersion);
+    const unwrap = (secretKey: Uint8Array) =>
+      crypto.unwrapAccountKey({
+        accountUnlockKey: crypto.deriveAccountUnlockKey({
+          password: NEW_PASSWORD,
+          passwordSalt: unb64(after.saltPw),
+          profile: 1,
+          secretKey,
+          accountId,
+        }),
+        accountId,
+        accountKeyId: unb64(after.akId),
+        accountKeyEpoch: after.akEpoch,
+        profile: 1,
+        passwordSalt: unb64(after.saltPw),
+        envelope: unb64(after.wrappedAkPassword),
+      });
+    expect(b64(unwrap(newSecretKey))).toBe(b64(account.accountKey));
+    expect(() => unwrap(account.secretKey)).toThrow();
+    // The password itself did not change, and the session continues.
+    expect((await login(NEW_PASSWORD))?.status).toBe(200);
+    const events = await query(
+      h.db.url,
+      `SELECT 1 FROM security_events WHERE type = 'secret_key_rotated'`,
+    );
+    expect(events).toHaveLength(1);
+  });
 });
