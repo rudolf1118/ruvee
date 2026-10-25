@@ -7,6 +7,7 @@ import {
   deviceSchema,
   errorResponseSchema,
   loginStartResponseSchema,
+  pairingStateResponseSchema,
   registerStartResponseSchema,
   sessionResponseSchema,
   syncChangesResponseSchema,
@@ -15,10 +16,12 @@ import {
   type CommitRequest,
   type LoginFinishRequest,
   type LoginStartRequest,
+  type PairingApproveRequest,
+  type PairingJoinRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
 } from '@ruvee/contracts';
-import { type z } from 'zod';
+import { z } from 'zod';
 
 /** A response with a contract error code. Messages are the contract's fixed text. */
 export class ApiError extends Error {
@@ -51,7 +54,7 @@ const BASE = '/api/v1';
  * against its contract schema: the server is not trusted to send well-formed data.
  */
 async function request<S extends z.ZodType>(
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   path: string,
   schema: S | null,
   body?: unknown,
@@ -108,6 +111,18 @@ export const api = {
   changes: (since: number) =>
     request('GET', `/sync/changes?since=${String(since)}`, syncChangesResponseSchema),
   commit: (body: CommitRequest) => request('POST', '/sync/commits', commitResponseSchema, body),
+  pairingCreate: (pairingId: string) =>
+    request('POST', '/pairings', z.strictObject({ expiresAt: z.iso.datetime() }), { pairingId }),
+  pairingState: (pairingId: string) =>
+    request('GET', `/pairings/${pairingId}`, pairingStateResponseSchema),
+  pairingRequest: (pairingId: string, body: PairingJoinRequest) =>
+    request('POST', `/pairings/${pairingId}/request`, null, body),
+  pairingApprove: (pairingId: string, body: PairingApproveRequest) =>
+    request('POST', `/pairings/${pairingId}/approve`, null, body),
+  pairingComplete: (pairingId: string) =>
+    request('POST', `/pairings/${pairingId}/complete`, null, {}),
+  pairingCancel: (pairingId: string, reason: 'user' | 'mac_failed') =>
+    request('DELETE', `/pairings/${pairingId}`, null, { reason }),
 };
 
 export type Api = typeof api;

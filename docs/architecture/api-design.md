@@ -9,20 +9,33 @@ the security documents linked from each section. Tables are in
 
 ## What is implemented
 
-Only the health endpoints and the transport conventions below are implemented (P2-05, local
-branch, remote CI not yet run). Every other endpoint in this document is **proposed** and has no
-contract yet.
+Implemented locally (remote CI not yet run): the health endpoints and transport conventions
+(P2-05), and on 2026-10-25 authentication, account, devices, vault sync and pairing:
+`/api/v1/auth/{register,login}/{start,finish}`, `/api/v1/auth/logout`, `GET /api/v1/account`,
+`GET /api/v1/account/keys`, `GET /api/v1/devices` and `/devices/current`, `GET /api/v1/vault`,
+`GET /api/v1/sync/changes`, `POST /api/v1/sync/commits`, and `/api/v1/pairings/*`. Everything else
+in this document (reauth, refresh, recovery, password change, revocation, sessions, events, SSE,
+re-seeding) is still **proposed** and has no contract.
+
+Differences from the tables below: `register/finish` also takes `vault: { id, vkId }` and creates
+the empty vault (there is no `POST /vaults`), since the keyset already names it; `GET /vault`
+returns the vault id, `vk_id` and current `seq`; `GET /sync/changes` adds `pageEndSeq`, and pages
+end on commit boundaries; a pairing is cancelled with `DELETE /pairings/{id}` and an optional body
+`{ reason: "mac_failed" }`; the approval `label` is optional until `DEVICE_LABEL` is specified.
+Cookie sessions use `ruvee_session` without `Secure` only when `SESSION_COOKIE_SECURE=false`
+(loopback development; refused in production).
 
 - **Source of truth:** the Zod schemas in [`packages/contracts`](../../packages/contracts/src).
   The OpenAPI 3.1 document [`packages/contracts/openapi.json`](../../packages/contracts/openapi.json)
   is generated from them (`pnpm --filter @ruvee/contracts openapi:write`). Tests check that the
   committed file matches the schemas, that the routes the API registers are exactly the
   documented ones, and that actual responses parse with the schemas.
-- **Endpoints:** `GET /health/live` and `GET /health/ready`. Neither requires authentication;
-  no authentication exists. `OPTIONS` and every other method or path return `404 not_found`.
-- **Not yet implemented:** the `/api/v1` base path (no versioned endpoint exists), the 4 MiB
-  limit for `POST /sync/commits` (Phase 3), the authentication levels, and the `Origin` and
-  `X-Ruvee-Request` checks and cookie-plus-bearer rejection (P2-09, with sessions).
+- **Endpoints:** see above; `OPTIONS` and every other method or path return `404 not_found`.
+  Every handler declares an access level, and a global guard refuses one that does not.
+- **Also implemented now:** the `/api/v1` base path, the 4 MiB limit for `POST /sync/commits`,
+  the `none`, `session` and `active` levels (`step-up` exists but no endpoint uses it), the
+  `Origin` and `X-Ruvee-Request` checks, and refusal of bearer tokens (not supported yet) and of
+  cookie plus bearer.
 
 | Rule           | Implemented behavior                                                                                                                                                                                                                                                                                                                                        |
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

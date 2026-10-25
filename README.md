@@ -1,10 +1,11 @@
 # Ruvee
 
-Monorepo for Ruvee, a planned password manager. **This is the Phase 1 foundation plus the first
-Phase 2 packages.** There is no working vault, account system, sync or recovery. Part of the
-encryption format exists in `packages/crypto` for development; it is not reviewed. The web
-static export loads it in a worker under the production CSP as a spike, still with synthetic
-data only. Do not use it to store real credentials. Open security architecture decisions are tracked in
+Monorepo for Ruvee, a self-hosted password manager. **This is a development build of the first
+functional web vault:** account setup with a Recovery Kit check, OPAQUE login, pairing a second
+browser, offline unlock, logins and secure notes, and verified sync with explicit conflicts.
+Recovery, revocation, password change, the extension and mobile are not built. Nothing has been
+independently reviewed: use synthetic data only and never store real credentials. Current state,
+commands and gaps: [docs/planning/status.md](docs/planning/status.md). Open security architecture decisions are tracked in
 [docs/architecture/open-decisions.md](docs/architecture/open-decisions.md).
 
 The Phase 0 security architecture is **proposed, not approved, and not independently reviewed**.

@@ -24,22 +24,15 @@ interface Device {
 async function device(server: FakeServer, factory = new IDBFactory()): Promise<Device> {
   const store = await DeviceStore.open(factory);
   const events: VaultEvent[] = [];
-  let deviceId: string | undefined;
   const engine = new VaultEngine({
     crypto,
-    api: server.api(() => deviceId),
+    api: server.api(),
     store,
     opaque: fakeOpaque,
     origin: 'http://127.0.0.1:3101',
     now: () => Date.now(),
     emit: (e) => events.push(e),
   });
-  const original = engine.phase.bind(engine);
-  engine.phase = async () => {
-    const phase = await original();
-    if (phase.phase !== 'new') deviceId = phase.deviceId;
-    return phase;
-  };
   return { engine, store, factory, events };
 }
 
@@ -77,13 +70,22 @@ async function createAccount(server: FakeServer): Promise<{ a: Device; kit: stri
   return { a, kit: kit.recoveryKey };
 }
 
-/** What pairing transfers (device-enrollment §3): here the device record is copied directly. */
+/** A second browser: logs in (pending), then is paired from `from` (device-enrollment §3). */
 async function secondDevice(server: FakeServer, from: Device): Promise<Device> {
   const b = await device(server);
-  const record = await from.store.device();
-  if (!record) throw new Error('no device');
-  await b.store.putDevice({ ...record, deviceId: crypto.generateUuid() });
-  await b.engine.phase();
+  expect(await b.engine.login({ username: 'synthetic-user', password: PASSWORD })).toMatchObject({
+    phase: 'pending',
+  });
+  const started = await from.engine.pairingStart();
+  await b.engine.pairingJoin({ code: started.code });
+  expect(await from.engine.pairingStatus({ pairingId: started.pairingId })).toMatchObject({
+    state: 'request',
+    platform: 'web',
+  });
+  expect(await b.engine.pairingWait()).toEqual({ state: 'waiting' });
+  await from.engine.pairingApprove({ pairingId: started.pairingId });
+  const joined = await b.engine.pairingWait();
+  expect(joined.state).toBe('enrolled');
   return b;
 }
 
@@ -315,6 +317,71 @@ describe('vault engine', () => {
     expect(a.engine.items()).toEqual([]);
     // Each change was committed by the background sync: create, trash, restore, trash, delete.
     expect(server.items.get(item.id)).toMatchObject({ record: null, revision: 5 });
+  });
+
+  it('pairs a second device that then unlocks offline with the same password', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    await a.engine.save({ draft: login('Before pairing') });
+    await a.engine.sync();
+    const b = await secondDevice(server, a);
+    expect(b.engine.items().map((i) => i.title)).toEqual(['Before pairing']);
+    expect(await b.engine.phase()).toMatchObject({ phase: 'enrolled' });
+    // The pairing is complete on the server and nothing about it remains.
+    expect(server.pairings.size).toBe(0);
+    // The new device has its own SK copy and checkpoint: it unlocks without the server.
+    const again = await device(server, b.factory);
+    server.offline = true;
+    expect((await again.engine.unlock({ password: PASSWORD })).items.map((i) => i.title)).toEqual([
+      'Before pairing',
+    ]);
+  });
+
+  it('burns a pairing whose request MAC does not verify, and refuses a reused or mistyped code', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await device(server);
+    await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
+    const started = await a.engine.pairingStart();
+    expect(await code(b.engine.pairingJoin({ code: `${started.code.slice(0, -1)}0` }))).toMatch(
+      /invalid_pairing_code|pairing_expired/,
+    );
+    await b.engine.pairingJoin({ code: started.code });
+    // A malicious server swaps B's ephemeral key for its own (device-enrollment §3.3).
+    const relayed = server.pairings.get(started.pairingId);
+    if (!relayed) throw new Error('no pairing');
+    relayed.epk = 'B'.repeat(43);
+    expect(await a.engine.pairingStatus({ pairingId: started.pairingId })).toEqual({
+      state: 'failed',
+    });
+    expect(server.pairings.has(started.pairingId)).toBe(false);
+    expect(await code(a.engine.pairingApprove({ pairingId: started.pairingId }))).toBe(
+      'pairing_expired',
+    );
+
+    // One request per pairing: a second device with the same code is refused.
+    const second = await a.engine.pairingStart();
+    await b.engine.pairingJoin({ code: second.code });
+    const c = await device(server);
+    await c.engine.login({ username: 'synthetic-user', password: PASSWORD });
+    expect(await code(c.engine.pairingJoin({ code: second.code }))).toBe('pairing_used');
+  });
+
+  it('discards a forged reply and stores nothing', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await device(server);
+    await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
+    const started = await a.engine.pairingStart();
+    await b.engine.pairingJoin({ code: started.code });
+    await a.engine.pairingStatus({ pairingId: started.pairingId });
+    await a.engine.pairingApprove({ pairingId: started.pairingId });
+    const relayed = server.pairings.get(started.pairingId);
+    if (!relayed?.responseMac) throw new Error('no reply');
+    relayed.responseMac = `A${relayed.responseMac.slice(1)}`;
+    expect(await code(b.engine.pairingWait())).toBe('pairing_failed');
+    expect(await b.engine.phase()).toMatchObject({ phase: 'pending' });
+    expect((await b.store.device())?.enrolled).toBeUndefined();
   });
 
   it('ends the unlocked session when the server session expires', async () => {

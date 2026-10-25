@@ -111,12 +111,36 @@ export type VaultErrorCode =
   | 'invalid_item'
   | 'not_found'
   | 'locked'
+  | 'invalid_pairing_code'
+  | 'pairing_used'
+  | 'pairing_expired'
+  | 'pairing_failed'
+  | 'password_required'
   | 'internal';
 
 export interface VaultErrorPayload {
   readonly code: VaultErrorCode;
   readonly retryAfterSeconds?: number;
 }
+
+/** Device A's view of a pairing it started (device-enrollment §3.2 steps 2 to 8). */
+export type PairingHostStatus =
+  | { readonly state: 'waiting' }
+  /** A request arrived and its MAC verified; the user decides. */
+  | { readonly state: 'request'; readonly platform: string; readonly requestedAtMs: number }
+  /** The request MAC did not verify; the pairing was cancelled and cannot be retried. */
+  | { readonly state: 'failed' }
+  | { readonly state: 'approved' }
+  | { readonly state: 'expired' };
+
+export interface PairingCode {
+  readonly code: string;
+  readonly pairingId: string;
+  readonly expiresAtMs: number;
+}
+
+export type PairingJoinStatus =
+  { readonly state: 'waiting' } | { readonly state: 'enrolled'; readonly vault: UnlockedVault };
 
 export interface VaultMethods {
   phase(): DevicePhase;
@@ -140,6 +164,13 @@ export interface VaultMethods {
   conflict(params: { id: string }): ConflictView;
   resolveConflict(params: { id: string; choice: 'mine' | 'theirs' | 'both' }): true;
   sync(): SyncStatus;
+  pairingStart(): PairingCode;
+  pairingStatus(params: { pairingId: string }): PairingHostStatus;
+  pairingApprove(params: { pairingId: string }): true;
+  pairingCancel(params: { pairingId: string }): true;
+  pairingNeedsPassword(): boolean;
+  pairingJoin(params: { code: string; password?: string }): true;
+  pairingWait(): PairingJoinStatus;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

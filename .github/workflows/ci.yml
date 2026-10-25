@@ -66,13 +66,61 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @ruvee/web exec playwright install --with-deps chromium firefox webkit
-      - run: pnpm --filter @ruvee/web build
+      # The web build imports the built @ruvee/contracts and @ruvee/crypto, so it goes through turbo.
+      - run: pnpm turbo run build --filter=@ruvee/web
       - run: pnpm --filter @ruvee/web test:headers
       - run: pnpm --filter @ruvee/web test:e2e
       - if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
+          path: apps/web/test-results
+          retention-days: 7
+
+  vault-e2e:
+    name: Two-device vault workflow (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ruvee
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: ruvee
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ruvee -d ruvee"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # The stack creates and drops its own ruvee_e2e_* database on this server.
+      RUVEE_E2E_ADMIN_DATABASE_URL: postgresql://ruvee:ci-only-not-a-secret@127.0.0.1:5432/ruvee
+      RUVEE_E2E_BROWSER: ${{ matrix.browser }}
+      NEXT_TELEMETRY_DISABLED: '1'
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ruvee/web exec playwright install --with-deps ${{ matrix.browser }}
+      # Through turbo, so the Prisma client and the workspace packages are built first.
+      - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
+      - run: pnpm --filter @ruvee/web test:vault
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vault-e2e-${{ matrix.browser }}
           path: apps/web/test-results
           retention-days: 7
 

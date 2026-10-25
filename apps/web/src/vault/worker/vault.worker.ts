@@ -1,3 +1,4 @@
+import '../zod-config';
 import { initRuveeCrypto } from '@ruvee/crypto';
 import * as opaque from '@serenity-kit/opaque';
 import type { VaultErrorPayload, VaultMethod, VaultRequest, VaultResponse } from '../protocol';
@@ -75,6 +76,13 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   conflict: (e, p: Parameters<VaultEngine['conflict']>[0]) => e.conflict(p),
   resolveConflict: (e, p: Parameters<VaultEngine['resolveConflict']>[0]) => e.resolveConflict(p),
   sync: (e) => e.sync(),
+  pairingStart: (e) => e.pairingStart(),
+  pairingStatus: (e, p: Parameters<VaultEngine['pairingStatus']>[0]) => e.pairingStatus(p),
+  pairingApprove: (e, p: Parameters<VaultEngine['pairingApprove']>[0]) => e.pairingApprove(p),
+  pairingCancel: (e, p: Parameters<VaultEngine['pairingCancel']>[0]) => e.pairingCancel(p),
+  pairingNeedsPassword: (e) => e.pairingNeedsPassword(),
+  pairingJoin: (e, p: Parameters<VaultEngine['pairingJoin']>[0]) => e.pairingJoin(p),
+  pairingWait: (e) => e.pairingWait(),
   logout: (e) => e.logout(),
   wipe: (e) => {
     e.wipeMemory();

@@ -74,6 +74,16 @@ function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
  * checks 1 to 6, INV-07). Any failure means nothing is applied and the vault goes read-only.
  * `openRecord` decrypts a record at its claimed revision and returns false if it cannot.
  */
+/**
+ * A checkpoint received by pairing (device-enrollment §3.2 step 10) before the device has any
+ * records. The device pulls from genesis, and the verified chain must pass through this hash at
+ * this `seq` and must not end before it, which keeps the rollback protection of the checkpoint.
+ */
+export interface Anchor {
+  readonly seq: number;
+  readonly manifestHash: Uint8Array;
+}
+
 export function verifyPages(
   crypto: RuveeCrypto,
   keys: VaultKeys,
@@ -81,13 +91,15 @@ export function verifyPages(
   synced: SyncedState,
   pages: readonly SyncChangesResponse[],
   openRecord: (itemId: string, revision: number, record: Uint8Array) => boolean,
+  anchor?: Anchor,
 ): VerifyResult {
   const last = pages.at(-1);
   if (!last || pages.some((p) => p.vaultId !== keys.vaultId))
     return { ok: false, reason: 'wrong_vault' };
   const currentSeq = last.currentSeq;
   // Check 4: the server must not be behind what this device has already verified.
-  if (currentSeq < checkpoint.seq) return { ok: false, reason: 'server_behind' };
+  if (currentSeq < checkpoint.seq || (anchor !== undefined && currentSeq < anchor.seq))
+    return { ok: false, reason: 'server_behind' };
   const manifests = pages.flatMap((p) => p.manifests);
   if (currentSeq === checkpoint.seq) {
     if (manifests.length > 0 || pages.some((p) => p.items.length > 0))
@@ -118,6 +130,8 @@ export function verifyPages(
     if (!sameBytes(manifest.prevManifestHash, previous))
       return { ok: false, reason: 'history_rewritten' };
     previous = crypto.manifestHash(envelope);
+    if (anchor?.seq === entry.seq && !sameBytes(previous, anchor.manifestHash))
+      return { ok: false, reason: 'history_rewritten' };
     newest = { seq: entry.seq, envelope, manifest };
   }
   if (newest?.seq !== currentSeq) return { ok: false, reason: 'sequence_gap' };

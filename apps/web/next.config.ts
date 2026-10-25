@@ -21,6 +21,12 @@ const pageExtensions = [
   'ts',
 ];
 
+/**
+ * `next dev` only: the API is same-origin in deployment (Caddy, scripts/serve-export.mjs), so the
+ * development server forwards /api/* to it. Rewrites do not exist in the static export.
+ */
+const devApiOrigin = process.env.RUVEE_DEV_API_ORIGIN ?? 'http://127.0.0.1:4000';
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   // D-16: static export so production CSP can list build-time script hashes. `headers()`
@@ -31,6 +37,12 @@ const nextConfig: NextConfig = {
   // Keeps the dev-only Next.js badge clear of the sidebar's bottom-left status box.
   devIndicators: { position: 'bottom-right' },
   pageExtensions,
+  ...(includeDevPreview
+    ? {
+        rewrites: () =>
+          Promise.resolve([{ source: '/api/:path*', destination: `${devApiOrigin}/api/:path*` }]),
+      }
+    : {}),
   headers() {
     // Phase 1 headers for `next dev` only. Production CSP cannot be applied here:
     // Fast Refresh needs `'unsafe-eval'`, and hashes are not known until after the export.

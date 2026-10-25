@@ -1,5 +1,6 @@
 'use client';
 
+import '@/vault/zod-config';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   DevicePhase,
@@ -9,7 +10,7 @@ import type {
   UnlockedVault,
 } from '@/vault/protocol';
 import { VaultClient } from '@/vault/client';
-import { LogoutIcon } from '../ui/icons';
+import { DevicesIcon, LogoutIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';
 import { VaultShell } from '../vault/vault-shell';
 import { AuthCard } from './auth-layout';
@@ -17,6 +18,7 @@ import { clearClipboard } from './clipboard';
 import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
+import { AddDevicePanel } from './pairing';
 import { PendingDeviceScreen } from './pending-device';
 import { SetupFlow } from './setup-flow';
 import { SyncPanel } from './sync-panel';
@@ -203,6 +205,7 @@ function UnlockedApp({
   const [items, setItems] = useState<readonly ItemSummary[]>(vault.items);
   const [status, setStatus] = useState<SyncStatus>(vault.sync);
   const [editing, setEditing] = useState<{ existing: ItemDetail | null } | null>(null);
+  const [addingDevice, setAddingDevice] = useState(false);
   const [selectId, setSelectId] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const lastActivity = useRef(0);
@@ -275,23 +278,36 @@ function UnlockedApp({
       vaults={[PERSONAL_VAULT]}
       live={{
         onAddItem: () => {
-          if (!readOnly) setEditing({ existing: null });
+          if (readOnly) return;
+          setAddingDevice(false);
+          setEditing({ existing: null });
         },
         onLock: () => {
           onLock();
         },
         statusPanel: <SyncPanel status={status} onSync={syncNow} />,
         extraNav: (
-          <NavButton
-            icon={LogoutIcon}
-            label="Log out"
-            current={false}
-            onSelect={() => {
-              void client.call('logout').finally(() => {
-                onLock('You logged out. Unlock to sign in again.');
-              });
-            }}
-          />
+          <>
+            <NavButton
+              icon={DevicesIcon}
+              label="Add a device"
+              current={addingDevice}
+              onSelect={() => {
+                setEditing(null);
+                setAddingDevice(true);
+              }}
+            />
+            <NavButton
+              icon={LogoutIcon}
+              label="Log out"
+              current={false}
+              onSelect={() => {
+                void client.call('logout').finally(() => {
+                  onLock('You logged out. Unlock to sign in again.');
+                });
+              }}
+            />
+          </>
         ),
         rowBadge: (item) => {
           const summary = byId.get(item.id);
@@ -317,25 +333,36 @@ function UnlockedApp({
             onChanged={refresh}
           />
         ),
-        ...(editing
+        ...(addingDevice
           ? {
               detailOverride: (
-                <ItemEditor
-                  key={editing.existing?.id ?? 'new'}
+                <AddDevicePanel
                   client={client}
-                  existing={editing.existing}
-                  onCancel={() => {
-                    setEditing(null);
-                  }}
-                  onSaved={(saved) => {
-                    setEditing(null);
-                    setSelectId(saved.id);
-                    refresh();
+                  onClose={() => {
+                    setAddingDevice(false);
                   }}
                 />
               ),
             }
-          : {}),
+          : editing
+            ? {
+                detailOverride: (
+                  <ItemEditor
+                    key={editing.existing?.id ?? 'new'}
+                    client={client}
+                    existing={editing.existing}
+                    onCancel={() => {
+                      setEditing(null);
+                    }}
+                    onSaved={(saved) => {
+                      setEditing(null);
+                      setSelectId(saved.id);
+                      refresh();
+                    }}
+                  />
+                ),
+              }
+            : {}),
       }}
     />
   );

@@ -17,6 +17,9 @@ import { checkMasterPassword } from '../password-policy';
 import type {
   ConflictView,
   DevicePhase,
+  PairingCode,
+  PairingHostStatus,
+  PairingJoinStatus,
   ItemDetail,
   ItemDraft,
   ItemSummary,
@@ -34,6 +37,7 @@ import {
   rebase,
   verifyPages,
   ZERO_HASH,
+  type Anchor,
   type Checkpoint,
   type Conflict,
   type PendingMutation,
@@ -74,6 +78,8 @@ export interface EngineDeps {
 }
 
 const MAX_MUTATIONS_PER_COMMIT = 100;
+/** device-enrollment §3.1: a pairing and everything a device keeps for it live 10 minutes. */
+const PAIRING_TTL_MS = 10 * 60_000;
 const MAX_PUSH_ROUNDS = 5;
 
 // ---- Local records (LOCAL_RECORD envelopes under K_local) ----
@@ -134,6 +140,8 @@ interface Session {
   readonly vault: VaultKeys;
   synced: Map<string, SyncedItem>;
   checkpoint: Checkpoint;
+  /** Set on a device paired but not yet synced; cleared by the first verified pull. */
+  anchor: Anchor | undefined;
   pending: PendingMutation[];
   inflight: Inflight | null;
   sent: SentRecord[];
@@ -202,9 +210,37 @@ function vaultErrorFrom(error: unknown): VaultError {
   return new VaultError('internal');
 }
 
+interface HostPairing {
+  readonly secret: Uint8Array;
+  readonly expiresAtMs: number;
+  request?: {
+    readonly deviceId: string;
+    readonly epk: Uint8Array;
+    readonly platform: string;
+    readonly requestedAtMs: number;
+  };
+}
+
+interface JoinPairing {
+  readonly secret: Uint8Array;
+  readonly pairingId: Uint8Array;
+  readonly ephemeralPublicKey: Uint8Array;
+  readonly ephemeralPrivateKey: Uint8Array;
+  readonly expiresAtMs: number;
+}
+
 export class VaultEngine {
   private session: Session | undefined;
   private setup: PendingSetup | undefined;
+  /** Device A: secrets of pairings this device started, by pairing id. */
+  private readonly hosting = new Map<string, HostPairing>();
+  /** Device B: the pairing it joined. */
+  private joining: JoinPairing | undefined;
+  /**
+   * Device B keeps the password from its login for at most 10 minutes, to unwrap `AK` once the
+   * reply arrives (§3.2 step 1); after that it asks again.
+   */
+  private pendingPassword: { readonly value: string; readonly expiresAtMs: number } | undefined;
   /** Serializes every state change, so a save never interleaves with a sync. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -474,6 +510,7 @@ export class VaultEngine {
       username,
       status: 'pending',
     });
+    this.pendingPassword = { value: password, expiresAtMs: this.deps.now() + PAIRING_TTL_MS };
     return { phase: 'pending', username, deviceId: result.device.id };
   }
 
@@ -657,6 +694,7 @@ export class VaultEngine {
       vault: { vaultId: device.enrolled.vaultId, vaultKey, vaultKeyId: device.enrolled.vkId },
       synced: new Map(),
       checkpoint,
+      anchor: undefined,
       pending: [],
       inflight: null,
       sent: [],
@@ -759,6 +797,11 @@ export class VaultEngine {
         : null;
       session.sent = p.sent;
     }
+    const anchor = open('anchor', await store.local('anchor'));
+    if (anchor !== undefined) {
+      const a = z.strictObject({ seq: z.int().min(0), manifestHash: z.string() }).parse(anchor);
+      session.anchor = { seq: a.seq, manifestHash: fromB64(a.manifestHash) };
+    }
     const conflicts = open('conflicts', await store.local('conflicts'));
     if (conflicts !== undefined)
       for (const c of conflictsSchema.parse(conflicts))
@@ -772,9 +815,17 @@ export class VaultEngine {
     checkpoint?: boolean;
     pending?: boolean;
     conflicts?: boolean;
+    anchor?: boolean;
   }) {
     const session = this.requireSession();
     const local: Record<string, Uint8Array | null> = {};
+    if (parts.anchor)
+      local.anchor = session.anchor
+        ? this.sealLocal(session, 'anchor', {
+            seq: session.anchor.seq,
+            manifestHash: toB64(session.anchor.manifestHash),
+          })
+        : null;
     if (parts.checkpoint)
       local.checkpoint = this.sealLocal(session, 'checkpoint', {
         ...session.checkpoint,
@@ -1087,6 +1138,353 @@ export class VaultEngine {
     });
   }
 
+  // ---- Pairing (device-enrollment.md §3, D-21) ----
+
+  /** Device A, step 2: a fresh `S` and its code; only `pairing_id` goes to the server. */
+  async pairingStart(): Promise<PairingCode> {
+    this.writable();
+    const { crypto, api } = this.deps;
+    const secret = crypto.generatePairingSecret();
+    const pairingId = toB64(crypto.pairingId(secret));
+    try {
+      await api.pairingCreate(pairingId);
+    } catch (error) {
+      secret.fill(0);
+      throw vaultErrorFrom(error);
+    }
+    // A discards S at the deadline whatever the server says (§3.1 "Lifetime").
+    const expiresAtMs = this.deps.now() + PAIRING_TTL_MS;
+    this.hosting.set(pairingId, { secret, expiresAtMs });
+    return { code: crypto.formatPairingCode(secret), pairingId, expiresAtMs };
+  }
+
+  private hosted(pairingId: string): HostPairing {
+    const host = this.hosting.get(pairingId);
+    if (!host) throw new VaultError('pairing_expired');
+    if (host.expiresAtMs <= this.deps.now()) {
+      this.dropHosted(pairingId);
+      throw new VaultError('pairing_expired');
+    }
+    return host;
+  }
+
+  private dropHosted(pairingId: string): void {
+    this.hosting.get(pairingId)?.secret.fill(0);
+    this.hosting.delete(pairingId);
+  }
+
+  /** Device A, step 6: reads the request and verifies `req_mac` in constant time. */
+  async pairingStatus(params: { pairingId: string }): Promise<PairingHostStatus> {
+    const session = this.requireSession();
+    let host: HostPairing;
+    try {
+      host = this.hosted(params.pairingId);
+    } catch {
+      return { state: 'expired' };
+    }
+    if (host.request)
+      return {
+        state: 'request',
+        platform: host.request.platform,
+        requestedAtMs: host.request.requestedAtMs,
+      };
+    let state;
+    try {
+      state = await this.deps.api.pairingState(params.pairingId);
+    } catch (error) {
+      if (error instanceof ApiError && error.code === 'not_found') {
+        this.dropHosted(params.pairingId);
+        return { state: 'expired' };
+      }
+      throw vaultErrorFrom(error);
+    }
+    if (state.state === 'open' || !state.request) return { state: 'waiting' };
+    const request = state.request;
+    const epk = fromB64(request.epk);
+    const verified = this.deps.crypto.verifyPairingRequest({
+      secret: host.secret,
+      accountId: uuidToBytes(session.device.accountId),
+      pairingId: fromB64(params.pairingId),
+      deviceId: uuidToBytes(request.requesterDeviceId),
+      ephemeralPublicKey: epk,
+      platform: request.platform,
+      mac: fromB64(request.mac),
+    });
+    if (!verified) {
+      // The request did not come from the device holding the code: burn the pairing.
+      this.dropHosted(params.pairingId);
+      await this.deps.api.pairingCancel(params.pairingId, 'mac_failed').catch(() => undefined);
+      return { state: 'failed' };
+    }
+    host.request = {
+      deviceId: request.requesterDeviceId,
+      epk,
+      platform: request.platform,
+      requestedAtMs: Date.parse(request.requestedAt),
+    };
+    return {
+      state: 'request',
+      platform: request.platform,
+      requestedAtMs: host.request.requestedAtMs,
+    };
+  }
+
+  /** Device A, step 8: seals `SK` and the current checkpoint to B's verified ephemeral key. */
+  pairingApprove(params: { pairingId: string }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.writable();
+      const host = this.hosted(params.pairingId);
+      const request = host.request;
+      if (!request) throw new VaultError('pairing_failed');
+      const reply = this.deps.crypto.createPairingResponse({
+        secret: host.secret,
+        accountId: uuidToBytes(session.device.accountId),
+        pairingId: fromB64(params.pairingId),
+        deviceId: uuidToBytes(request.deviceId),
+        ephemeralPublicKey: request.epk,
+        payload: {
+          accountId: session.device.accountId,
+          deviceId: request.deviceId,
+          secretKey: session.device.enrolled.secretKey,
+          checkpoint: {
+            vaultId: session.checkpoint.vaultId,
+            seq: session.checkpoint.seq,
+            manifestHash: session.checkpoint.manifestHash,
+            keysetVersion: session.device.enrolled.keysetVersion,
+          },
+        },
+      });
+      try {
+        await this.deps.api.pairingApprove(params.pairingId, {
+          ciphertext: toB64(reply.ciphertext),
+          mac: toB64(reply.mac),
+        });
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'pairing_state')
+          throw new VaultError('pairing_used');
+        if (error instanceof ApiError && error.code === 'not_found')
+          throw new VaultError('pairing_expired');
+        throw vaultErrorFrom(error);
+      } finally {
+        this.dropHosted(params.pairingId);
+      }
+      return true as const;
+    });
+  }
+
+  async pairingCancel(params: { pairingId: string }): Promise<true> {
+    this.dropHosted(params.pairingId);
+    if (this.joining && toB64(this.joining.pairingId) === params.pairingId) this.dropJoining();
+    await this.deps.api.pairingCancel(params.pairingId, 'user').catch(() => undefined);
+    return true;
+  }
+
+  pairingNeedsPassword(): boolean {
+    return !this.pendingPassword || this.pendingPassword.expiresAtMs <= this.deps.now();
+  }
+
+  private dropJoining(): void {
+    this.joining?.secret.fill(0);
+    this.joining?.ephemeralPrivateKey.fill(0);
+    this.joining = undefined;
+  }
+
+  /** Device B, steps 4 and 5: checks the code offline, then sends `epk_B` and `req_mac`. */
+  async pairingJoin(params: { code: string; password?: string }): Promise<true> {
+    const device = await this.deps.store.device();
+    if (device?.status !== 'pending') throw new VaultError('device_not_enrolled');
+    if (params.password !== undefined) {
+      try {
+        this.pendingPassword = {
+          value: normalizePassword(params.password),
+          expiresAtMs: this.deps.now() + PAIRING_TTL_MS,
+        };
+      } catch {
+        throw new VaultError('wrong_password');
+      }
+    }
+    if (this.pairingNeedsPassword()) throw new VaultError('password_required');
+    const { crypto, api } = this.deps;
+    let secret: Uint8Array;
+    try {
+      secret = crypto.parsePairingCode(params.code);
+    } catch {
+      throw new VaultError('invalid_pairing_code');
+    }
+    const request = crypto.createPairingRequest({
+      secret,
+      accountId: uuidToBytes(device.accountId),
+      deviceId: uuidToBytes(device.deviceId),
+      platform: 'web',
+    });
+    const pairingId = toB64(request.pairingId);
+    try {
+      await api.pairingRequest(pairingId, {
+        epk: toB64(request.ephemeralPublicKey),
+        platform: 'web',
+        mac: toB64(request.mac),
+      });
+    } catch (error) {
+      secret.fill(0);
+      request.ephemeralPrivateKey.fill(0);
+      // A pairing with a request already: someone else may have seen the code (§3.2).
+      if (error instanceof ApiError && error.code === 'pairing_state')
+        throw new VaultError('pairing_used');
+      if (error instanceof ApiError && error.code === 'not_found')
+        throw new VaultError('pairing_expired');
+      throw vaultErrorFrom(error);
+    }
+    this.dropJoining();
+    this.joining = {
+      secret,
+      pairingId: request.pairingId,
+      ephemeralPublicKey: request.ephemeralPublicKey,
+      ephemeralPrivateKey: request.ephemeralPrivateKey,
+      expiresAtMs: this.deps.now() + PAIRING_TTL_MS,
+    };
+    return true;
+  }
+
+  /**
+   * Device B, steps 9 and 10: verifies `resp_mac`, opens the box, unlocks with the password and
+   * the received `SK`, checks the keyset against them, and only then stores anything.
+   */
+  pairingWait(): Promise<PairingJoinStatus> {
+    return this.exclusive(async () => {
+      const join = this.joining;
+      if (!join || join.expiresAtMs <= this.deps.now()) {
+        this.dropJoining();
+        throw new VaultError('pairing_expired');
+      }
+      const password = this.pendingPassword?.value;
+      if (!password || this.pairingNeedsPassword()) throw new VaultError('password_required');
+      const device = await this.deps.store.device();
+      if (!device) throw new VaultError('device_not_enrolled');
+      const { crypto, api } = this.deps;
+      const pairingId = toB64(join.pairingId);
+      let state;
+      try {
+        state = await api.pairingState(pairingId);
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'not_found') {
+          this.dropJoining();
+          throw new VaultError('pairing_expired');
+        }
+        throw vaultErrorFrom(error);
+      }
+      if (state.state !== 'approved' || !state.response) return { state: 'waiting' } as const;
+
+      const accountId = uuidToBytes(device.accountId);
+      let payload;
+      try {
+        payload = crypto.openPairingResponse({
+          secret: join.secret,
+          accountId,
+          pairingId: join.pairingId,
+          deviceId: uuidToBytes(device.deviceId),
+          ephemeralPublicKey: join.ephemeralPublicKey,
+          ephemeralPrivateKey: join.ephemeralPrivateKey,
+          ciphertext: fromB64(state.response.ciphertext),
+          mac: fromB64(state.response.mac),
+        });
+      } catch {
+        this.dropJoining();
+        throw new VaultError('pairing_failed');
+      }
+      // Any failure from here on discards everything received (step 9).
+      let keys;
+      try {
+        keys = await api.accountKeys();
+      } catch (error) {
+        payload.secretKey.fill(0);
+        throw vaultErrorFrom(error);
+      }
+      const saltPw = fromB64(keys.saltPw);
+      const akId = fromB64(keys.akId);
+      const keysetEnvelope = fromB64(keys.keyset);
+      const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
+      let accountKey: Uint8Array;
+      const auk = crypto.deriveAccountUnlockKey({
+        password,
+        passwordSalt: saltPw,
+        profile: keys.kdfProfile,
+        secretKey: payload.secretKey,
+        accountId,
+      });
+      try {
+        accountKey = crypto.unwrapAccountKey({
+          accountUnlockKey: auk,
+          accountId,
+          accountKeyId: akId,
+          accountKeyEpoch: keys.akEpoch,
+          profile: keys.kdfProfile,
+          passwordSalt: saltPw,
+          envelope: wrappedAkPassword,
+        });
+      } catch {
+        payload.secretKey.fill(0);
+        this.pendingPassword = undefined;
+        throw new VaultError('wrong_password');
+      } finally {
+        auk.fill(0);
+      }
+      const keyset = crypto.openKeyset({
+        accountKey,
+        accountKeyId: akId,
+        accountId,
+        keysetVersion: keys.keysetVersion,
+        envelope: keysetEnvelope,
+      });
+      const vault = keyset.vaults[0];
+      if (
+        keys.keysetVersion < payload.checkpoint.keysetVersion ||
+        !same(keyset.secretKey, payload.secretKey) ||
+        vault.vaultId !== payload.checkpoint.vaultId
+      ) {
+        accountKey.fill(0);
+        payload.secretKey.fill(0);
+        this.dropJoining();
+        throw new VaultError('pairing_failed');
+      }
+      const enrolledDevice: DeviceRecord & { enrolled: EnrolledKeys } = {
+        ...device,
+        status: 'active',
+        enrolled: {
+          secretKey: payload.secretKey,
+          kdfProfile: keys.kdfProfile,
+          saltPw,
+          akId,
+          akEpoch: keys.akEpoch,
+          wrappedAkPassword,
+          keysetVersion: keys.keysetVersion,
+          keyset: keysetEnvelope,
+          vaultId: vault.vaultId,
+          vkId: vault.vkId,
+        },
+      };
+      await this.deps.store.putDevice(enrolledDevice);
+      // The checkpoint from A lets this device detect rollback from its first sync (step 10).
+      // It has no records yet, so it pulls from genesis and the chain must pass through A's
+      // checkpoint (an anchor) instead of starting there.
+      this.session = this.newSession(enrolledDevice, accountKey, vault.vk, {
+        vaultId: payload.checkpoint.vaultId,
+        seq: 0,
+        manifestHash: ZERO_HASH,
+        keysetVersion: keys.keysetVersion,
+      });
+      this.session.anchor = {
+        seq: payload.checkpoint.seq,
+        manifestHash: payload.checkpoint.manifestHash,
+      };
+      await this.persistLocal({ checkpoint: true, anchor: true });
+      await api.pairingComplete(pairingId).catch(() => undefined);
+      this.dropJoining();
+      this.pendingPassword = undefined;
+      await this.syncNow();
+      return { state: 'enrolled', vault: this.unlockedView() } as const;
+    });
+  }
+
   // ---- Sync ----
 
   sync(): Promise<SyncStatus> {
@@ -1147,12 +1545,19 @@ export class VaultEngine {
       session.synced,
       pages,
       (itemId, revision, record) => this.openBody(session, itemId, revision, record) !== null,
+      session.anchor,
     );
     if (!result.ok) {
       this.integrity(session, result.reason);
       return;
     }
-    if (!result.newest) return;
+    if (!result.newest) {
+      if (session.anchor?.seq === 0) {
+        session.anchor = undefined;
+        await this.persistLocal({ anchor: true });
+      }
+      return;
+    }
     const records = result.changed.map((itemId) => {
       const item = result.state.get(itemId);
       return { itemId, revision: item?.revision ?? 0, record: item?.record ?? null };
@@ -1165,6 +1570,8 @@ export class VaultEngine {
       byThisDevice:
         uuidFromBytes(result.newest.manifest.authorDeviceId) === session.device.deviceId,
     };
+    // The anchor is satisfied once a verified chain reached it; the checkpoint takes over.
+    session.anchor = undefined;
     await this.deps.store.apply({
       records,
       manifest: { seq: result.newest.seq, envelope: result.newest.envelope },
@@ -1173,6 +1580,7 @@ export class VaultEngine {
           ...session.checkpoint,
           manifestHash: toB64(session.checkpoint.manifestHash),
         }),
+        anchor: null,
       },
     });
     await this.rebasePending(session);
@@ -1366,6 +1774,9 @@ export class VaultEngine {
     }
     this.session = undefined;
     this.setup = undefined;
+    for (const id of [...this.hosting.keys()]) this.dropHosted(id);
+    this.dropJoining();
+    this.pendingPassword = undefined;
   }
 }
 

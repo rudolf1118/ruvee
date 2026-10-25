@@ -146,6 +146,27 @@ describe('verifyPages (sync-protocol §5)', () => {
     });
   });
 
+  it("requires a paired device's chain to pass through the checkpoint it received", () => {
+    const { genesisCheckpoint, page, second } = history();
+    const anchor = { seq: 2, manifestHash: second.manifestHash };
+    expect(verifyPages(crypto, keys, genesisCheckpoint, new Map(), [page], accept, anchor).ok).toBe(
+      true,
+    );
+    const forged = { seq: 2, manifestHash: new Uint8Array(32).fill(3) };
+    expect(verifyPages(crypto, keys, genesisCheckpoint, new Map(), [page], accept, forged)).toEqual(
+      {
+        ok: false,
+        reason: 'history_rewritten',
+      },
+    );
+    // A server that hides commits the approving device had already seen.
+    const later = { seq: 5, manifestHash: second.manifestHash };
+    expect(verifyPages(crypto, keys, genesisCheckpoint, new Map(), [page], accept, later)).toEqual({
+      ok: false,
+      reason: 'server_behind',
+    });
+  });
+
   it('rejects a record that does not decrypt at its claimed revision (check 6)', () => {
     const { genesisCheckpoint, page } = history();
     expect(verifyPages(crypto, keys, genesisCheckpoint, new Map(), [page], () => false)).toEqual({

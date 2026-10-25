@@ -37,6 +37,16 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return 'That item no longer exists.';
     case 'locked':
       return 'The vault is locked.';
+    case 'invalid_pairing_code':
+      return 'That code has a typo. Check it against the code shown on your other device.';
+    case 'pairing_used':
+      return 'This code was already used. Cancel on the other device and start again.';
+    case 'pairing_expired':
+      return 'This pairing has expired or was cancelled. Start again on the other device.';
+    case 'pairing_failed':
+      return 'This request did not come from the device you are pairing. Nothing was shared. Start again.';
+    case 'password_required':
+      return 'Enter your master password to finish adding this device.';
     case 'internal':
       return 'Something went wrong. Try again.';
   }
