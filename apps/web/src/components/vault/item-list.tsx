@@ -36,6 +36,10 @@ interface ItemListProps {
   onSelect: (id: string) => void;
   empty: EmptyStateContent;
   rowRef: (id: string, node: HTMLButtonElement | null) => void;
+  /** Opens the editor for a new item; without it the button is marked unavailable. */
+  onAdd?: () => void;
+  /** Short status shown under a row's subtitle, e.g. waiting to sync or a conflict. */
+  rowBadge?: (item: VaultItemView) => string | null;
 }
 
 /** Moves focus between rows with the arrow, Home and End keys. */
@@ -74,9 +78,10 @@ export function ItemList(props: ItemListProps) {
           </div>
           <Button
             variant="primary"
-            unavailable
             icon={<PlusIcon size={16} />}
-            title="Not available yet"
+            {...(props.onAdd
+              ? { onClick: props.onAdd }
+              : { unavailable: true, title: 'Not available yet' })}
           >
             Add item
           </Button>
@@ -159,6 +164,11 @@ export function ItemList(props: ItemListProps) {
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="truncate text-body font-semibold">{item.title}</span>{' '}
                       <span className="truncate text-small text-ink-muted">{item.subtitle}</span>
+                      {props.rowBadge?.(item) ? (
+                        <span className="truncate text-caption font-semibold text-caution-strong">
+                          {props.rowBadge(item)}
+                        </span>
+                      ) : null}
                     </span>{' '}
                     {item.favorite ? (
                       <StarIcon

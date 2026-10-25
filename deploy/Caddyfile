@@ -9,16 +9,24 @@
 # HSTS is omitted here (local HTTP). Public HTTPS must add:
 #   header Strict-Transport-Security "max-age=31536000; includeSubDomains"
 #
-# Same-origin API routing is not configured; sessions and the API proxy are later tasks.
+# The API is served from the same origin under /api/ (api-design.md §Conventions). Its own
+# responses keep their headers; the web security headers below apply to the static files.
 
 {
 	admin off
 }
 
 http://127.0.0.1:3101 {
-	root * apps/web/out
-	try_files {path} {path}.html {path}/index.html /404.html
-	file_server
+	# Exclusive handle blocks: try_files must never rewrite an API path to a static file.
+	handle /api/* {
+		reverse_proxy 127.0.0.1:4000
+	}
+
+	handle {
+		root * apps/web/out
+		try_files {path} {path}.html {path}/index.html /404.html
+		file_server
+	}
 
 	header {
 		Content-Security-Policy {$RUVEE_CSP}

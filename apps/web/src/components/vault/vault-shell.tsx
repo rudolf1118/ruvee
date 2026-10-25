@@ -1,6 +1,14 @@
 'use client';
 
-import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  type ReactNode,
+  type RefObject,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
 import { Button } from '../ui/button';
 import { CloseIcon, MenuIcon } from '../ui/icons';
 import { Logo } from '../ui/logo';
@@ -17,12 +25,38 @@ import {
   type VaultSummary,
 } from './types';
 
+/** Context handed to a live detail renderer. */
+export interface DetailContext {
+  vaultName: string;
+  headingRef: RefObject<HTMLHeadingElement | null>;
+  onBack: () => void;
+  onTag: (tag: string) => void;
+}
+
+/**
+ * Hooks for real vault data. Without them the shell is the design preview: every action for a
+ * feature that is not built is visibly unavailable.
+ */
+export interface VaultShellLive {
+  onAddItem: () => void;
+  onLock: () => void;
+  statusPanel: ReactNode;
+  extraNav?: ReactNode;
+  renderDetail: (item: VaultItemView, context: DetailContext) => ReactNode;
+  /** When set, replaces the detail pane (the item editor, a conflict, devices). */
+  detailOverride?: ReactNode;
+  rowBadge?: (item: VaultItemView) => string | null;
+  /** Selects this item, e.g. after saving a new one. */
+  selectId?: string | null;
+}
+
 export interface VaultShellProps {
   items: VaultItemView[];
   vaults: VaultSummary[];
   initialSelectedId?: string;
   /** Rendered above the shell, e.g. the preview ribbon. */
   banner?: ReactNode;
+  live?: VaultShellLive;
 }
 
 type Pane = 'list' | 'detail';
@@ -32,7 +66,7 @@ type Pane = 'list' | 'detail';
  * item detail. Below the `lg` breakpoint navigation moves into a drawer; below
  * `md` the list and detail become separate screens.
  */
-export function VaultShell({ items, vaults, initialSelectedId, banner }: VaultShellProps) {
+export function VaultShell({ items, vaults, initialSelectedId, banner, live }: VaultShellProps) {
   const [listQuery, setListQuery] = useState<ListQuery>({
     section: 'all',
     vaultId: ALL_VAULTS,
@@ -59,6 +93,21 @@ export function VaultShell({ items, vaults, initialSelectedId, banner }: VaultSh
   );
 
   const selected = visible.find((item) => item.id === selectedId) ?? null;
+
+  // Requests from the live app (select a saved item, show the editor) adjust state during
+  // render, as React recommends for state derived from changing props.
+  const requestedId = live?.selectId ?? null;
+  const [handledId, setHandledId] = useState<string | null>(null);
+  if (requestedId !== handledId) {
+    setHandledId(requestedId);
+    if (requestedId) setSelectedId(requestedId);
+  }
+  const override = live?.detailOverride;
+  const [overrideShown, setOverrideShown] = useState(false);
+  if (Boolean(override) !== overrideShown) {
+    setOverrideShown(Boolean(override));
+    if (override) setPane('detail');
+  }
 
   /** Updates filters and keeps a valid selection, like the design prototype. */
   const updateQuery = (patch: Partial<ListQuery>) => {
@@ -149,9 +198,15 @@ export function VaultShell({ items, vaults, initialSelectedId, banner }: VaultSh
 
   const sectionTitle = SECTION_TITLES[listQuery.section];
   const scopeName = listQuery.vaultId === ALL_VAULTS ? 'all vaults' : vaultName(listQuery.vaultId);
-  const empty = emptyStateFor(listQuery, counts.all, vaultName(listQuery.vaultId), () => {
-    updateQuery({ query: '' });
-  });
+  const empty = emptyStateFor(
+    listQuery,
+    counts.all,
+    vaultName(listQuery.vaultId),
+    () => {
+      updateQuery({ query: '' });
+    },
+    live?.onAddItem,
+  );
 
   const vaultOptions = [
     { id: ALL_VAULTS, name: 'All vaults', count: items.filter((item) => !item.trashed).length },
@@ -168,6 +223,9 @@ export function VaultShell({ items, vaults, initialSelectedId, banner }: VaultSh
     vaultOptions,
     vaultId: listQuery.vaultId,
     onVault,
+    ...(live
+      ? { onLock: live.onLock, statusPanel: live.statusPanel, extraNav: live.extraNav }
+      : {}),
   };
 
   return (
@@ -237,6 +295,8 @@ export function VaultShell({ items, vaults, initialSelectedId, banner }: VaultSh
                 if (node) rowRefs.current.set(id, node);
                 else rowRefs.current.delete(id);
               }}
+              {...(live ? { onAdd: live.onAddItem } : {})}
+              {...(live?.rowBadge ? { rowBadge: live.rowBadge } : {})}
             />
           </section>
 
@@ -247,20 +307,35 @@ export function VaultShell({ items, vaults, initialSelectedId, banner }: VaultSh
               pane === 'list' ? 'hidden' : 'block',
             )}
           >
-            {selected ? (
-              <ItemDetail
-                item={selected}
-                vaultName={vaultName(selected.vaultId)}
-                headingRef={detailHeadingRef}
-                onBack={backToList}
-                onTag={(tag) => {
-                  updateQuery({ tag, section: 'all', kindFilter: 'all', query: '' });
-                  setSelectedId(selected.id);
-                }}
-              />
-            ) : (
-              <NoItemSelected />
-            )}
+            {override ??
+              (selected ? (
+                live ? (
+                  // The ref is only forwarded to the detail's heading, never read here.
+                  // eslint-disable-next-line react-hooks/refs
+                  live.renderDetail(selected, {
+                    vaultName: vaultName(selected.vaultId),
+                    headingRef: detailHeadingRef,
+                    onBack: backToList,
+                    onTag: (tag) => {
+                      updateQuery({ tag, section: 'all', kindFilter: 'all', query: '' });
+                      setSelectedId(selected.id);
+                    },
+                  })
+                ) : (
+                  <ItemDetail
+                    item={selected}
+                    vaultName={vaultName(selected.vaultId)}
+                    headingRef={detailHeadingRef}
+                    onBack={backToList}
+                    onTag={(tag) => {
+                      updateQuery({ tag, section: 'all', kindFilter: 'all', query: '' });
+                      setSelectedId(selected.id);
+                    }}
+                  />
+                )
+              ) : (
+                <NoItemSelected />
+              ))}
           </section>
         </div>
       </div>
@@ -300,6 +375,7 @@ function emptyStateFor(
   liveCount: number,
   vaultName: string,
   clearSearch: () => void,
+  onAdd?: () => void,
 ): EmptyStateContent {
   const trimmed = q.query.trim();
   if (trimmed) {
@@ -317,7 +393,10 @@ function emptyStateFor(
       isSearch: false,
       action: (
         <>
-          <Button variant="primary" unavailable title="Not available yet">
+          <Button
+            variant="primary"
+            {...(onAdd ? { onClick: onAdd } : { unavailable: true, title: 'Not available yet' })}
+          >
             Add a login
           </Button>
           <Button unavailable title="Not available yet">

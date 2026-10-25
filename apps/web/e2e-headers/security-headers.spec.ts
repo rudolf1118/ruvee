@@ -158,8 +158,10 @@ test.describe('CSP behaviour', () => {
     const violations = watchCspViolations(page);
     await page.goto('/');
     await expect(
-      page.getByRole('heading', { name: 'Ruvee is in early development' }),
+      page.getByRole('heading', { name: 'Keep every password in one calm, safe place.' }),
     ).toBeVisible();
+    // The vault worker (libsodium.js and OPAQUE) started under the policy: the welcome screen
+    // appears only after the worker answered.
     expect(violations).toEqual([]);
   });
 });

@@ -25,7 +25,7 @@ type IconComponent = ComponentType<{ size?: number }>;
 const navItemClass =
   'flex min-h-9 w-full items-center gap-2.5 rounded-control px-2.5 text-left text-body';
 
-function NavButton({
+export function NavButton({
   icon: Icon,
   label,
   count,
@@ -98,6 +98,12 @@ export interface SidebarProps {
   onVault: (vaultId: string) => void;
   /** Rendered in the header row, e.g. the drawer's close button. */
   headerAction?: ReactNode;
+  /** Locks the vault; without it "Lock now" is marked unavailable. */
+  onLock?: () => void;
+  /** Replaces the "Sync not set up" box with the real sync status. */
+  statusPanel?: ReactNode;
+  /** Extra navigation entries above Settings, e.g. devices. */
+  extraNav?: ReactNode;
 }
 
 export function Sidebar({
@@ -108,6 +114,9 @@ export function Sidebar({
   vaultId,
   onVault,
   headerAction,
+  onLock,
+  statusPanel,
+  extraNav,
 }: SidebarProps) {
   const nav = (target: Section, icon: IconComponent, withCount = true) => (
     <NavButton
@@ -148,18 +157,25 @@ export function Sidebar({
       {nav('trash', TrashIcon)}
 
       <div className="min-h-4 flex-1" />
+      {extraNav}
       <UnavailableNavItem icon={SlidersIcon} label="Settings" />
-      <UnavailableNavItem icon={LockIcon} label="Lock now" />
+      {onLock ? (
+        <NavButton icon={LockIcon} label="Lock now" current={false} onSelect={onLock} />
+      ) : (
+        <UnavailableNavItem icon={LockIcon} label="Lock now" />
+      )}
 
-      <div className="mt-2 flex items-start gap-2.5 rounded-row border border-line-menu bg-surface px-3 py-2.5">
-        <InfoIcon size={18} className="mt-px shrink-0 text-ink-muted" />
-        <div className="flex min-w-0 flex-col gap-px">
-          <span className="text-small font-semibold text-ink-secondary">Sync not set up</span>
-          <span className="text-caption text-ink-muted">
-            Not built yet. Preview data stays in this tab.
-          </span>
+      {statusPanel ?? (
+        <div className="mt-2 flex items-start gap-2.5 rounded-row border border-line-menu bg-surface px-3 py-2.5">
+          <InfoIcon size={18} className="mt-px shrink-0 text-ink-muted" />
+          <div className="flex min-w-0 flex-col gap-px">
+            <span className="text-small font-semibold text-ink-secondary">Sync not set up</span>
+            <span className="text-caption text-ink-muted">
+              Not built yet. Preview data stays in this tab.
+            </span>
+          </div>
         </div>
-      </div>
+      )}
     </nav>
   );
 }

@@ -3,7 +3,7 @@
  * and as the local stand-in for Caddy (the Caddy binary is not required).
  */
 import { createReadStream, existsSync, statSync } from 'node:fs';
-import { createServer } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { extname, join, normalize, relative, resolve, sep } from 'node:path';
 import {
   CACHE_HASHED_STATIC,
@@ -33,6 +33,35 @@ if (!existsSync(join(exportDir.pathname, 'index.html'))) {
 
 const csp = await productionCsp();
 const port = Number(process.env.RUVEE_EXPORT_PORT ?? EXPORT_PORT);
+// Same-origin API (api-design.md §Conventions): /api/* goes to the API, as Caddy does in
+// deployment. Unset, /api/* is a 404 like any other missing file.
+const apiOrigin = process.env.RUVEE_API_ORIGIN ? new URL(process.env.RUVEE_API_ORIGIN) : undefined;
+if (apiOrigin && !['127.0.0.1', 'localhost', '[::1]'].includes(apiOrigin.hostname)) {
+  console.error('RUVEE_API_ORIGIN must be a loopback address for this local server.');
+  process.exit(1);
+}
+
+/** Streams the request to the API unchanged and its response back, without logging either. */
+function proxyToApi(req, res) {
+  const upstream = httpRequest(
+    {
+      hostname: apiOrigin.hostname,
+      port: apiOrigin.port,
+      method: req.method,
+      path: req.url,
+      headers: { ...req.headers, host: apiOrigin.host },
+    },
+    (apiRes) => {
+      res.writeHead(apiRes.statusCode ?? 502, apiRes.headers);
+      apiRes.pipe(res);
+    },
+  );
+  upstream.on('error', () => {
+    if (!res.headersSent) res.writeHead(502, { 'Content-Type': 'text/plain; charset=utf-8' });
+    res.end('API unavailable');
+  });
+  req.pipe(upstream);
+}
 const root = resolve(exportDir.pathname);
 
 function headersFor(pathname, status) {
@@ -61,6 +90,10 @@ function locate(urlPath) {
 
 const server = createServer((req, res) => {
   const url = new URL(req.url ?? '/', `http://127.0.0.1:${port}`);
+  if (apiOrigin && url.pathname.startsWith('/api/')) {
+    proxyToApi(req, res);
+    return;
+  }
   const file = locate(url.pathname);
   if (file === undefined) {
     const fallback = join(root, '404.html');

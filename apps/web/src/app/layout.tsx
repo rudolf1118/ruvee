@@ -17,7 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
 
 export const metadata: Metadata = {
   title: { default: 'Ruvee', template: '%s · Ruvee' },
-  description: 'Ruvee is in early development.',
+  description: 'Ruvee password manager (development build).',
   robots: { index: false, follow: false },
 };
 
