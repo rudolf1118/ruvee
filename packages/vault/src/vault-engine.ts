@@ -681,6 +681,56 @@ export class VaultEngine {
   }
 
   /**
+   * D-27, extension only: a copy of `AK` for the host to keep in `chrome.storage.session` while
+   * unlocked. It never goes through `dispatch`, so no UI can ask for it.
+   */
+  accountKeyForResume(): Uint8Array {
+    return this.requireSession().accountKey.slice();
+  }
+
+  /**
+   * D-27: rebuilds the unlocked state from `AK` after the extension's service worker restarted.
+   * `AK` must open this device's own keyset; anything else is treated as locked. No password is
+   * in hand, so a rotated `SK` is adopted only at the next unlock with the password.
+   */
+  resume(params: { accountKey: Uint8Array }): Promise<UnlockedVault> {
+    return this.exclusive(async () => {
+      const device = await this.deps.store.device();
+      if (!device?.enrolled || device.status !== 'active') throw new VaultError('locked');
+      const enrolled = device.enrolled;
+      const accountKey = params.accountKey.slice();
+      let keyset;
+      try {
+        keyset = this.deps.crypto.openKeyset({
+          accountKey,
+          accountKeyId: enrolled.akId,
+          accountId: uuidToBytes(device.accountId),
+          keysetVersion: enrolled.keysetVersion,
+          envelope: enrolled.keyset,
+        });
+      } catch {
+        accountKey.fill(0);
+        throw new VaultError('locked');
+      }
+      const vault = keyset.vaults[0];
+      if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId) {
+        accountKey.fill(0);
+        throw new VaultError('locked');
+      }
+      const session = this.newSession(
+        { ...device, enrolled },
+        accountKey,
+        vault.vk,
+        await this.loadCheckpoint(device, accountKey, enrolled),
+      );
+      this.session = session;
+      await this.loadLocalState();
+      await this.syncNow();
+      return this.unlockedView();
+    });
+  }
+
+  /**
    * authentication.md §9 step 4 ("online"): after the password changed elsewhere, the device
    * logs in with the new password, unwraps the new server wrap with its own `SK`, and replaces
    * its local wrap. A password that fails OPAQUE is a wrong password, whatever the local state.

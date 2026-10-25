@@ -112,6 +112,7 @@ api = spawn('node', ['dist/main.js'], {
     OPAQUE_SERVER_SETUP_FILE: setupFile,
     PUBLIC_ORIGIN: publicOrigin,
     SESSION_COOKIE_SECURE: 'false',
+    EXTENSION_ORIGINS: process.env.RUVEE_E2E_EXTENSION_ORIGINS ?? '',
     LOG_LEVEL: 'warn',
   },
   stdio: 'inherit',

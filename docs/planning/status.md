@@ -47,8 +47,12 @@ A complete single-user web vault across several browsers, against the real API a
   back, then the master password confirms it; the old kit stops working with this server.
 - **Activity**: the account's security events, newest first, with the ones worth a second look
   highlighted (failed sign-ins, Recovery Kit use, failed pairing checks).
-- **Token sessions** for the extension (API only so far): extension logins get a 10-minute bearer
-  access token and a rotating refresh token; a reused refresh token ends the session.
+- **Browser extension** (`apps/extension`, Chromium MV3, development build): log in, pair from
+  the web app, unlock, and fill a login into a page of exactly the saved origin, on request.
+  Token sessions (10-minute access token, rotating refresh token, reuse ends the session); `AK`
+  in `chrome.storage.session` across service-worker restarts (D-27); auto-lock after 15
+  minutes. The popup never receives a password. The engine is shared with the web app
+  (`packages/vault`).
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -57,17 +61,18 @@ A complete single-user web vault across several browsers, against the real API a
 
 ## Verified (locally, 2026-10-25)
 
-| Check                                                                                                                                                                                                    | Result                          |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                       | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 73, crypto 60)                                                                                                                                                    | Pass                            |
-| `pnpm test:integration` (49; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                     | Pass                            |
-| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                        | Pass                            |
-| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                                      | Pass                            |
-| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                    | Pass                            |
-| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` and kit rotation, activity; INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
-| Remote CI                                                                                                                                                                                                | **Not run** (nothing pushed)    |
-| Safari, a real Caddy binary, phones, older laptops                                                                                                                                                       | **Not run**                     |
+| Check                                                                                                                                                                                                                  | Result                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                                     | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 33, vault 41, extension 27, crypto 60)                                                                                                                                          | Pass                            |
+| `pnpm test:integration` (49; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                   | Pass                            |
+| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                                      | Pass                            |
+| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                                                    | Pass                            |
+| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                                  | Pass                            |
+| `pnpm --filter @ruvee/extension test:extension` (Chromium: options, login, pairing from the web app, exact-origin fill, refusal on another port and of a forged fill, worker restart and resume, lock, capture checks) | Pass                            |
+| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` and kit rotation, activity; INV-01 and INV-16 capture), per engine               | Pass: Chromium, Firefox, WebKit |
+| Remote CI                                                                                                                                                                                                              | **Not run** (nothing pushed)    |
+| Safari, a real Caddy binary, phones, older laptops                                                                                                                                                                     | **Not run**                     |
 
 ## Running it
 
@@ -125,6 +130,11 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Known gaps and risks
 
+- **Extension gaps:** no account setup or recovery (web only), no item editing, copy or search
+  beyond the page's matches, no fill into same-origin frames, no Firefox or Safari, no store
+  packaging. A browser whose password and `SK` both changed elsewhere is told to unlock in the
+  web app; the popup has no previous-password field yet. The auto-lock alarm and a page
+  navigating during a fill are covered by unit checks, not by the browser test.
 - **Not built:** the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
   generator, cards and identities, import/export, SSE push, re-seeding, key rotation, the browser
   extension, mobile.
@@ -141,10 +151,8 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**The browser extension** (Phase 5): secure manual autofill with strict origin matching, on the
-same crypto package and API. It needs token sessions (`POST /auth/refresh`, D-08 token
-lifetimes), which the API does not have yet, and a decision on where its vault worker runs under
-Manifest V3.
-
-Interpretation to confirm in review: other devices adopt a rotated `SK` at their next online
-**unlock** (where the password is in hand to re-wrap locally), not during a background sync.
+The extension's remaining Phase 5 work, in order: the previous-password field in the popup,
+copy-to-clipboard through an offscreen document, a browser test of the auto-lock alarm, and an
+extension-hosted vault page (ADR-0009, the higher-assurance client). Then backup and restore
+(Phase 7 export design first) and the Phase 2 independent review (D-19), which still gates real
+data. Mobile (Phase 6) waits on D-05.

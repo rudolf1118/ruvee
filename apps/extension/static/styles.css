@@ -1,0 +1,150 @@
+/* The web app's tokens (apps/web/src/app/globals.css), without its fonts: no remote loads. */
+:root {
+  --brand: #6d4aff;
+  --brand-hover: #5a36f0;
+  --brand-wash: #f6f3ff;
+  --brand-line: #c6b8ff;
+  --canvas: #f8f7f4;
+  --surface: #ffffff;
+  --ink: #20212b;
+  --ink-muted: #5e6070;
+  --line: #e6e3dc;
+  --line-input: #d3cfc5;
+  --danger: #b42318;
+  --danger-wash: #fdecea;
+  color-scheme: light;
+  font-family:
+    system-ui,
+    -apple-system,
+    'Segoe UI',
+    sans-serif;
+  font-size: 14px;
+  color: var(--ink);
+}
+body {
+  margin: 0;
+  background: var(--canvas);
+}
+main {
+  width: 340px;
+  padding: 14px 16px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+main.options {
+  width: auto;
+  max-width: 560px;
+  margin: 32px auto;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.badge {
+  font-size: 12px;
+  border: 1px dashed var(--brand-line);
+  background: var(--brand-wash);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+form,
+section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+p {
+  margin: 0;
+  line-height: 1.45;
+}
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-weight: 600;
+  font-size: 13px;
+}
+input {
+  font: inherit;
+  font-weight: 400;
+  padding: 7px 10px;
+  border: 1px solid var(--line-input);
+  border-radius: 7px;
+  background: var(--surface);
+}
+input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+.mono {
+  font-family: ui-monospace, monospace;
+}
+button {
+  font: inherit;
+  font-weight: 600;
+  padding: 7px 12px;
+  border-radius: 7px;
+  border: 1px solid var(--line-input);
+  background: var(--surface);
+  color: var(--ink);
+  cursor: pointer;
+}
+button.primary {
+  background: var(--brand);
+  border-color: var(--brand);
+  color: #fff;
+}
+button.primary:hover {
+  background: var(--brand-hover);
+}
+button[aria-disabled='true'] {
+  opacity: 0.6;
+  cursor: progress;
+}
+ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+ul:empty {
+  display: none;
+}
+li {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+}
+li + li {
+  border-top: 1px solid var(--line);
+}
+li > span {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.muted {
+  color: var(--ink-muted);
+  font-size: 13px;
+}
+.origin {
+  word-break: break-all;
+}
+.error {
+  color: var(--danger);
+  background: var(--danger-wash);
+  border-radius: 7px;
+  padding: 8px 10px;
+}
+.ok {
+  background: var(--brand-wash);
+  border-radius: 7px;
+  padding: 8px 10px;
+}

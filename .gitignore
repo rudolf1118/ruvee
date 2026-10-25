@@ -4,6 +4,8 @@ dist/
 # Static export produced by `next build` when `output: 'export'`.
 apps/web/out/
 apps/web/out-diagnostics
+# The extension's test build (host permission for 127.0.0.1; never distributed).
+apps/extension/dist-test/
 .turbo/
 coverage/
 playwright-report/

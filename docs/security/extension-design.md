@@ -111,3 +111,22 @@ compromised API server serving wrong ciphertext (that is detected by sync verifi
   auto-lock alarm, and `chrome.storage.session` empty after lock.
 - INV-01, INV-16 and INV-19 capture checks like the web vault's, including the extension's
   IndexedDB and `chrome.storage.local`.
+
+## 7. As built (2026-10-25)
+
+`apps/extension` implements §1 to §4 for Chromium, with these specifics:
+
+- The vault engine is `packages/vault`, the same code the web worker runs. The service worker
+  dispatches only an allow-listed subset of its methods; `secret` is not among them, so a
+  password reaches only the fill function.
+- Messages are accepted only when `sender.id` is this extension and `sender.origin` is its own
+  origin, then validated with a schema.
+- Fill re-reads the tab's origin from `chrome.tabs` just before injecting, and the injected
+  function compares `location.origin` again inside the page.
+- The test build differs only by `__RUVEE_TEST__` (the popup may name its target tab with
+  `?tab=`) and host permission for `127.0.0.1`. It is written to `dist-test/`, which is never
+  distributed.
+- The browser test runs in Chromium against a throwaway database. It covers pairing from the web
+  app, fill on the saved origin, no offer and a refused forged fill on another port, a real
+  service-worker restart followed by resume from `chrome.storage.session`, lock, and scans of the
+  network, `chrome.storage` and the extension's IndexedDB.

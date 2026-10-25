@@ -638,6 +638,26 @@ describe('vault engine', () => {
     expect((await reopened.store.device())?.enrolled?.keysetVersion).toBe(keys.keysetVersion);
   });
 
+  it('resumes from AK after a restart, and refuses a key that does not open the keyset (D-27)', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    await a.engine.save({ draft: login('Kept while the worker sleeps') });
+    await a.engine.sync();
+    const ak = a.engine.accountKeyForResume();
+    a.engine.wipeMemory();
+    // A fresh engine on the same store and cookie jar stands in for a restarted service worker.
+    const restarted = await device(server, a.factory, a.api);
+    expect(await code(restarted.engine.resume({ accountKey: crypto.generateKey() }))).toBe(
+      'locked',
+    );
+    const resumed = await restarted.engine.resume({ accountKey: ak });
+    expect(resumed.items.map((i) => i.title)).toEqual(['Kept while the worker sleeps']);
+    expect(resumed.sync.state).toBe('synced');
+    expect(restarted.engine.detail({ id: resumed.items[0]?.id ?? '' }).username).toBe(
+      'someone@mail.example',
+    );
+  });
+
   it('ends the unlocked session when the server session expires', async () => {
     const server = new FakeServer();
     const { a } = await createAccount(server);
