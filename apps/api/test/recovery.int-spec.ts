@@ -210,6 +210,8 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
     // Every earlier session ended, the recovery session too; the new password logs in.
     expectError(await h.get('/api/v1/account', oldCookie), 'unauthenticated');
     expectError(await h.get('/api/v1/recovery/material', cookie), 'unauthenticated');
+    // Completion is single use (INV-23): the same recovery session cannot complete again.
+    expectError(await h.post('/api/v1/recovery/complete', body, cookie), 'unauthenticated');
     expect(await login(SYNTHETIC_PASSWORD)).toBeUndefined();
     expect(await login(NEW_PASSWORD)).toBeDefined();
     // The old kit no longer works against this server.

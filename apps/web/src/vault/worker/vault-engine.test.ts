@@ -613,6 +613,30 @@ describe('vault engine', () => {
     expect(page.nextCursor).toBeNull();
   });
 
+  it('refuses an older keyset, or a newer one that does not open, and goes read-only (INV-09)', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const keys = server.account?.keys;
+    if (!server.account || !keys) throw new Error('no account');
+    server.account = { ...server.account, keys: { ...keys, keysetVersion: 0 } };
+    const rolledBack = await (
+      await device(server, a.factory, a.api)
+    ).engine.unlock({
+      password: PASSWORD,
+    });
+    expect(rolledBack.sync.state).toBe('integrity_error');
+    const reopened = await device(server, a.factory, a.api);
+    server.account = {
+      ...server.account,
+      keys: { ...keys, keysetVersion: keys.keysetVersion + 1, keyset: keys.keyset },
+    };
+    // The same ciphertext under a higher version fails its AAD check: never trusted.
+    const forged = await reopened.engine.unlock({ password: PASSWORD });
+    expect(forged.sync.state).toBe('integrity_error');
+    expect(await code(reopened.engine.save({ draft: login('Blocked') }))).toBe('read_only');
+    expect((await reopened.store.device())?.enrolled?.keysetVersion).toBe(keys.keysetVersion);
+  });
+
   it('ends the unlocked session when the server session expires', async () => {
     const server = new FakeServer();
     const { a } = await createAccount(server);

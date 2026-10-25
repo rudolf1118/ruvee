@@ -6,6 +6,8 @@ import {
   registerStartResponseSchema,
   sessionResponseSchema,
 } from '@ruvee/contracts';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
 import type request from 'supertest';
 import { ThrottleService } from '../src/auth/throttle.service.js';
 import { query } from './support/temp-database.js';
@@ -370,5 +372,46 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
     for (const { details: d } of details)
       for (const key of Object.keys(d))
         expect(['newDevice', 'sessionId', 'reason', 'enrolledDeviceId', 'via']).toContain(key);
+  });
+
+  it('never stores, logs or returns the OPAQUE server setup (INV-21)', async () => {
+    const setup = readFileSync('test/fixtures/opaque-server-setup.test-only', 'utf8').trim();
+    const forms = [setup, Buffer.from(setup, 'base64url').toString('hex')];
+    const res = await login(account.username, SYNTHETIC_PASSWORD, account.deviceId);
+    const cookie = sessionCookie(res);
+    const bodies = [res.text];
+    for (const path of ['/api/v1/account', '/api/v1/account/keys', '/api/v1/devices'])
+      bodies.push((await h.get(path, cookie)).text);
+    const tables = await query<{ table_name: string }>(
+      h.db.url,
+      `SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`,
+    );
+    const dump: string[] = [];
+    for (const { table_name: table } of tables) {
+      const rows = await query<{ row: string }>(
+        h.db.url,
+        `SELECT row_to_json(t)::text AS row FROM "${table}" t`,
+      );
+      dump.push(...rows.map((r) => r.row));
+    }
+    const haystack = [...bodies, ...h.logs, ...dump].join('\n');
+    for (const form of forms) expect(haystack).not.toContain(form);
+  });
+
+  it('stores only the SHA-256 of each 256-bit session token (INV-13)', async () => {
+    const res = await login(account.username, SYNTHETIC_PASSWORD, account.deviceId);
+    const token = sessionCookie(res).split('=')[1] ?? '';
+    expect(Buffer.from(token, 'base64url')).toHaveLength(32);
+    const rows = await query<{ hash: string; row: string }>(
+      h.db.url,
+      `SELECT encode(secret_hash, 'hex') AS hash, row_to_json(s)::text AS row FROM sessions s`,
+    );
+    const expected = createHash('sha256').update(token).digest('hex');
+    expect(rows.map((r) => r.hash)).toContain(expected);
+    const hex = Buffer.from(token, 'base64url').toString('hex');
+    for (const { row } of rows) {
+      expect(row).not.toContain(token);
+      expect(row).not.toContain(hex);
+    }
   });
 });

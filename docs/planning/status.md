@@ -58,8 +58,8 @@ A complete single-user web vault across several browsers, against the real API a
 | Check                                                                                                                                                                                                    | Result                          |
 | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                       | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 72, crypto 60)                                                                                                                                                    | Pass                            |
-| `pnpm test:integration` (40; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                     | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 73, crypto 60)                                                                                                                                                    | Pass                            |
+| `pnpm test:integration` (42; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                     | Pass                            |
 | `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                        | Pass                            |
 | `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                                      | Pass                            |
 | `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                    | Pass                            |
@@ -95,6 +95,12 @@ throwaway databases on it:
 DATABASE_URL=postgresql://…@127.0.0.1:5433/ruvee pnpm test:integration
 RUVEE_E2E_ADMIN_DATABASE_URL=postgresql://…@127.0.0.1:5433/ruvee RUVEE_E2E_BROWSER=firefox pnpm --filter @ruvee/web test:vault
 ```
+
+## Review packet
+
+[phase-2-review-packet.md](../security/phase-2-review-packet.md) maps every invariant to its tests,
+lists the interpretations made while building, and scopes the independent review (D-19). It is a
+self-review.
 
 ## Decisions
 

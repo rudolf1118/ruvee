@@ -76,3 +76,11 @@ fuzzing with typed errors only), INV-05 (unknown and reserved profiles fail befo
 call), INV-17 (`AUK` changes with the password for a fixed `SK`; no purpose is keyed by `SK`) and
 INV-22 (exact pins, one locked `libsodium-sumo`, the runtime library version). They cover only the
 implemented purposes. No invariant changed.
+
+## Changes after the Phase 2 self-review (2026-10-25)
+
+Status remains **Proposed**. Each invariant is mapped to the tests that prove it in
+[phase-2-review-packet.md](phase-2-review-packet.md#2-invariants-and-the-tests-that-prove-them).
+The review added tests for INV-09 on the client, INV-13 token hashing, INV-21 and the
+single-use recovery completion (INV-23). INV-11 and INV-18 are structural; INV-15 is limited by
+JavaScript (R-11); INV-19 waits for Phase 5. No invariant changed.
