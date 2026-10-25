@@ -1,5 +1,5 @@
 import type { VaultItemView } from '../vault/types';
-import type { ItemSummary } from '@/vault/protocol';
+import type { ItemSummary } from '@ruvee/vault';
 
 /** V1 has one vault; the shell's vault switcher shows it under this name. */
 export const PERSONAL_VAULT = { id: 'personal', name: 'Personal' } as const;

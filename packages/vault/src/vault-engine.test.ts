@@ -1,11 +1,11 @@
 // @vitest-environment node
 import { initRuveeCrypto, type RuveeCrypto } from '@ruvee/crypto';
 import { IDBFactory } from 'fake-indexeddb';
-import type { ItemDraft, VaultEvent } from '../protocol';
-import type { Api } from './api';
-import { DeviceStore, STORES } from './store';
-import { FakeServer, fakeOpaque } from './test-support';
-import { VaultEngine, VaultError } from './vault-engine';
+import type { ItemDraft, VaultEvent } from './protocol.js';
+import type { Api } from './api.js';
+import { DeviceStore, STORES } from './store.js';
+import { FakeServer, fakeOpaque } from './test-support.js';
+import { VaultEngine, VaultError } from './vault-engine.js';
 
 const PASSWORD = 'synthetic engine passphrase 4c1e';
 const TOKEN = 'T'.repeat(43);
@@ -37,6 +37,7 @@ async function device(
     store,
     opaque: fakeOpaque,
     origin: 'http://127.0.0.1:3101',
+    platform: 'web',
     now: () => Date.now(),
     emit: (e) => events.push(e),
   });

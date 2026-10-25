@@ -1,4 +1,4 @@
-import type { RecoveryKitView } from '@/vault/protocol';
+import type { RecoveryKitView } from '@ruvee/vault';
 import { Button } from '../ui/button';
 
 /** The Recovery Kit as shown once at setup and after every recovery (account-recovery.md §2). */

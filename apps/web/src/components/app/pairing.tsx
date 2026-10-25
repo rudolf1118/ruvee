@@ -1,7 +1,7 @@
 'use client';
 
 import { type SubmitEvent, useEffect, useRef, useState } from 'react';
-import type { PairingCode, PairingHostStatus, UnlockedVault } from '@/vault/protocol';
+import type { PairingCode, PairingHostStatus, UnlockedVault } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { ChevronLeftIcon } from '../ui/icons';

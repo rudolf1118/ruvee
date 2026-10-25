@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import type { ActivityEvent } from '@/vault/protocol';
+import type { ActivityEvent } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { ChevronLeftIcon } from '../ui/icons';

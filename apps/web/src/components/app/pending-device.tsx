@@ -1,6 +1,6 @@
 'use client';
 
-import type { UnlockedVault } from '@/vault/protocol';
+import type { UnlockedVault } from '@ruvee/vault';
 import type { VaultClient } from '@/vault/client';
 import { JoinWithCode } from './pairing';
 

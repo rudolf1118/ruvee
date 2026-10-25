@@ -1,4 +1,4 @@
-import type { VaultErrorCode } from '@/vault/protocol';
+import type { VaultErrorCode } from '@ruvee/vault';
 
 /** User-facing text for worker error codes. Never says more than the code does. */
 export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): string {

@@ -1,7 +1,7 @@
 'use client';
 
 import { type Ref, useEffect, useState } from 'react';
-import type { ConflictView, ItemDetail as Detail } from '@/vault/protocol';
+import type { ConflictView, ItemDetail as Detail } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { cx } from '../ui/cx';

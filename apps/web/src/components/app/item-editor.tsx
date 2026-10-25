@@ -1,8 +1,8 @@
 'use client';
 
 import { type SubmitEvent, useEffect, useRef, useState } from 'react';
-import { ITEM_LIMITS, parseTags } from '@/vault/item-schema';
-import type { ItemDetail, ItemDraft, ItemSummary, ItemType } from '@/vault/protocol';
+import { ITEM_LIMITS, parseTags } from '@ruvee/vault';
+import type { ItemDetail, ItemDraft, ItemSummary, ItemType } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { cx } from '../ui/cx';

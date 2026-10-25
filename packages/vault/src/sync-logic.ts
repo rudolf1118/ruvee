@@ -1,6 +1,6 @@
 import { uuidToBytes, type Manifest, type RuveeCrypto } from '@ruvee/crypto';
 import type { CommitRequest, SyncChangesResponse } from '@ruvee/contracts';
-import { fromB64, toB64 } from './bytes';
+import { fromB64, toB64 } from './bytes.js';
 
 /** What a device has verified (sync-protocol §5 "Checkpoints"). */
 export interface Checkpoint {

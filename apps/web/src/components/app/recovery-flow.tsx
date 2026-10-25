@@ -1,8 +1,8 @@
 'use client';
 
 import { type SubmitEvent, useState } from 'react';
-import { checkMasterPassword, MASTER_PASSWORD_MIN_CHARACTERS } from '@/vault/password-policy';
-import type { RecoveryKitView, UnlockedVault } from '@/vault/protocol';
+import { checkMasterPassword, MASTER_PASSWORD_MIN_CHARACTERS } from '@ruvee/vault';
+import type { RecoveryKitView, UnlockedVault } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { AuthCard, DevelopmentNotice, RecoveryWarning } from './auth-layout';

@@ -1,4 +1,4 @@
-import type { SyncStatus } from '@/vault/protocol';
+import type { SyncStatus } from '@ruvee/vault';
 import { Button } from '../ui/button';
 import { cx } from '../ui/cx';
 import { AlertIcon, CloudIcon, RefreshIcon } from '../ui/icons';

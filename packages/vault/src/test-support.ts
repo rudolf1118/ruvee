@@ -10,9 +10,9 @@ import type {
   SyncChangesResponse,
 } from '@ruvee/contracts';
 import { createHash } from 'node:crypto';
-import { ApiError, NetworkError, type Api } from './api';
-import { fromB64 } from './bytes';
-import type { OpaqueClient } from './vault-engine';
+import { ApiError, NetworkError, type Api } from './api.js';
+import { fromB64 } from './bytes.js';
+import type { OpaqueClient } from './vault-engine.js';
 
 interface ServerItem {
   revision: number;

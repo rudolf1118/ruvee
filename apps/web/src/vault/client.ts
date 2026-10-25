@@ -5,7 +5,7 @@ import type {
   VaultMethods,
   VaultRequest,
   VaultResponse,
-} from './protocol';
+} from '@ruvee/vault';
 
 export class VaultClientError extends Error {
   constructor(

@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { type SubmitEvent, useEffect, useRef, useState } from 'react';
-import type { DevicePhase, UnlockedVault } from '@/vault/protocol';
+import type { DevicePhase, UnlockedVault } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { LockIcon } from '../ui/icons';

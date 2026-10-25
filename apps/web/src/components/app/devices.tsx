@@ -1,8 +1,8 @@
 'use client';
 
 import { type ReactNode, type SubmitEvent, useCallback, useEffect, useState } from 'react';
-import { checkMasterPassword, MASTER_PASSWORD_MIN_CHARACTERS } from '@/vault/password-policy';
-import type { DeviceView, RecoveryKitView } from '@/vault/protocol';
+import { checkMasterPassword, MASTER_PASSWORD_MIN_CHARACTERS } from '@ruvee/vault';
+import type { DeviceView, RecoveryKitView } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { ChevronLeftIcon, PlusIcon } from '../ui/icons';

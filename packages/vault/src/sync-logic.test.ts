@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { initRuveeCrypto, uuidToBytes, type RuveeCrypto } from '@ruvee/crypto';
 import type { SyncChangesResponse } from '@ruvee/contracts';
-import { toB64 } from './bytes';
+import { toB64 } from './bytes.js';
 import {
   buildCommit,
   rebase,
@@ -9,7 +9,7 @@ import {
   ZERO_HASH,
   type Checkpoint,
   type VaultKeys,
-} from './sync-logic';
+} from './sync-logic.js';
 
 let crypto: RuveeCrypto;
 let keys: VaultKeys;

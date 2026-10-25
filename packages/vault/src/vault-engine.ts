@@ -12,8 +12,13 @@ import {
   type SyncChangesResponse,
 } from '@ruvee/contracts';
 import { z } from 'zod';
-import { decodeItemBody, encodeItemBody, ITEM_SCHEMA_VERSION, type ItemBody } from '../item-schema';
-import { checkMasterPassword } from '../password-policy';
+import {
+  decodeItemBody,
+  encodeItemBody,
+  ITEM_SCHEMA_VERSION,
+  type ItemBody,
+} from './item-schema.js';
+import { checkMasterPassword } from './password-policy.js';
 import type {
   ActivityPage,
   ConflictView,
@@ -30,10 +35,10 @@ import type {
   UnlockedVault,
   VaultErrorCode,
   VaultEvent,
-} from '../protocol';
-import { ApiError, NetworkError, type Api } from './api';
-import { fromB64, fromUtf8, toB64, utf8 } from './bytes';
-import type { DeviceRecord, DeviceStore, EnrolledKeys } from './store';
+} from './protocol.js';
+import { ApiError, NetworkError, type Api } from './api.js';
+import { fromB64, fromUtf8, toB64, utf8 } from './bytes.js';
+import type { DeviceRecord, DeviceStore, EnrolledKeys } from './store.js';
 import {
   buildCommit,
   rebase,
@@ -45,7 +50,7 @@ import {
   type PendingMutation,
   type SyncedItem,
   type VaultKeys,
-} from './sync-logic';
+} from './sync-logic.js';
 
 export class VaultError extends Error {
   constructor(
@@ -75,6 +80,8 @@ export interface EngineDeps {
   readonly store: DeviceStore;
   readonly opaque: OpaqueClient;
   readonly origin: string;
+  /** What this client logs in and pairs as; registration and recovery are web-only. */
+  readonly platform: 'web' | 'extension';
   readonly now: () => number;
   readonly emit: (event: VaultEvent) => void;
 }
@@ -566,7 +573,7 @@ export class VaultEngine {
       const start = await api.loginStart({
         username,
         startLoginRequest: client.startLoginRequest,
-        platform: 'web',
+        platform: this.deps.platform,
         ...(deviceId ? { deviceId } : {}),
       });
       const finish = opaque.finishLogin(client.clientLoginState, start.loginResponse, password);
@@ -1570,13 +1577,13 @@ export class VaultEngine {
       secret,
       accountId: uuidToBytes(device.accountId),
       deviceId: uuidToBytes(device.deviceId),
-      platform: 'web',
+      platform: this.deps.platform,
     });
     const pairingId = toB64(request.pairingId);
     try {
       await api.pairingRequest(pairingId, {
         epk: toB64(request.ephemeralPublicKey),
-        platform: 'web',
+        platform: this.deps.platform,
         mac: toB64(request.mac),
       });
     } catch (error) {

@@ -2,13 +2,7 @@
 
 import '@/vault/zod-config';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type {
-  DevicePhase,
-  ItemDetail,
-  ItemSummary,
-  SyncStatus,
-  UnlockedVault,
-} from '@/vault/protocol';
+import type { DevicePhase, ItemDetail, ItemSummary, SyncStatus, UnlockedVault } from '@ruvee/vault';
 import { VaultClient } from '@/vault/client';
 import { DevicesIcon, InfoIcon, LogoutIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';

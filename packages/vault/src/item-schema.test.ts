@@ -5,7 +5,7 @@ import {
   ITEM_LIMITS,
   parseTags,
   type ItemBody,
-} from './item-schema';
+} from './item-schema.js';
 
 const login: ItemBody = {
   v: 1,
