@@ -43,6 +43,8 @@ A complete single-user web vault across several browsers, against the real API a
   **Security** replaces it on request, and the notice after a recovery leads to Devices. Other
   devices adopt the new `SK` when they next unlock online; one that missed both an `SK` and a
   password change asks once for its previous password.
+- **Recovery Kit rotation** under **Security** (account-recovery.md §5): the new kit must be typed
+  back, then the master password confirms it; the old kit stops working with this server.
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -51,17 +53,17 @@ A complete single-user web vault across several browsers, against the real API a
 
 ## Verified (locally, 2026-10-25)
 
-| Check                                                                                                                                                                                  | Result                          |
-| -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                     | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 70, crypto 60)                                                                                                                                  | Pass                            |
-| `pnpm test:integration` (38; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                   | Pass                            |
-| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                      | Pass                            |
-| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                    | Pass                            |
-| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                  | Pass                            |
-| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` rotation; INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
-| Remote CI                                                                                                                                                                              | **Not run** (nothing pushed)    |
-| Safari, a real Caddy binary, phones, older laptops                                                                                                                                     | **Not run**                     |
+| Check                                                                                                                                                                                          | Result                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                             | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 71, crypto 60)                                                                                                                                          | Pass                            |
+| `pnpm test:integration` (39; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                           | Pass                            |
+| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                              | Pass                            |
+| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                            | Pass                            |
+| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                          | Pass                            |
+| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` and kit rotation; INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
+| Remote CI                                                                                                                                                                                      | **Not run** (nothing pushed)    |
+| Safari, a real Caddy binary, phones, older laptops                                                                                                                                             | **Not run**                     |
 
 ## Running it
 
@@ -112,8 +114,7 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Known gaps and risks
 
-- **Not built:** Recovery Key rotation from settings
-  (the rest of P2-14), the activity screen (P2-15), the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
+- **Not built:** the activity screen (P2-15), the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
   generator, cards and identities, import/export, SSE push, re-seeding, key rotation, the browser
   extension, mobile.
 - Common-password rejection (part of D-09) needs a reviewed list.
@@ -126,9 +127,10 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**Recovery Key rotation from settings** (`PUT /account/recovery`, account-recovery.md §5; the
-rest of P2-14), then the browser extension (Phase 5: secure manual autofill with strict origin
-matching).
+**The browser extension** (Phase 5): secure manual autofill with strict origin matching, on the
+same crypto package and API. It needs token sessions (`POST /auth/refresh`, D-08 token
+lifetimes), which the API does not have yet, and a decision on where its vault worker runs under
+Manifest V3.
 
 Interpretation to confirm in review: other devices adopt a rotated `SK` at their next online
 **unlock** (where the password is in hand to re-wrap locally), not during a background sync.

@@ -95,6 +95,10 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   revokeDevice: (e, p: Parameters<VaultEngine['revokeDevice']>[0]) => e.revokeDevice(p),
   changePassword: (e, p: Parameters<VaultEngine['changePassword']>[0]) => e.changePassword(p),
   rotateSecretKey: (e, p: Parameters<VaultEngine['rotateSecretKey']>[0]) => e.rotateSecretKey(p),
+  kitRotateBegin: (e) => e.kitRotateBegin(),
+  kitRotateVerify: (e, p: Parameters<VaultEngine['kitRotateVerify']>[0]) => e.kitRotateVerify(p),
+  kitRotateFinish: (e, p: Parameters<VaultEngine['kitRotateFinish']>[0]) => e.kitRotateFinish(p),
+  kitRotateCancel: (e) => e.kitRotateCancel(),
   logout: (e) => e.logout(),
   wipe: (e) => {
     e.wipeMemory();

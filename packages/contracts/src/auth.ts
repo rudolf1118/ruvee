@@ -239,3 +239,12 @@ export const secretKeyRotateRequestSchema = z.strictObject({
   expectedRowVersion: z.int().min(1),
 });
 export type SecretKeyRotateRequest = z.infer<typeof secretKeyRotateRequestSchema>;
+
+/** account-recovery.md §5: a new Recovery Key replaces the wrap and the verifier at once. */
+export const recoveryKeyRotateRequestSchema = z.strictObject({
+  recoveryKeyId: base64urlBytes({ length: 16 }),
+  wrappedAkRecovery: base64urlBytes({ length: 93 }),
+  recoveryVerifier: base64urlBytes({ length: 32 }),
+  expectedRowVersion: z.int().min(1),
+});
+export type RecoveryKeyRotateRequest = z.infer<typeof recoveryKeyRotateRequestSchema>;

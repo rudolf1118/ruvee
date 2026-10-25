@@ -17,8 +17,9 @@ Implemented locally (remote CI not yet run): the health endpoints and transport 
 `/api/v1/recovery/{start,material,password/start,complete}`, and step-up and account security:
 `/api/v1/auth/reauth/{start,finish}`, `GET /api/v1/sessions`, `DELETE /api/v1/sessions/{id}`,
 `POST /api/v1/devices/{id}/revoke`, `/api/v1/account/password/{start,finish}` and
-`POST /api/v1/account/secret-key` (`SK` rotation, D-24). Everything else
-in this document (refresh, `PUT /account/recovery`, events, SSE, re-seeding) is still
+`POST /api/v1/account/secret-key` (`SK` rotation, D-24) and `PUT /api/v1/account/recovery`
+(Recovery Kit rotation; it also ends unfinished recovery sessions). Everything else
+in this document (refresh, events, SSE, re-seeding) is still
 **proposed** and has no contract. A step-up login state is bound to its session: `login/finish`
 refuses it, so step-up can never mint a new session. `GET /account` also returns `lastRecoveryAt`, the time of the
 latest `recovery_started` event, which is how every device learns that the Recovery Kit was used;

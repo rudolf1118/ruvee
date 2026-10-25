@@ -274,6 +274,15 @@ export class VaultEngine {
    * reply arrives (§3.2 step 1); after that it asks again.
    */
   private pendingPassword: { readonly value: string; readonly expiresAtMs: number } | undefined;
+  /** A new Recovery Kit made from Security, until it is verified and stored (§5). */
+  private kitRotation:
+    | {
+        readonly recoveryKeyId: Uint8Array;
+        readonly wrappedAkRecovery: Uint8Array;
+        readonly recoveryVerifier: Uint8Array;
+        verified: boolean;
+      }
+    | undefined;
   /** An unfinished recovery: what `RK` unlocked, then the new password and Recovery Key. */
   private recovery: PendingRecovery | undefined;
   /** Serializes every state change, so a save never interleaves with a sync. */
@@ -2277,6 +2286,110 @@ export class VaultEngine {
     await this.deps.store.putDevice(device);
     session.device = device;
     enrolled.secretKey.fill(0);
+  }
+
+  /**
+   * account-recovery.md §5, step 1 and 2: a new Recovery Key wrapping the same `AK`. Nothing is
+   * sent until the user typed the new key back and confirmed with the master password, so the
+   * step-up window does not run out while the kit is being saved.
+   */
+  kitRotateBegin(): RecoveryKitView {
+    const session = this.requireSession();
+    const { crypto } = this.deps;
+    const enrolled = session.device.enrolled;
+    const { recoveryKey, recoveryKeyId } = crypto.generateRecoveryKey();
+    const derived = crypto.deriveRecoveryKeys(recoveryKey);
+    try {
+      this.kitRotation = {
+        recoveryKeyId,
+        wrappedAkRecovery: crypto.wrapAccountKeyForRecovery({
+          recoveryWrapKey: derived.recoveryWrapKey,
+          recoveryKeyId,
+          accountId: uuidToBytes(session.device.accountId),
+          accountKeyId: enrolled.akId,
+          accountKeyEpoch: enrolled.akEpoch,
+          accountKey: session.accountKey,
+        }),
+        recoveryVerifier: crypto.recoveryVerifier(derived.recoveryAuthKey),
+        verified: false,
+      };
+      return {
+        recoveryKey: crypto.formatRecoveryKey(recoveryKey),
+        recoveryKeyIdShort: toB64(recoveryKeyId).slice(0, 8),
+        username: session.device.username,
+        serverOrigin: this.deps.origin,
+        createdAtMs: this.deps.now(),
+      };
+    } finally {
+      recoveryKey.fill(0);
+      derived.recoveryWrapKey.fill(0);
+      derived.recoveryAuthKey.fill(0);
+    }
+  }
+
+  kitRotateVerify(params: { recoveryKey: string }): true {
+    const session = this.requireSession();
+    const pending = this.kitRotation;
+    if (!pending) throw new VaultError('kit_mismatch');
+    const { crypto } = this.deps;
+    let rk: Uint8Array;
+    try {
+      rk = crypto.parseRecoveryKey(params.recoveryKey);
+    } catch {
+      throw new VaultError('invalid_recovery_key');
+    }
+    const keys = crypto.deriveRecoveryKeys(rk);
+    rk.fill(0);
+    try {
+      const ak = crypto.unwrapAccountKeyForRecovery({
+        recoveryWrapKey: keys.recoveryWrapKey,
+        recoveryKeyId: pending.recoveryKeyId,
+        accountId: uuidToBytes(session.device.accountId),
+        accountKeyId: session.device.enrolled.akId,
+        accountKeyEpoch: session.device.enrolled.akEpoch,
+        envelope: pending.wrappedAkRecovery,
+      });
+      const ok = same(ak, session.accountKey);
+      ak.fill(0);
+      if (!ok) throw new VaultError('kit_mismatch');
+    } catch {
+      throw new VaultError('kit_mismatch');
+    } finally {
+      keys.recoveryWrapKey.fill(0);
+      keys.recoveryAuthKey.fill(0);
+    }
+    pending.verified = true;
+    return true;
+  }
+
+  /** Step 3: step-up, then the server replaces the wrap and verifier at once. */
+  kitRotateFinish(params: { password: string }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      const pending = this.kitRotation;
+      if (!pending?.verified) throw new VaultError('kit_mismatch');
+      try {
+        await this.stepUp(params.password);
+        const keys = await this.deps.api.accountKeys();
+        if (!same(fromB64(keys.akId), session.device.enrolled.akId))
+          throw new VaultError('changed_elsewhere');
+        await this.deps.api.rotateRecoveryKey({
+          recoveryKeyId: toB64(pending.recoveryKeyId),
+          wrappedAkRecovery: toB64(pending.wrappedAkRecovery),
+          recoveryVerifier: toB64(pending.recoveryVerifier),
+          expectedRowVersion: keys.rowVersion,
+        });
+      } catch (error) {
+        return this.onlineFailure(error);
+      }
+      this.kitRotation = undefined;
+      return true as const;
+    });
+  }
+
+  kitRotateCancel(): true {
+    this.kitRotation = undefined;
+    return true;
   }
 
   /** A failed online call: a revoked device wipes itself (INV-15); anything else is reported. */

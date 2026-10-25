@@ -125,6 +125,12 @@ someone who has the old kit **but not** an old backup. To also cut off old backu
 rotation ([cryptographic-design.md §6.3](cryptographic-design.md#63-full-rotation-new-ak-vk-and-every-ik)).
 The UI must explain this whenever the reason for rotation is a lost or stolen kit.
 
+**As built (2026-10-25):** under **Security**, the new kit is made in the worker, shown, and typed
+back before anything is sent; the master password (step-up) is asked for at the end, so the
+5-minute step-up window cannot lapse while the kit is being saved. The server also ends every
+unfinished recovery session, so a recovery started with the old kit cannot complete. The screen
+always shows the backup caveat.
+
 It also does not revoke what someone already took. While the old kit was current, its holder
 could start recovery and fetch the recovery material without completing, and unwrap `AK`
 (section 3, step 2 records this). After that, rotating `RK` changes nothing for them. Only full

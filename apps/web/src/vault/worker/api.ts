@@ -26,6 +26,7 @@ import {
   type PairingJoinRequest,
   type PasswordChangeFinishRequest,
   type RecoveryCompleteRequest,
+  type RecoveryKeyRotateRequest,
   type RecoveryStartRequest,
   type ReauthStartRequest,
   type RegisterFinishRequest,
@@ -66,7 +67,7 @@ const BASE = '/api/v1';
  * against its contract schema: the server is not trusted to send well-formed data.
  */
 async function request<S extends z.ZodType>(
-  method: 'GET' | 'POST' | 'DELETE',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   path: string,
   schema: S | null,
   body?: unknown,
@@ -162,6 +163,8 @@ export const api = {
     request('POST', '/account/password/finish', null, body),
   rotateSecretKey: (body: SecretKeyRotateRequest) =>
     request('POST', '/account/secret-key', null, body),
+  rotateRecoveryKey: (body: RecoveryKeyRotateRequest) =>
+    request('PUT', '/account/recovery', null, body),
 };
 
 export type Api = typeof api;

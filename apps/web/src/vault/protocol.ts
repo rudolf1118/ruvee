@@ -218,6 +218,10 @@ export interface VaultMethods {
   };
   changePassword(params: { currentPassword: string; newPassword: string }): true;
   rotateSecretKey(params: { password: string }): true;
+  kitRotateBegin(): RecoveryKitView;
+  kitRotateVerify(params: { recoveryKey: string }): true;
+  kitRotateFinish(params: { password: string }): true;
+  kitRotateCancel(): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

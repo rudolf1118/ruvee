@@ -1,12 +1,14 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Req } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   passwordChangeFinishRequestSchema,
+  recoveryKeyRotateRequestSchema,
   recoveryPasswordStartRequestSchema,
   revokeDeviceRequestSchema,
   secretKeyRotateRequestSchema,
   uuidSchema,
   type PasswordChangeFinishRequest,
+  type RecoveryKeyRotateRequest,
   type RecoveryPasswordStartRequest,
   type RegisterStartResponse,
   type RevokeDeviceRequest,
@@ -104,5 +106,18 @@ export class AccountSecurityController {
     @Req() req: Request,
   ): Promise<void> {
     await this.security.rotateSecretKey(session, body, this.client(req));
+  }
+
+  /** account-recovery.md §5: Recovery Kit rotation from Security. Step-up. */
+  @Put('account/recovery')
+  @HttpCode(204)
+  @Access('step-up')
+  async rotateRecoveryKey(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(recoveryKeyRotateRequestSchema))
+    body: RecoveryKeyRotateRequest,
+    @Req() req: Request,
+  ): Promise<void> {
+    await this.security.rotateRecoveryKey(session, body, this.client(req));
   }
 }

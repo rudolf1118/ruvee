@@ -392,4 +392,85 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     );
     expect(events).toHaveLength(1);
   });
+
+  it('rotates the Recovery Key: the old kit stops working and unfinished recoveries end', async () => {
+    const { crypto } = account;
+    const accountId = uuidToBytes(account.accountId);
+    const rakOf = (text: string) => {
+      const rk = crypto.parseRecoveryKey(text);
+      return crypto.deriveRecoveryKeys(rk);
+    };
+    const recoveryStart = (rak: Uint8Array) =>
+      h.post('/api/v1/recovery/start', {
+        username: account.username,
+        recoveryAuthKey: b64(rak),
+        device: { id: crypto.generateUuid(), platform: 'web' },
+      });
+    // Someone with the old kit starts a recovery and leaves it unfinished.
+    const pending = await recoveryStart(rakOf(account.recoveryKeyText).recoveryAuthKey);
+    expect(pending.status, pending.text).toBe(200);
+    const pendingCookie =
+      (pending.headers['set-cookie'] as unknown as string[])
+        .find((c) => c.startsWith('__Host-ruvee_recovery='))
+        ?.split(';')[0] ?? '';
+    expect(pendingCookie).not.toBe('');
+
+    const keys = accountKeysResponseSchema.parse(
+      (await h.get('/api/v1/account/keys', cookieA)).body,
+    );
+    const { recoveryKey, recoveryKeyId } = crypto.generateRecoveryKey();
+    const derived = crypto.deriveRecoveryKeys(recoveryKey);
+    const body = {
+      recoveryKeyId: b64(recoveryKeyId),
+      wrappedAkRecovery: b64(
+        crypto.wrapAccountKeyForRecovery({
+          recoveryWrapKey: derived.recoveryWrapKey,
+          recoveryKeyId,
+          accountId,
+          accountKeyId: unb64(keys.akId),
+          accountKeyEpoch: keys.akEpoch,
+          accountKey: account.accountKey,
+        }),
+      ),
+      recoveryVerifier: b64(crypto.recoveryVerifier(derived.recoveryAuthKey)),
+      expectedRowVersion: keys.rowVersion,
+    };
+    const put = (payload: unknown) =>
+      h
+        .http()
+        .put('/api/v1/account/recovery')
+        .set({ Origin: 'http://127.0.0.1:3100', 'X-Ruvee-Request': '1' })
+        .set('Cookie', cookieA)
+        .send(payload as object);
+    await ageAuth();
+    expectError(await put(body), 'step_up_required');
+    const up = await stepUp(cookieA, NEW_PASSWORD);
+    await h
+      .post(
+        '/api/v1/auth/reauth/finish',
+        { loginId: up.start.loginId, finishLoginRequest: up.finished?.finishLoginRequest },
+        cookieA,
+      )
+      .expect(200);
+    expectError(
+      await put({ ...body, expectedRowVersion: keys.rowVersion + 1 }),
+      'row_version_conflict',
+    );
+    expect((await put(body)).status).toBe(204);
+    // The same key id again is refused: rotation must change the key.
+    expectError(await put({ ...body, expectedRowVersion: keys.rowVersion + 1 }), 'invalid_request');
+
+    expectError(await h.get('/api/v1/recovery/material', pendingCookie), 'unauthenticated');
+    expectError(
+      await recoveryStart(rakOf(account.recoveryKeyText).recoveryAuthKey),
+      'recovery_failed',
+    );
+    h.app.get(ThrottleService).clearIpWindows();
+    expect((await recoveryStart(derived.recoveryAuthKey)).status).toBe(200);
+    const rotated = await query(
+      h.db.url,
+      `SELECT 1 FROM security_events WHERE type = 'recovery_key_rotated'`,
+    );
+    expect(rotated).toHaveLength(1);
+  });
 });

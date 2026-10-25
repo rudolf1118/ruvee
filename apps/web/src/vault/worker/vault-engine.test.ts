@@ -351,7 +351,9 @@ describe('vault engine', () => {
     const b = await device(server);
     await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
     const started = await a.engine.pairingStart();
-    expect(await code(b.engine.pairingJoin({ code: `${started.code.slice(0, -1)}0` }))).toMatch(
+    // A mistyped last character, always different from the real one.
+    const typo = `${started.code.slice(0, -1)}${started.code.endsWith('0') ? '1' : '0'}`;
+    expect(await code(b.engine.pairingJoin({ code: typo }))).toMatch(
       /invalid_pairing_code|pairing_expired/,
     );
     await b.engine.pairingJoin({ code: started.code });
@@ -386,7 +388,8 @@ describe('vault engine', () => {
     await a.engine.pairingApprove({ pairingId: started.pairingId });
     const relayed = server.pairings.get(started.pairingId);
     if (!relayed?.responseMac) throw new Error('no reply');
-    relayed.responseMac = `A${relayed.responseMac.slice(1)}`;
+    // Always a different first character (a fixed 'A' would leave 1 in 64 MACs unchanged).
+    relayed.responseMac = `${relayed.responseMac.startsWith('A') ? 'B' : 'A'}${relayed.responseMac.slice(1)}`;
     expect(await code(b.engine.pairingWait())).toBe('pairing_failed');
     expect(await b.engine.phase()).toMatchObject({ phase: 'pending' });
     expect((await b.store.device())?.enrolled).toBeUndefined();
@@ -576,6 +579,28 @@ describe('vault engine', () => {
     const later = await (await fresh()).engine.unlock({ password: NEW });
     expect(later.passwordUpdated).toBeUndefined();
     expect(later.sync.state).toBe('synced');
+  });
+
+  it('rotates the Recovery Kit from Security: verified first, then only the new kit works', async () => {
+    const server = new FakeServer();
+    const { a, kit } = await createAccount(server);
+    expect(await code(a.engine.kitRotateFinish({ password: PASSWORD }))).toBe('kit_mismatch');
+    const fresh = a.engine.kitRotateBegin();
+    expect(fresh.recoveryKey).not.toBe(kit);
+    expect(
+      await code(Promise.resolve().then(() => a.engine.kitRotateVerify({ recoveryKey: kit }))),
+    ).toBe('kit_mismatch');
+    expect(await code(a.engine.kitRotateFinish({ password: PASSWORD }))).toBe('kit_mismatch');
+    a.engine.kitRotateVerify({ recoveryKey: fresh.recoveryKey });
+    expect(await code(a.engine.kitRotateFinish({ password: 'synthetic wrong guess' }))).toBe(
+      'wrong_password',
+    );
+    await a.engine.kitRotateFinish({ password: PASSWORD });
+    const c = await device(server);
+    expect(
+      await code(c.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: kit })),
+    ).toBe('recovery_failed');
+    await c.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: fresh.recoveryKey });
   });
 
   it('ends the unlocked session when the server session expires', async () => {

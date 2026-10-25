@@ -2,14 +2,15 @@
 
 import { type ReactNode, type SubmitEvent, useCallback, useEffect, useState } from 'react';
 import { checkMasterPassword, MASTER_PASSWORD_MIN_CHARACTERS } from '@/vault/password-policy';
-import type { DeviceView } from '@/vault/protocol';
+import type { DeviceView, RecoveryKitView } from '@/vault/protocol';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
 import { ChevronLeftIcon, PlusIcon } from '../ui/icons';
 import { DevelopmentNotice } from './auth-layout';
-import { Notice, PasswordField } from './fields';
+import { Notice, PasswordField, TextField } from './fields';
 import { messageFor } from './messages';
 import { PLATFORM_NAMES } from './pairing';
+import { RecoveryKitPanel } from './recovery-kit';
 import { relativeTime } from './view-model';
 
 function errorText(e: unknown): string {
@@ -357,7 +358,141 @@ export function SecurityPanel({ client, onClose }: { client: VaultClient; onClos
       <ChangePasswordSection client={client} onClose={onClose} />
       <hr className="border-line" />
       <SecretKeySection client={client} />
+      <hr className="border-line" />
+      <RecoveryKitSection client={client} />
     </Panel>
+  );
+}
+
+/**
+ * account-recovery.md §5: a new Recovery Kit, shown once and typed back before it replaces the
+ * old one. The wording says what rotation does not undo (old backups, earlier recoveries).
+ */
+function RecoveryKitSection({ client }: { client: VaultClient }) {
+  const [kit, setKit] = useState<RecoveryKitView | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [typed, setTyped] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState(false);
+
+  const reset = () => {
+    void client.call('kitRotateCancel');
+    setKit(null);
+    setSaved(false);
+    setTyped('');
+    setPassword('');
+    setError(null);
+  };
+
+  const begin = () => {
+    setError(null);
+    setDone(false);
+    client.call('kitRotateBegin').then(setKit, (e: unknown) => {
+      setError(errorText(e));
+    });
+  };
+
+  const finish = (event: SubmitEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setError(null);
+    client
+      .call('kitRotateVerify', { recoveryKey: typed })
+      .then(() => client.call('kitRotateFinish', { password }))
+      .then(
+        () => {
+          setKit(null);
+          setSaved(false);
+          setTyped('');
+          setPassword('');
+          setDone(true);
+        },
+        (e: unknown) => {
+          setError(errorText(e));
+        },
+      )
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  return (
+    <section className="flex flex-col gap-4" aria-labelledby="recovery-kit-heading">
+      <h3 id="recovery-kit-heading" className="text-title font-bold">
+        Recovery Kit
+      </h3>
+      {done ? (
+        <Notice tone="brand">
+          Your new Recovery Kit is active. The old one no longer works with this server; destroy it.
+        </Notice>
+      ) : null}
+      {kit === null ? (
+        <>
+          <p className="text-body text-ink-muted">
+            Make a new Recovery Kit if you lost the old one or think someone else has seen it. The
+            old kit then stops working with this server. It still works with any backup of the
+            server made before today, and it doesn&apos;t undo a recovery someone already started
+            with it.
+          </p>
+          {error ? <Notice>{error}</Notice> : null}
+          <Button className="self-start" onClick={begin}>
+            Make a new Recovery Kit
+          </Button>
+        </>
+      ) : !saved ? (
+        <RecoveryKitPanel
+          kit={kit}
+          onSaved={() => {
+            setSaved(true);
+          }}
+        />
+      ) : (
+        <form className="flex flex-col gap-4" onSubmit={finish}>
+          <p className="text-body text-ink-muted">
+            Type the new Recovery Key, then your master password. The new kit replaces the old one
+            only when the key matches.
+          </p>
+          <TextField
+            label="New Recovery Key"
+            value={typed}
+            autoComplete="off"
+            spellCheck={false}
+            placeholder="RK1-…"
+            inputClassName="font-mono"
+            onChange={(e) => {
+              setTyped(e.target.value);
+            }}
+          />
+          <PasswordField
+            label="Master password"
+            value={password}
+            autoComplete="current-password"
+            onChange={(e) => {
+              setPassword(e.target.value);
+            }}
+          />
+          {error ? <Notice>{error}</Notice> : null}
+          <div className="flex flex-wrap justify-between gap-2">
+            <Button variant="ghost" onClick={reset}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => {
+                setSaved(false);
+              }}
+            >
+              Show the kit again
+            </Button>
+            <Button variant="primary" type="submit" aria-disabled={busy || undefined}>
+              {busy ? 'Saving…' : 'Use the new kit'}
+            </Button>
+          </div>
+        </form>
+      )}
+    </section>
   );
 }
 

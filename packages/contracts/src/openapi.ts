@@ -17,6 +17,7 @@ import {
   loginStartResponseSchema,
   passwordChangeFinishRequestSchema,
   secretKeyRotateRequestSchema,
+  recoveryKeyRotateRequestSchema,
   reauthFinishResponseSchema,
   reauthStartRequestSchema,
   revokeDeviceRequestSchema,
@@ -410,6 +411,17 @@ export function buildOpenApiDocument(): JsonSchema {
           errors: ['row_version_conflict'],
         }),
       },
+      '/api/v1/account/recovery': {
+        put: operation({
+          operationId: 'rotateRecoveryKey',
+          summary:
+            'Replaces the Recovery Key wrap and verifier; ends unfinished recoveries. Step-up.',
+          access: 'step-up',
+          request: 'RecoveryKeyRotateRequest',
+          success: { status: '204', description: 'Rotated.' },
+          errors: ['row_version_conflict'],
+        }),
+      },
       '/api/v1/account/secret-key': {
         post: operation({
           operationId: 'rotateSecretKey',
@@ -659,6 +671,7 @@ export function buildOpenApiDocument(): JsonSchema {
         RevokeDeviceRequest: jsonSchema(revokeDeviceRequestSchema),
         PasswordChangeFinishRequest: jsonSchema(passwordChangeFinishRequestSchema),
         SecretKeyRotateRequest: jsonSchema(secretKeyRotateRequestSchema),
+        RecoveryKeyRotateRequest: jsonSchema(recoveryKeyRotateRequestSchema),
         RecoveryStartRequest: jsonSchema(recoveryStartRequestSchema),
         RecoveryStartResponse: jsonSchema(recoveryStartResponseSchema),
         RecoveryMaterialResponse: jsonSchema(recoveryMaterialResponseSchema),

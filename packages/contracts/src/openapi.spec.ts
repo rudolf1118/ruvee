@@ -29,6 +29,7 @@ describe('OpenAPI document', () => {
       '/api/v1/account/keys',
       '/api/v1/account/password/finish',
       '/api/v1/account/password/start',
+      '/api/v1/account/recovery',
       '/api/v1/account/secret-key',
       '/api/v1/auth/login/finish',
       '/api/v1/auth/login/start',

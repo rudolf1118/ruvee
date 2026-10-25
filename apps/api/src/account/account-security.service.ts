@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   OPAQUE_CONFIG_ID,
   type PasswordChangeFinishRequest,
+  type RecoveryKeyRotateRequest,
   type SecretKeyRotateRequest,
   type SessionsResponse,
 } from '@ruvee/contracts';
@@ -209,6 +210,53 @@ export class AccountSecurityService {
       if (updated.count !== 1) throw new ApiException('row_version_conflict');
       await this.events.record(
         'secret_key_rotated',
+        { accountId: session.accountId, deviceId: session.deviceId, ...client },
+        tx,
+      );
+    });
+  }
+
+  /**
+   * account-recovery.md §5. The old wrap and verifier are replaced in one transaction, so the old
+   * kit stops working against this server. Unfinished recovery sessions end too, so a recovery
+   * started with the old kit cannot complete. Backups taken earlier still hold the old wrap.
+   */
+  async rotateRecoveryKey(
+    session: AuthenticatedSession,
+    body: RecoveryKeyRotateRequest,
+    client: ClientContext,
+  ): Promise<void> {
+    const keys = await this.prisma.accountKeys.findUniqueOrThrow({
+      where: { accountId: session.accountId },
+    });
+    if (BigInt(body.expectedRowVersion) !== keys.rowVersion)
+      throw new ApiException('row_version_conflict');
+    const recoveryKeyId = fromBase64url(body.recoveryKeyId);
+    const wrappedAkRecovery = fromBase64url(body.wrappedAkRecovery);
+    if (
+      !envelopeHeaderOk(wrappedAkRecovery, 0x02, { min: 93, max: 93 }, recoveryKeyId) ||
+      Buffer.compare(recoveryKeyId, keys.recoveryKeyId) === 0
+    )
+      throw new ApiException('invalid_request');
+    const now = new Date();
+    await this.prisma.$transaction(async (tx) => {
+      const updated = await tx.accountKeys.updateMany({
+        where: { accountId: session.accountId, rowVersion: keys.rowVersion },
+        data: {
+          recoveryKeyId,
+          wrappedAkRecovery,
+          recoveryVerifier: fromBase64url(body.recoveryVerifier),
+          rowVersion: { increment: 1 },
+          updatedAt: now,
+        },
+      });
+      if (updated.count !== 1) throw new ApiException('row_version_conflict');
+      await tx.session.updateMany({
+        where: { accountId: session.accountId, kind: 'recovery', revokedAt: null },
+        data: { revokedAt: now, revokeReason: 'user' },
+      });
+      await this.events.record(
+        'recovery_key_rotated',
         { accountId: session.accountId, deviceId: session.deviceId, ...client },
         tx,
       );
