@@ -14,6 +14,7 @@ const REQUIRED_FUNCTIONS = [
   'randombytes_buf',
   'crypto_pwhash',
   'crypto_generichash',
+  'crypto_hash_sha256',
   'crypto_kdf_derive_from_key',
   'crypto_aead_xchacha20poly1305_ietf_encrypt',
   'crypto_aead_xchacha20poly1305_ietf_decrypt',
@@ -27,6 +28,7 @@ export function libsodiumPrimitives(sodium: Libsodium): RawPrimitives {
       sodium.crypto_pwhash(outputLength, password, salt, opslimit, memlimit, ALG_ARGON2ID13),
     genericHash: (outputLength, message, key) =>
       sodium.crypto_generichash(outputLength, message, key),
+    sha256: (message) => sodium.crypto_hash_sha256(message),
     kdfDeriveFromKey: (subkeyLength, subkeyId, context, key) =>
       sodium.crypto_kdf_derive_from_key(subkeyLength, subkeyId, context, key),
     aeadEncrypt: (message, additionalData, nonce, key) =>

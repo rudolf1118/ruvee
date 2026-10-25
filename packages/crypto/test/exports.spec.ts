@@ -20,19 +20,37 @@ describe('public surface (INV-02)', () => {
       'ACCOUNT_KEY_WRAP_BYTES',
       'CRYPTO_ERROR_CODES',
       'DEFAULT_KDF_PROFILE',
+      'ITEM_BODY_ENVELOPE_MAX_BYTES',
+      'ITEM_BODY_MAX_BYTES',
+      'ITEM_KEY_ENVELOPE_BYTES',
+      'ITEM_RECORD_MAX_BYTES',
+      'ITEM_SCHEMA_VERSIONS',
       'KEYSET_ENVELOPE_MAX_BYTES',
       'KEYSET_FORMAT_VERSION',
+      'LOCAL_RECORD_ENVELOPE_MAX_BYTES',
+      'MANIFEST_ENVELOPE_BYTES',
       'PADDED_MAX_BYTES',
       'PADDING_BLOCK_BYTES',
       'PASSWORD_MAX_BYTES',
+      'RECOVERY_KEY_BYTES',
       'RuveeCryptoError',
+      'UUID_BYTES',
       'initRuveeCrypto',
       'isRuveeCryptoError',
+      'manifestStructureProblem',
       'normalizePassword',
       'padPlaintext',
+      'parseItemRecord',
       'unpadPlaintext',
+      'uuidFromBytes',
+      'uuidToBytes',
       'wipe',
     ]);
+    expect(publicApi.ITEM_KEY_ENVELOPE_BYTES).toBe(93);
+    expect(publicApi.ITEM_BODY_ENVELOPE_MAX_BYTES).toBe(65_597);
+    expect(publicApi.ITEM_RECORD_MAX_BYTES).toBe(65_702);
+    expect(publicApi.MANIFEST_ENVELOPE_BYTES).toBe(198);
+    expect(publicApi.LOCAL_RECORD_ENVELOPE_MAX_BYTES).toBe(1_048_637);
     expect(publicApi.ACCOUNT_KEY_WRAP_BYTES).toBe(93);
     expect(publicApi.KEYSET_ENVELOPE_MAX_BYTES).toBe(16_445);
     expect(publicApi.KEYSET_FORMAT_VERSION).toBe(1);
@@ -53,8 +71,10 @@ describe('public surface (INV-02)', () => {
   });
 
   it('no public operation input has a nonce field', async () => {
-    const operations = await readFile(new URL('src/operations.ts', root), 'utf8');
-    expect(operations).not.toMatch(/\bnonce\??\s*:/i);
+    for (const file of ['src/operations.ts', 'src/vault-operations.ts']) {
+      const operations = await readFile(new URL(file, root), 'utf8');
+      expect(operations, file).not.toMatch(/\bnonce\??\s*:/i);
+    }
   });
 
   it('only src/libsodium.ts imports the library', async () => {

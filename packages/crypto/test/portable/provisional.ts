@@ -6,15 +6,27 @@ import { encodeKeyset } from '../../src/keyset.js';
 import { passwordBytes } from '../../src/password.js';
 import { guardPrimitives, KDF_CONTEXTS, type RawPrimitives } from '../../src/primitives.js';
 import { resolveKdfProfile } from '../../src/profiles.js';
+import { encodeManifest } from '../../src/vault-format.js';
 import { createFixedNonceCrypto } from '../../src/testing/fixed-nonce.js';
 import {
   refAccountUnlockKey,
   refEnvelope,
+  refItemRecord,
+  refItemsDigest,
   refKdf,
   refKeysetContext,
   refKeysetPlaintext,
+  refLocalContext,
+  refManifestContext,
+  refManifestHash,
+  refManifestPlaintext,
   refPasswordBytes,
   refPasswordKey,
+  refRecordHash,
+  refRecoveryKeys,
+  refRecoveryKeyText,
+  refRecoveryVerifier,
+  refRecoveryWrapContext,
   refWrapContext,
 } from '../reference/noble-reference.js';
 import { hex, pattern } from '../support/bytes.js';
@@ -33,7 +45,34 @@ export const INPUTS = {
   vaultKey: pattern(7, 32),
   wrapNonce: pattern(8, 24),
   keysetNonce: pattern(9, 24),
+  recoveryKey: pattern(10, 16),
+  recoveryKeyId: pattern(11, 16),
+  recoveryWrapNonce: pattern(12, 24),
+  itemId: '7c0e5a3b-2f41-4d6e-8a9b-0c1d2e3f4a5b',
+  itemKey: pattern(14, 32),
+  itemKeyId: pattern(15, 16),
+  itemKeyNonce: pattern(16, 24),
+  itemBodyNonce: pattern(17, 24),
+  itemRevision: 1,
+  itemBody: '{"v":1,"type":"note","title":"Synthetic note","note":{"text":"not a secret"}}',
+  deviceId: '0a1b2c3d-4e5f-4a6b-9c7d-8e9f0a1b2c3d',
+  commitId: '5d6e7f80-9a1b-4c2d-8e3f-4a5b6c7d8e9f',
+  manifestNonce: pattern(20, 24),
+  createdAtMs: 1_760_000_000_000,
+  localName: 'checkpoint',
+  localPlaintext: '{"seq":1}',
+  localNonce: pattern(21, 24),
 } as const;
+
+/** Two more digest entries for the three-item case: an earlier live item and a tombstone. */
+const OTHER_ITEMS = [
+  { itemId: pattern(30, 16), revision: 4, recordHash: pattern(31, 32) },
+  { itemId: pattern(32, 16), revision: 2, recordHash: null },
+] as const;
+
+function uuidHex(text: string): Uint8Array {
+  return fromHex(text.replace(/-/g, ''));
+}
 
 export const PASSWORD_CASES: readonly { label: string; password: string }[] = [
   { label: 'ascii', password: 'correct horse battery staple' },
@@ -55,6 +94,11 @@ export interface ProvisionalOutputs {
   keysetKey: string;
   accountKeyWrap: { aukFrom: string; envelope: string };
   keyset: { plaintext: string; envelope: string };
+  recovery: { text: string; rwk: string; rak: string; verifier: string; wrapEnvelope: string };
+  item: { record: string; recordHash: string };
+  itemsDigest: { empty: string; one: string; three: string };
+  manifest: { manifestKey: string; plaintext: string; envelope: string; hash: string };
+  localRecord: { localKey: string; envelope: string };
 }
 
 function utf16(text: string): string {
@@ -122,11 +166,100 @@ export function packageOutputs(raw: RawPrimitives): ProvisionalOutputs {
     keysetVersion: INPUTS.keysetVersion,
     keyset,
   });
+  const te = new TextEncoder();
+  const vaultId = uuidHex(INPUTS.vaultId);
+  const itemId = uuidHex(INPUTS.itemId);
+  // IK and ik_id come from the CSPRNG inside sealItemRecord; here they come from a fixed queue.
+  const randomQueue = [INPUTS.itemKey, INPUTS.itemKeyId];
+  const vaultCrypto = createFixedNonceCrypto(
+    {
+      ...raw,
+      randombytesBuf: (length) => {
+        const next = randomQueue.shift();
+        if (next?.length !== length) throw new Error('unexpected random request');
+        return next.slice();
+      },
+    },
+    [
+      INPUTS.recoveryWrapNonce,
+      INPUTS.itemKeyNonce,
+      INPUTS.itemBodyNonce,
+      INPUTS.manifestNonce,
+      INPUTS.localNonce,
+    ],
+  );
+  const recoveryKeys = vaultCrypto.deriveRecoveryKeys(INPUTS.recoveryKey);
+  const recoveryWrap = vaultCrypto.wrapAccountKeyForRecovery({
+    recoveryWrapKey: recoveryKeys.recoveryWrapKey,
+    recoveryKeyId: INPUTS.recoveryKeyId,
+    accountId: INPUTS.accountId,
+    accountKeyId: INPUTS.accountKeyId,
+    accountKeyEpoch: INPUTS.accountKeyEpoch,
+    accountKey: INPUTS.accountKey,
+  });
+  const record = vaultCrypto.sealItemRecord({
+    vaultKey: INPUTS.vaultKey,
+    vaultKeyId: INPUTS.vaultKeyId,
+    vaultId,
+    itemId,
+    revision: INPUTS.itemRevision,
+    schemaVersion: 1,
+    body: te.encode(INPUTS.itemBody),
+  });
+  const recordHash = vaultCrypto.recordHash(record);
+  const entry = { itemId, revision: INPUTS.itemRevision, recordHash };
+  const itemsDigest = vaultCrypto.itemsDigest([entry, ...OTHER_ITEMS]);
+  const manifest = {
+    vaultId,
+    seq: 1,
+    prevManifestHash: new Uint8Array(32),
+    itemsDigest,
+    liveCount: 2,
+    tombstoneCount: 1,
+    authorDeviceId: uuidHex(INPUTS.deviceId),
+    createdAtMs: INPUTS.createdAtMs,
+    commitId: uuidHex(INPUTS.commitId),
+  };
+  const manifestEnvelope = vaultCrypto.sealManifest({
+    vaultKey: INPUTS.vaultKey,
+    vaultKeyId: INPUTS.vaultKeyId,
+    manifest,
+  });
+  const localEnvelope = vaultCrypto.sealLocalRecord({
+    accountKey: INPUTS.accountKey,
+    accountKeyId: INPUTS.accountKeyId,
+    deviceId: uuidHex(INPUTS.deviceId),
+    name: INPUTS.localName,
+    plaintext: te.encode(INPUTS.localPlaintext),
+  });
   return {
     passwords,
     keysetKey: hex(p.kdf(32, 1, KDF_CONTEXTS.keyset, INPUTS.accountKey)),
     accountKeyWrap: { aukFrom: WRAP_AUK_FROM, envelope: hex(wrap) },
     keyset: { plaintext: hex(encodeKeyset(keyset)), envelope: hex(keysetEnvelope) },
+    recovery: {
+      text: vaultCrypto.formatRecoveryKey(INPUTS.recoveryKey),
+      rwk: hex(recoveryKeys.recoveryWrapKey),
+      rak: hex(recoveryKeys.recoveryAuthKey),
+      verifier: hex(vaultCrypto.recoveryVerifier(recoveryKeys.recoveryAuthKey)),
+      wrapEnvelope: hex(recoveryWrap),
+    },
+    item: { record: hex(record), recordHash: hex(recordHash) },
+    itemsDigest: {
+      empty: hex(vaultCrypto.itemsDigest([])),
+      one: hex(vaultCrypto.itemsDigest([entry])),
+      three: hex(itemsDigest),
+    },
+    manifest: {
+      manifestKey: hex(p.kdf(32, 1, KDF_CONTEXTS.manifest, INPUTS.vaultKey)),
+      plaintext: hex(encodeManifest(manifest)),
+      envelope: hex(manifestEnvelope),
+      hash: hex(vaultCrypto.manifestHash(manifestEnvelope)),
+    },
+    localRecord: {
+      localKey: hex(p.kdf(32, 1, KDF_CONTEXTS.local, INPUTS.accountKey)),
+      envelope: hex(localEnvelope),
+    },
   };
 }
 
@@ -190,6 +323,97 @@ export function referenceOutputs(): ProvisionalOutputs {
         ),
       ),
     },
+    ...referenceVaultOutputs(),
+  };
+}
+
+function referenceVaultOutputs(): Pick<
+  ProvisionalOutputs,
+  'recovery' | 'item' | 'itemsDigest' | 'manifest' | 'localRecord'
+> {
+  const te = new TextEncoder();
+  const vaultId = uuidHex(INPUTS.vaultId);
+  const itemId = uuidHex(INPUTS.itemId);
+  const { rwk, rak } = refRecoveryKeys(INPUTS.recoveryKey);
+  const record = refItemRecord({
+    vk: INPUTS.vaultKey,
+    vkId: INPUTS.vaultKeyId,
+    vaultId,
+    itemId,
+    ik: INPUTS.itemKey,
+    ikId: INPUTS.itemKeyId,
+    revision: INPUTS.itemRevision,
+    schemaVersion: 1,
+    body: te.encode(INPUTS.itemBody),
+    keyNonce: INPUTS.itemKeyNonce,
+    bodyNonce: INPUTS.itemBodyNonce,
+  });
+  const recordHash = refRecordHash(record);
+  const entry = { itemId, revision: INPUTS.itemRevision, recordHash };
+  const itemsDigest = refItemsDigest([entry, ...OTHER_ITEMS]);
+  const manifestPlaintext = refManifestPlaintext({
+    vaultId,
+    seq: 1,
+    prevManifestHash: new Uint8Array(32),
+    itemsDigest,
+    liveCount: 2,
+    tombstoneCount: 1,
+    authorDeviceId: uuidHex(INPUTS.deviceId),
+    createdAtMs: INPUTS.createdAtMs,
+    commitId: uuidHex(INPUTS.commitId),
+  });
+  const manifestKey = refKdf(INPUTS.vaultKey, 'rvmanif1');
+  const manifestEnvelope = refEnvelope(
+    0x06,
+    manifestKey,
+    INPUTS.vaultKeyId,
+    INPUTS.manifestNonce,
+    refManifestContext(vaultId, 1),
+    manifestPlaintext,
+  );
+  const localKey = refKdf(INPUTS.accountKey, 'rvlocal1');
+  return {
+    recovery: {
+      text: refRecoveryKeyText(INPUTS.recoveryKey),
+      rwk: hex(rwk),
+      rak: hex(rak),
+      verifier: hex(refRecoveryVerifier(rak)),
+      wrapEnvelope: hex(
+        refEnvelope(
+          0x02,
+          rwk,
+          INPUTS.recoveryKeyId,
+          INPUTS.recoveryWrapNonce,
+          refRecoveryWrapContext(INPUTS.accountId, INPUTS.accountKeyId, INPUTS.accountKeyEpoch),
+          INPUTS.accountKey,
+        ),
+      ),
+    },
+    item: { record: hex(record), recordHash: hex(recordHash) },
+    itemsDigest: {
+      empty: hex(refItemsDigest([])),
+      one: hex(refItemsDigest([entry])),
+      three: hex(itemsDigest),
+    },
+    manifest: {
+      manifestKey: hex(manifestKey),
+      plaintext: hex(manifestPlaintext),
+      envelope: hex(manifestEnvelope),
+      hash: hex(refManifestHash(manifestEnvelope)),
+    },
+    localRecord: {
+      localKey: hex(localKey),
+      envelope: hex(
+        refEnvelope(
+          0x07,
+          localKey,
+          INPUTS.accountKeyId,
+          INPUTS.localNonce,
+          refLocalContext(uuidHex(INPUTS.deviceId), INPUTS.localName),
+          te.encode(INPUTS.localPlaintext),
+        ),
+      ),
+    },
   };
 }
 
@@ -209,7 +433,7 @@ export function vectorFile(outputs: ProvisionalOutputs): ProvisionalVectorFile {
       'The byte format has not been reviewed or frozen; this file is regenerated whenever it ' +
       'changes and is not a compatibility promise. Synthetic inputs only; fixed nonces come from ' +
       'the test-only entry point.',
-    specification: 'docs/security/cryptographic-design.md §3.1-§4.4 and §5.1',
+    specification: 'docs/security/cryptographic-design.md §3.1-§4.4 and §5.1-§5.4',
     inputs: Object.fromEntries(
       Object.entries(INPUTS).map(([k, v]) => [k, v instanceof Uint8Array ? hex(v) : v]),
     ),

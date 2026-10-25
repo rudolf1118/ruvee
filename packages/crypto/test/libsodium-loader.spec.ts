@@ -18,6 +18,7 @@ vi.mock('libsodium-wrappers-sumo', () => {
         return state.missing ? undefined : fn;
       },
       crypto_generichash: fn,
+      crypto_hash_sha256: fn,
       crypto_kdf_derive_from_key: fn,
       crypto_aead_xchacha20poly1305_ietf_encrypt: fn,
       crypto_aead_xchacha20poly1305_ietf_decrypt: fn,

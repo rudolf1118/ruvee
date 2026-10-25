@@ -19,7 +19,37 @@ export {
   type CryptoErrorCode,
   type CryptoErrorReason,
 } from './errors.js';
-export { ACCOUNT_KEY_WRAP_BYTES, KEYSET_ENVELOPE_MAX_BYTES } from './envelope.js';
+export {
+  ACCOUNT_KEY_WRAP_BYTES,
+  ITEM_BODY_ENVELOPE_MAX_BYTES,
+  ITEM_KEY_ENVELOPE_BYTES,
+  KEYSET_ENVELOPE_MAX_BYTES,
+  LOCAL_RECORD_ENVELOPE_MAX_BYTES,
+  MANIFEST_ENVELOPE_BYTES,
+} from './envelope.js';
+export { uuidFromBytes, uuidToBytes, UUID_BYTES } from './ids.js';
+export {
+  ITEM_RECORD_MAX_BYTES,
+  manifestStructureProblem,
+  parseItemRecord,
+  type DigestEntry,
+  type Manifest,
+  type RecordStructureProblem,
+} from './vault-format.js';
+export {
+  ITEM_BODY_MAX_BYTES,
+  ITEM_SCHEMA_VERSIONS,
+  RECOVERY_KEY_BYTES,
+  type LocalRecordContext,
+  type OpenItemRecordInput,
+  type OpenManifestInput,
+  type RecoveryKeyMaterial,
+  type RecoveryKeys,
+  type RecoveryWrapContext,
+  type SealItemRecordInput,
+  type SealManifestInput,
+  type VaultOperations,
+} from './vault-operations.js';
 export { KEYSET_FORMAT_VERSION, type Keyset, type KeysetVault } from './keyset.js';
 export type {
   AccountUnlockKeyInput,

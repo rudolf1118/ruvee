@@ -30,6 +30,13 @@ export function requireU32(value: unknown, field: string): number {
   return value;
 }
 
+/** Revisions, `seq` and millisecond timestamps: integers in 0..2^53-1 encoded as u64. */
+export function requireU64(value: unknown, field: string, min = 0): number {
+  if (typeof value !== 'number' || !Number.isSafeInteger(value) || value < min)
+    throw new RuveeCryptoError('invalid_argument', { field });
+  return value;
+}
+
 export function concat(...parts: readonly Uint8Array[]): Uint8Array {
   let length = 0;
   for (const part of parts) length += part.length;
@@ -50,6 +57,46 @@ export function u32be(value: number): Uint8Array {
   const out = new Uint8Array(4);
   new DataView(out.buffer).setUint32(0, value, false);
   return out;
+}
+
+export function u16be(value: number): Uint8Array {
+  const out = new Uint8Array(2);
+  new DataView(out.buffer).setUint16(0, value, false);
+  return out;
+}
+
+export function u64be(value: number): Uint8Array {
+  const out = new Uint8Array(8);
+  new DataView(out.buffer).setBigUint64(0, BigInt(value), false);
+  return out;
+}
+
+/** `LP(x) = u32(len(x)) ‖ x` (cryptographic-design §2). */
+export function lengthPrefixed(bytes: Uint8Array): Uint8Array {
+  return concat(u32be(bytes.length), bytes);
+}
+
+/** Reads a u64 that must fit a safe integer; larger values are a format error for the caller. */
+export function readU64(bytes: Uint8Array, offset: number): number | undefined {
+  const value = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getBigUint64(
+    offset,
+    false,
+  );
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : undefined;
+}
+
+export function readU32(bytes: Uint8Array, offset: number): number {
+  return new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(offset, false);
+}
+
+/** Bytewise lexicographic order, for sorting `items_digest` entries by `item_id`. */
+export function compareBytes(a: Uint8Array, b: Uint8Array): number {
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return a.length - b.length;
 }
 
 /** Comparison for public values such as key ids. Not constant-time; never use it on secrets. */

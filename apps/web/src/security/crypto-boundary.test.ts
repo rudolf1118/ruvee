@@ -30,6 +30,7 @@ describe('P2-03 boundary as a web consumer', () => {
       'wrong_key',
       'integrity_failure',
       'malformed_plaintext',
+      'invalid_recovery_key',
       'library_failure',
     ]);
     for (const code of CRYPTO_ERROR_CODES) {

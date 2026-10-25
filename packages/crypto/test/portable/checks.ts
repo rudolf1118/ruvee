@@ -17,6 +17,7 @@ import { cat, hex, pattern, randomBytesFrom, same, seededRandom } from '../suppo
 import { loadXChaChaVectors, type ReadVectorFile } from '../support/published-vectors.js';
 import { recordingPrimitives } from '../support/recording.js';
 import { packageOutputs, referenceOutputs, type ProvisionalVectorFile } from './provisional.js';
+import { VAULT_CHECKS } from './vault-checks.js';
 
 /** The parts of libsodium.js used directly by checks, never by the package outside src/libsodium.ts. */
 export interface LibsodiumForChecks {
@@ -67,13 +68,30 @@ function flip(bytes: Uint8Array, index: number, mask = 0x01): Uint8Array {
 
 const PUBLIC_METHODS = [
   'deriveAccountUnlockKey',
+  'deriveRecoveryKeys',
+  'formatRecoveryKey',
   'generateKey',
   'generateKeyId',
   'generatePasswordSalt',
+  'generateRecoveryKey',
+  'generateUuid',
+  'itemsDigest',
+  'manifestHash',
+  'openItemRecord',
   'openKeyset',
+  'openLocalRecord',
+  'openManifest',
+  'parseRecoveryKey',
+  'recordHash',
+  'recoveryVerifier',
+  'sealItemRecord',
   'sealKeyset',
+  'sealLocalRecord',
+  'sealManifest',
   'unwrapAccountKey',
+  'unwrapAccountKeyForRecovery',
   'wrapAccountKey',
+  'wrapAccountKeyForRecovery',
 ];
 
 async function fixtures() {
@@ -122,7 +140,7 @@ const ENVELOPE_REJECTIONS: readonly CryptoErrorCode[] = [
   'integrity_failure',
 ];
 
-export const PORTABLE_CHECKS: readonly PortableCheck[] = [
+const BASE_CHECKS: readonly PortableCheck[] = [
   {
     id: 'init-and-public-surface',
     category: 'protocol',
@@ -380,9 +398,7 @@ export const PORTABLE_CHECKS: readonly PortableCheck[] = [
         for (const ctx of [
           'rvkeyst',
           'rvkeyst12',
-          'rvlocal1',
           'rvdevlb1',
-          'rvmanif1',
           'rvk\u00e9yst',
           'RVKEYST1',
           '        ',
@@ -431,7 +447,8 @@ export const PORTABLE_CHECKS: readonly PortableCheck[] = [
       // V-12: BLAKE2b accepts 1- to 15-byte keys and outputs.
       for (const len of [0, 1, 15, 16, 31, 33, 64, 65])
         expectCode(() => p.mac(len, pattern(1, 8), key), 'invalid_argument', `mac output ${len}`);
-      for (const len of [0, 1, 15, 16, 31, 33, 64, 65])
+      // Keys of 16 (`RK`) and 32 bytes only.
+      for (const len of [0, 1, 15, 17, 31, 33, 64, 65])
         expectCode(
           () => p.mac(32, pattern(1, 8), pattern(2, len)),
           'invalid_argument',
@@ -475,7 +492,7 @@ export const PORTABLE_CHECKS: readonly PortableCheck[] = [
         ['nonce 25', () => p.aeadDecrypt(pattern(1, 20), new Uint8Array(0), pattern(1, 25), key)],
         [
           'plaintext bound',
-          () => p.aeadEncrypt(new Uint8Array(16_385), new Uint8Array(0), nonce, key),
+          () => p.aeadEncrypt(new Uint8Array(1024 * 1024 + 1), new Uint8Array(0), nonce, key),
         ],
         ['aad bound', () => p.aeadEncrypt(pattern(1, 4), new Uint8Array(1025), nonce, key)],
         ['ciphertext 15', () => p.aeadDecrypt(pattern(1, 15), new Uint8Array(0), nonce, key)],
@@ -804,3 +821,5 @@ function createCryptoOver(raw: RawPrimitives) {
   const p = guardPrimitives(raw);
   return buildRuveeCrypto(p, randomNonces(p));
 }
+
+export const PORTABLE_CHECKS: readonly PortableCheck[] = [...BASE_CHECKS, ...VAULT_CHECKS];

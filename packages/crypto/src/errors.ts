@@ -13,6 +13,7 @@ export const CRYPTO_ERROR_CODES = [
   'wrong_key',
   'integrity_failure',
   'malformed_plaintext',
+  'invalid_recovery_key',
   'library_failure',
 ] as const;
 
@@ -28,6 +29,7 @@ const MESSAGES: Record<CryptoErrorCode, string> = {
   wrong_key: 'The envelope was made with a different key.',
   integrity_failure: 'The envelope could not be authenticated.',
   malformed_plaintext: 'The decrypted plaintext is not valid for its purpose.',
+  invalid_recovery_key: 'The Recovery Key is not in the expected format or its check fails.',
   library_failure: 'The cryptographic library failed or is not the pinned version.',
 };
 
@@ -40,7 +42,10 @@ export type LibraryFailure =
   | 'operation_failed'
   | 'unexpected_output';
 
-export type CryptoErrorReason = PasswordRejection | ProfileRejection | LibraryFailure;
+export type RecoveryKeyRejection = 'malformed' | 'checksum';
+
+export type CryptoErrorReason =
+  PasswordRejection | ProfileRejection | RecoveryKeyRejection | LibraryFailure;
 
 export interface CryptoErrorDetail {
   /** Name of the offending argument for `invalid_argument`; never its value. */

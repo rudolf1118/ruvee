@@ -36,6 +36,7 @@ export function fakePrimitives(): RawPrimitives {
     randombytesBuf: (length) => fill(length, 0x11),
     pwhashArgon2id13: (outputLength) => fill(outputLength, 0x22),
     genericHash: (outputLength) => fill(outputLength, 0x33),
+    sha256: () => fill(32, 0x77),
     kdfDeriveFromKey: (subkeyLength) => fill(subkeyLength, 0x44),
     aeadEncrypt: (message) => fill(message.length + 16, 0x55),
     aeadDecrypt: (ciphertext) => fill(ciphertext.length - 16, 0x66),

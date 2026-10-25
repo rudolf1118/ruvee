@@ -555,19 +555,44 @@ No public function takes a nonce, a raw KDF parameter, a library instance or a p
 Fixed nonces exist only in `src/testing/fixed-nonce.ts`, which is outside the package's exports
 and its build; a lint rule forbids production modules from importing it (INV-02).
 
+### Added on 2026-10-25 (recovery, items, manifests, local records)
+
+Implemented locally for the web-vault milestone; same status as the rest of this section
+(Proposed, unreviewed, development only). Remote CI has not run.
+
+| Export                                                                | Purpose                                                                                                                                                                                                            |
+| --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `generateRecoveryKey()`, `formatRecoveryKey()`, `parseRecoveryKey()`  | `RK` and `recovery_key_id` from the CSPRNG; the §5.4 text form with its lenient decoding. A bad checksum or malformed text is `invalid_recovery_key` before anything else runs.                                    |
+| `deriveRecoveryKeys()`, `recoveryVerifier()`                          | `RWK`, `RAK` (§3.3) and `SHA-256(RAK)`. SHA-256 is libsodium's `crypto_hash_sha256`, used only for this verifier.                                                                                                  |
+| `wrapAccountKeyForRecovery()`, `unwrapAccountKeyForRecovery()`        | The 93-byte `AK_WRAP_RECOVERY` envelope.                                                                                                                                                                           |
+| `sealItemRecord()`, `openItemRecord()`, `recordHash()`                | The §5.2 record (`ITEM_KEY` and `ITEM_BODY`), padded body, `record_hash`. A new revision passes the previous record, whose `ITEM_KEY` envelope is reused, so `IK` never leaves the package. Schema version 1 only. |
+| `itemsDigest()`, `sealManifest()`, `openManifest()`, `manifestHash()` | §5.3. `openManifest` also checks that the plaintext's vault and `seq` are the ones the caller expected. Digest entries must have distinct item ids.                                                                |
+| `sealLocalRecord()`, `openLocalRecord()`                              | `LOCAL_RECORD` under `K_local`. Record names are lowercase ASCII, 1 to 64 characters, and are part of the AAD.                                                                                                     |
+| `generateUuid()`, `uuidToBytes()`, `uuidFromBytes()`                  | Random version 4 UUIDs and the 16-byte encoding of §2.                                                                                                                                                             |
+| `parseItemRecord()`, `manifestStructureProblem()`                     | Key-free structural checks of §4.4 steps 1 to 3 for records and manifests, for the server (sync-protocol §4.2).                                                                                                    |
+
+Guard changes: the MAC accepts 16-byte keys (only `RK`) as well as 32-byte keys; an unkeyed hash
+`H` takes messages up to 8 MiB (`items_digest` for about 147,000 items); SHA-256 takes at most 64
+bytes; the AEAD bound is 1 MiB (`LOCAL_RECORD`); the KDF allowlist is `rvkeyst1`, `rvlocal1` and
+`rvmanif1`. `crypto_kdf_derive_from_key` still receives only subkey length 32 and id 1, so the V-15
+containment is unchanged.
+
+Verification: the provisional vectors now also cover `RWK`, `RAK`, the verifier, the Recovery Key
+text, `AK_WRAP_RECOVERY`, an item record and its hash, `items_digest` for 0, 1 and 3 items (with a
+tombstone), `K_manifest`, a manifest envelope and its hash, `K_local` and a local record. Each is
+computed by the package and by the independent noble reference (with its own Crockford encoder and
+padding), and they agree. Portable checks cover round trips and binding: a record presented at
+another revision, item or vault, a manifest at another `seq`, a local record under another name or
+device, and every single-symbol typo in a Recovery Key. They pass in Node and in Playwright
+Chromium, Firefox and WebKit, page and worker.
+
 ### Not implemented
 
-| Part of this design                                                                           | Why                                                                                                                                                                                      |
-| --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `AK_WRAP_RECOVERY`, `RWK`, `RAK`, Recovery Key text (§5.4)                                    | Recovery was excluded from this milestone. Needed by P2-08 (Recovery Kit, D-06) and P2-13 (D-22).                                                                                        |
-| Pairing code text, pairing MACs, `crypto_box_seal` transfer                                   | D-21 is open, and D-04's approval explicitly excludes the pairing protocol. P2-12.                                                                                                       |
-| `ITEM_KEY`, `ITEM_BODY`, `MANIFEST`, `K_manifest`, record and manifest hashes, `items_digest` | Phase 3 (item records and manifests).                                                                                                                                                    |
-| `LOCAL_RECORD`, `K_local`                                                                     | The local store (P2-10).                                                                                                                                                                 |
-| `DEVICE_LABEL`, `K_devlabel`                                                                  | Device records (P2-08, P2-11). §4.3 fixes only "UTF-8, at most 128 bytes". Whether a label is normalized and whether an empty label is allowed must be decided before it is implemented. |
-
-The KDF context allowlist contains only `rvkeyst1`, and the purpose registry only `0x01` and
-`0x03`, so the guard refuses the other contexts and the decoder cannot be asked for other
-purposes.
+| Part of this design                                         | Why                                                                                                                                                                                                                      |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Pairing code text, pairing MACs, `crypto_box_seal` transfer | D-21 is open, and D-04's approval explicitly excludes the pairing protocol. P2-12.                                                                                                                                       |
+| `DEVICE_LABEL`, `K_devlabel`                                | §4.3 fixes only "UTF-8, at most 128 bytes". Whether a label is normalized and whether an empty label is allowed must be decided first. Device labels are optional on the server, so the web vault sends none until then. |
+| Item schema versions other than 1                           | The item JSON schema lives in the web app (`apps/web/src/vault/item-schema.ts`); the package only carries the version in the AAD.                                                                                        |
 
 ### Password input (D-20)
 
@@ -707,3 +732,9 @@ format changed.
   (`v` = 1). The one-vault restriction and canonical base64url rules were confirmed against
   §5.1; they already match V1. Rollback still uses `keyset_version` in the AAD, which remains
   the caller's job.
+
+## Changes after the web-vault crypto additions (2026-10-25)
+
+Status remains **Proposed**; no existing key, derivation or byte format changed, and the existing
+provisional vectors are unchanged. Recovery, item, manifest and local-record formats were
+implemented as specified in §3.3, §4.3 and §5.2 to §5.4 (see §10).

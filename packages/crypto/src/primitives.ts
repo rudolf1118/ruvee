@@ -20,6 +20,8 @@ export interface RawPrimitives {
   ): Uint8Array;
   /** `crypto_generichash` (BLAKE2b). */
   genericHash(outputLength: number, message: Uint8Array, key: Uint8Array | null): Uint8Array;
+  /** `crypto_hash_sha256`, used only for the recovery verifier `SHA-256(RAK)`. */
+  sha256(message: Uint8Array): Uint8Array;
   /** `crypto_kdf_derive_from_key`. */
   kdfDeriveFromKey(
     subkeyLength: number,
@@ -48,6 +50,10 @@ export const NONCE_BYTES = 24;
 export const TAG_BYTES = 16;
 export const SALT_BYTES = 16;
 export const MAC_BYTES = 32;
+export const HASH_BYTES = 32;
+export const SHA256_BYTES = 32;
+/** `RK` is 16 bytes and keys BLAKE2b directly (§3.3); every other MAC key is 32 bytes. */
+const MAC_KEY_SIZES: ReadonlySet<number> = new Set([16, 32]);
 export const KDF_SUBKEY_BYTES = 32;
 export const KDF_SUBKEY_ID = 1;
 
@@ -55,16 +61,27 @@ export const KDF_SUBKEY_ID = 1;
 const RANDOM_SIZES: ReadonlySet<number> = new Set([16, 24, 32]);
 
 /**
- * KDF contexts implemented in P2-03. The other contexts in cryptographic-design §3.3
- * (`rvlocal1`, `rvdevlb1`, `rvmanif1`) belong to later milestones and are refused.
+ * KDF contexts in use (cryptographic-design §3.3). `rvdevlb1` (device labels) waits for the
+ * label plaintext rule and is refused.
  */
-export const KDF_CONTEXTS = { keyset: 'rvkeyst1' } as const;
+export const KDF_CONTEXTS = {
+  keyset: 'rvkeyst1',
+  local: 'rvlocal1',
+  manifest: 'rvmanif1',
+} as const;
 const ALLOWED_KDF_CONTEXTS: ReadonlySet<string> = new Set(Object.values(KDF_CONTEXTS));
 
 /** Largest message given to the MAC; the `AUK` input is 77 bytes. */
 export const MAC_MESSAGE_MAX_BYTES = 1024;
-/** Largest plaintext of an implemented purpose (`KEYSET`). */
-export const AEAD_PLAINTEXT_MAX_BYTES = 16_384;
+/**
+ * Largest message given to the unkeyed hash: `items_digest` over 57-byte entries. 8 MiB covers
+ * about 147,000 items, far above the V1 vault size; a larger vault fails closed.
+ */
+export const HASH_MESSAGE_MAX_BYTES = 8 * 1024 * 1024;
+/** Largest message given to SHA-256: `RAK` is 32 bytes. */
+const SHA256_MESSAGE_MAX_BYTES = 64;
+/** Largest plaintext of an implemented purpose (`LOCAL_RECORD`, 1 MiB). */
+export const AEAD_PLAINTEXT_MAX_BYTES = 1024 * 1024;
 export const AEAD_ADDITIONAL_DATA_MAX_BYTES = 1024;
 
 /**
@@ -79,6 +96,9 @@ export interface Primitives {
   randomBytes(length: number): Uint8Array;
   argon2id(password: Uint8Array, salt: Uint8Array, profile: KdfProfile): Uint8Array;
   mac(outputLength: number, message: Uint8Array, key: Uint8Array): Uint8Array;
+  /** Unkeyed BLAKE2b-256, `H(msg)` in §2. */
+  hash(message: Uint8Array): Uint8Array;
+  sha256(message: Uint8Array): Uint8Array;
   kdf(subkeyLength: number, subkeyId: number, context: string, key: Uint8Array): Uint8Array;
   aeadEncrypt(
     plaintext: Uint8Array,
@@ -157,10 +177,26 @@ export function guardPrimitives(raw: RawPrimitives): Primitives {
     mac(outputLength: number, message: Uint8Array, key: Uint8Array): Uint8Array {
       if (outputLength !== MAC_BYTES) invalid('outputLength');
       boundedBytes(message, 'message', 0, MAC_MESSAGE_MAX_BYTES);
-      exactBytes(key, 'key', KEY_BYTES);
+      if (!isBytes(key) || !MAC_KEY_SIZES.has(key.length)) invalid('key');
       return expectLength(
         call(() => raw.genericHash(MAC_BYTES, message, key)),
         MAC_BYTES,
+      );
+    },
+
+    hash(message: Uint8Array): Uint8Array {
+      boundedBytes(message, 'message', 0, HASH_MESSAGE_MAX_BYTES);
+      return expectLength(
+        call(() => raw.genericHash(HASH_BYTES, message, null)),
+        HASH_BYTES,
+      );
+    },
+
+    sha256(message: Uint8Array): Uint8Array {
+      boundedBytes(message, 'message', 0, SHA256_MESSAGE_MAX_BYTES);
+      return expectLength(
+        call(() => raw.sha256(message)),
+        SHA256_BYTES,
       );
     },
 
