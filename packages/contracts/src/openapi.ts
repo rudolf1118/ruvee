@@ -18,6 +18,7 @@ import {
   passwordChangeFinishRequestSchema,
   secretKeyRotateRequestSchema,
   recoveryKeyRotateRequestSchema,
+  securityEventsResponseSchema,
   reauthFinishResponseSchema,
   reauthStartRequestSchema,
   revokeDeviceRequestSchema,
@@ -411,6 +412,30 @@ export function buildOpenApiDocument(): JsonSchema {
           errors: ['row_version_conflict'],
         }),
       },
+      '/api/v1/account/events': {
+        get: operation({
+          operationId: 'getSecurityEvents',
+          summary: 'Security events of the account, newest first, 50 per page.',
+          access: 'active',
+          parameters: [
+            {
+              name: 'cursor',
+              in: 'query',
+              required: false,
+              schema: {
+                type: 'string',
+                pattern:
+                  '^[0-9]{1,15}\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$',
+              },
+            },
+          ],
+          success: {
+            status: '200',
+            description: 'One page of events.',
+            schema: 'SecurityEventsResponse',
+          },
+        }),
+      },
       '/api/v1/account/recovery': {
         put: operation({
           operationId: 'rotateRecoveryKey',
@@ -672,6 +697,7 @@ export function buildOpenApiDocument(): JsonSchema {
         PasswordChangeFinishRequest: jsonSchema(passwordChangeFinishRequestSchema),
         SecretKeyRotateRequest: jsonSchema(secretKeyRotateRequestSchema),
         RecoveryKeyRotateRequest: jsonSchema(recoveryKeyRotateRequestSchema),
+        SecurityEventsResponse: jsonSchema(securityEventsResponseSchema),
         RecoveryStartRequest: jsonSchema(recoveryStartRequestSchema),
         RecoveryStartResponse: jsonSchema(recoveryStartResponseSchema),
         RecoveryMaterialResponse: jsonSchema(recoveryMaterialResponseSchema),

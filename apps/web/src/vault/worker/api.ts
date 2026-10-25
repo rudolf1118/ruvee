@@ -15,6 +15,7 @@ import {
   reauthFinishResponseSchema,
   registerStartResponseSchema,
   sessionResponseSchema,
+  securityEventsResponseSchema,
   sessionsResponseSchema,
   syncChangesResponseSchema,
   vaultStateResponseSchema,
@@ -163,6 +164,12 @@ export const api = {
     request('POST', '/account/password/finish', null, body),
   rotateSecretKey: (body: SecretKeyRotateRequest) =>
     request('POST', '/account/secret-key', null, body),
+  activity: (cursor?: string) =>
+    request(
+      'GET',
+      cursor === undefined ? '/account/events' : `/account/events?cursor=${cursor}`,
+      securityEventsResponseSchema,
+    ),
   rotateRecoveryKey: (body: RecoveryKeyRotateRequest) =>
     request('PUT', '/account/recovery', null, body),
 };

@@ -26,6 +26,7 @@ describe('OpenAPI document', () => {
   it('documents only the implemented endpoints', () => {
     expect(Object.keys(document.paths as object).sort()).toEqual([
       '/api/v1/account',
+      '/api/v1/account/events',
       '/api/v1/account/keys',
       '/api/v1/account/password/finish',
       '/api/v1/account/password/start',

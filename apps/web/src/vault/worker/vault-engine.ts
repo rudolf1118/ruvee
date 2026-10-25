@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { decodeItemBody, encodeItemBody, ITEM_SCHEMA_VERSION, type ItemBody } from '../item-schema';
 import { checkMasterPassword } from '../password-policy';
 import type {
+  ActivityPage,
   ConflictView,
   DeviceView,
   DevicePhase,
@@ -2052,6 +2053,34 @@ export class VaultEngine {
         (a, b) =>
           Number(b.current) - Number(a.current) || (b.lastSeenAtMs ?? 0) - (a.lastSeenAtMs ?? 0),
       );
+  }
+
+  /** P2-15: the account's security events, newest first. */
+  async activity(params: { cursor?: string }): Promise<ActivityPage> {
+    const session = this.requireSession();
+    let page;
+    try {
+      page = await this.deps.api.activity(params.cursor);
+    } catch (error) {
+      return this.onlineFailure(error);
+    }
+    return {
+      events: page.events.map((e) => ({
+        id: e.id,
+        type: e.type,
+        atMs: Date.parse(e.createdAt),
+        device:
+          e.deviceId === null
+            ? null
+            : e.deviceId === session.device.deviceId
+              ? 'this_device'
+              : 'other',
+        ip: e.ip,
+        userAgent: e.userAgent,
+        details: e.details,
+      })),
+      nextCursor: page.nextCursor,
+    };
   }
 
   async endSession(params: { sessionId: string }): Promise<true> {

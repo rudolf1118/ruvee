@@ -91,6 +91,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   recoveryFinish: (e) => e.recoveryFinish(),
   acknowledgeRecoveryNotice: (e) => e.acknowledgeRecoveryNotice(),
   devices: (e) => e.devices(),
+  activity: (e, p: Parameters<VaultEngine['activity']>[0]) => e.activity(p),
   endSession: (e, p: Parameters<VaultEngine['endSession']>[0]) => e.endSession(p),
   revokeDevice: (e, p: Parameters<VaultEngine['revokeDevice']>[0]) => e.revokeDevice(p),
   changePassword: (e, p: Parameters<VaultEngine['changePassword']>[0]) => e.changePassword(p),

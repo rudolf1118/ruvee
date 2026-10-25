@@ -430,6 +430,24 @@ export class FakeServer {
         sessionGeneration = this.generation;
         return Promise.resolve(undefined);
       },
+      activity: () => {
+        this.check();
+        const id = requireActive();
+        return Promise.resolve({
+          events: [
+            {
+              id: '00000000-0000-4000-8000-0000000000e1',
+              type: 'device_revoked' as const,
+              deviceId: id,
+              ip: '127.0.0.1',
+              userAgent: null,
+              details: { reason: 'lost' },
+              createdAt: new Date(0).toISOString(),
+            },
+          ],
+          nextCursor: null,
+        });
+      },
       rotateRecoveryKey: (body) => {
         this.check(body);
         requireActive();

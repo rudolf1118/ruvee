@@ -2101,6 +2101,113 @@
         }
       }
     },
+    "/api/v1/account/events": {
+      "get": {
+        "operationId": "getSecurityEvents",
+        "summary": "Security events of the account, newest first, 50 per page.",
+        "x-ruvee-access": "active",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9]{1,15}\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One page of events.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityEventsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This device is not enrolled yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/account/recovery": {
       "put": {
         "operationId": "rotateRecoveryKey",
@@ -6188,6 +6295,129 @@
           "wrappedAkRecovery",
           "recoveryVerifier",
           "expectedRowVersion"
+        ],
+        "additionalProperties": false
+      },
+      "SecurityEventsResponse": {
+        "type": "object",
+        "properties": {
+          "events": {
+            "maxItems": 50,
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "login_succeeded",
+                    "login_failed",
+                    "session_revoked",
+                    "refresh_reuse",
+                    "password_changed",
+                    "recovery_started",
+                    "recovery_failed",
+                    "recovery_completed",
+                    "recovery_key_rotated",
+                    "secret_key_rotated",
+                    "device_pairing_requested",
+                    "device_enrolled",
+                    "device_revoked",
+                    "pairing_mac_failed",
+                    "vault_reset",
+                    "bootstrap_used",
+                    "bootstrap_failed",
+                    "integrity_warning_reported"
+                  ]
+                },
+                "deviceId": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "ip": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 64
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "userAgent": {
+                  "anyOf": [
+                    {
+                      "type": "string",
+                      "maxLength": 256
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "details": {
+                  "type": "object",
+                  "propertyNames": {
+                    "type": "string",
+                    "maxLength": 64
+                  },
+                  "additionalProperties": {
+                    "anyOf": [
+                      {
+                        "type": "string",
+                        "maxLength": 64
+                      },
+                      {
+                        "type": "boolean"
+                      }
+                    ]
+                  }
+                },
+                "createdAt": {
+                  "type": "string",
+                  "format": "date-time",
+                  "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+                }
+              },
+              "required": [
+                "id",
+                "type",
+                "deviceId",
+                "ip",
+                "userAgent",
+                "details",
+                "createdAt"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "nextCursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "pattern": "^[0-9]{1,15}\\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "events",
+          "nextCursor"
         ],
         "additionalProperties": false
       },

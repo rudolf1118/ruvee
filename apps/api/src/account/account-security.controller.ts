@@ -1,4 +1,15 @@
-import { Body, Controller, Delete, Get, HttpCode, Param, Post, Put, Req } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  HttpCode,
+  Param,
+  Post,
+  Put,
+  Query,
+  Req,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   passwordChangeFinishRequestSchema,
@@ -6,6 +17,7 @@ import {
   recoveryPasswordStartRequestSchema,
   revokeDeviceRequestSchema,
   secretKeyRotateRequestSchema,
+  securityEventsQuerySchema,
   uuidSchema,
   type PasswordChangeFinishRequest,
   type RecoveryKeyRotateRequest,
@@ -13,6 +25,8 @@ import {
   type RegisterStartResponse,
   type RevokeDeviceRequest,
   type SecretKeyRotateRequest,
+  type SecurityEventsQuery,
+  type SecurityEventsResponse,
   type SessionsResponse,
 } from '@ruvee/contracts';
 import type { Request } from 'express';
@@ -119,5 +133,14 @@ export class AccountSecurityController {
     @Req() req: Request,
   ): Promise<void> {
     await this.security.rotateRecoveryKey(session, body, this.client(req));
+  }
+
+  @Get('account/events')
+  @Access('active')
+  events(
+    @CurrentSession() session: AuthenticatedSession,
+    @Query(new ContractValidationPipe(securityEventsQuerySchema)) query: SecurityEventsQuery,
+  ): Promise<SecurityEventsResponse> {
+    return this.security.activity(session, query.cursor);
   }
 }

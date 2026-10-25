@@ -603,6 +603,16 @@ describe('vault engine', () => {
     await c.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: fresh.recoveryKey });
   });
 
+  it('labels activity from this device', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const page = await a.engine.activity({});
+    expect(page.events).toEqual([
+      expect.objectContaining({ type: 'device_revoked', device: 'this_device', atMs: 0 }),
+    ]);
+    expect(page.nextCursor).toBeNull();
+  });
+
   it('ends the unlocked session when the server session expires', async () => {
     const server = new FakeServer();
     const { a } = await createAccount(server);

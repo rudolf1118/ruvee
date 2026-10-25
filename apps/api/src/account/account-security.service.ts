@@ -4,6 +4,7 @@ import {
   type PasswordChangeFinishRequest,
   type RecoveryKeyRotateRequest,
   type SecretKeyRotateRequest,
+  type SecurityEventsResponse,
   type SessionsResponse,
 } from '@ruvee/contracts';
 import type { ClientContext } from '../auth/auth.service.js';
@@ -11,7 +12,10 @@ import { OpaqueServerService } from '../auth/opaque-server.service.js';
 import { ApiException } from '../common/api-exception.js';
 import { envelopeHeaderOk, fromBase64url } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
-import { SecurityEventsService } from '../security-events/security-events.service.js';
+import {
+  allowedDetails,
+  SecurityEventsService,
+} from '../security-events/security-events.service.js';
 import type { AuthenticatedSession } from '../sessions/session.service.js';
 
 /** Sessions, device revocation (device-enrollment §6) and password change (authentication §9). */
@@ -261,5 +265,50 @@ export class AccountSecurityService {
         tx,
       );
     });
+  }
+
+  /** The activity screen (P2-15): newest first, 50 per page, keyset pagination. */
+  async activity(session: AuthenticatedSession, cursor?: string): Promise<SecurityEventsResponse> {
+    let before: { at: Date; id: string } | undefined;
+    if (cursor !== undefined) {
+      const [ms = '', id = ''] = cursor.split('.');
+      before = { at: new Date(Number(ms)), id };
+    }
+    const rows = await this.prisma.securityEvent.findMany({
+      where: {
+        accountId: session.accountId,
+        ...(before
+          ? {
+              OR: [
+                { createdAt: { lt: before.at } },
+                { createdAt: before.at, id: { lt: before.id } },
+              ],
+            }
+          : {}),
+      },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 51,
+    });
+    const page = rows.slice(0, 50);
+    const last = page.at(-1);
+    return {
+      events: page.map((row) => ({
+        id: row.id,
+        type: row.type,
+        deviceId: row.deviceId,
+        ip: row.ip,
+        userAgent: row.userAgent,
+        // Re-filtered on the way out too: only allow-listed fields ever leave (INV-12).
+        details: allowedDetails(
+          row.type,
+          typeof row.details === 'object' && row.details !== null && !Array.isArray(row.details)
+            ? (row.details as Record<string, string | boolean>)
+            : {},
+        ),
+        createdAt: row.createdAt.toISOString(),
+      })),
+      nextCursor:
+        rows.length > 50 && last ? `${String(last.createdAt.getTime())}.${last.id}` : null,
+    };
   }
 }

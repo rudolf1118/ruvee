@@ -6,6 +6,7 @@ import {
   loginStartResponseSchema,
   registerStartResponseSchema,
   sessionResponseSchema,
+  securityEventsResponseSchema,
   sessionsResponseSchema,
 } from '@ruvee/contracts';
 import type request from 'supertest';
@@ -472,5 +473,50 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       `SELECT 1 FROM security_events WHERE type = 'recovery_key_rotated'`,
     );
     expect(rotated).toHaveLength(1);
+  });
+
+  it('lists security events newest first, with only allow-listed details, 50 per page', async () => {
+    // A stored detail outside the allowlist (a caller mistake in the past) never leaves.
+    await query(
+      h.db.url,
+      `INSERT INTO security_events (id, account_id, type, details, created_at)
+       SELECT gen_random_uuid(), $1, 'login_failed', '{"username":"synthetic-leak"}'::jsonb,
+              now() - (n || ' minutes')::interval
+       FROM generate_series(1, 60) AS n`,
+      [account.accountId],
+    );
+    const first = securityEventsResponseSchema.parse(
+      (await h.get('/api/v1/account/events', cookieA).expect(200)).body,
+    );
+    expect(first.events).toHaveLength(50);
+    expect(first.nextCursor).not.toBeNull();
+    const times = first.events.map((e) => Date.parse(e.createdAt));
+    expect([...times].sort((x, y) => y - x)).toEqual(times);
+    expect(first.events.some((e) => e.type === 'recovery_key_rotated')).toBe(true);
+    const revoked = first.events.find((e) => e.type === 'device_revoked');
+    expect(Object.keys(revoked?.details ?? {}).sort()).toEqual(['reason', 'revokedDeviceId']);
+    expect(revoked?.details.reason).toBe('lost');
+
+    const pages = [first];
+    let cursor = first.nextCursor;
+    while (cursor) {
+      const page = securityEventsResponseSchema.parse(
+        (await h.get(`/api/v1/account/events?cursor=${cursor}`, cookieA).expect(200)).body,
+      );
+      pages.push(page);
+      cursor = page.nextCursor;
+    }
+    const all = pages.flatMap((p) => p.events);
+    expect(new Set(all.map((e) => e.id)).size).toBe(all.length);
+    const counted = await query<{ count: string }>(
+      h.db.url,
+      `SELECT count(*) FROM security_events WHERE account_id = $1`,
+      [account.accountId],
+    );
+    expect(all).toHaveLength(Number(counted[0]?.count));
+    expect(JSON.stringify(all)).not.toContain('synthetic-leak');
+
+    expectError(await h.get('/api/v1/account/events?cursor=nope', cookieA), 'invalid_request');
+    expectError(await h.get('/api/v1/account/events'), 'unauthenticated');
   });
 });

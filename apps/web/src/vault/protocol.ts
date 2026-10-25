@@ -167,6 +167,23 @@ export interface DeviceView {
   readonly sessions: readonly SessionView[];
 }
 
+/** One security event for the activity screen (P2-15). */
+export interface ActivityEvent {
+  readonly id: string;
+  readonly type: string;
+  readonly atMs: number;
+  /** This browser, another device of the account, or none. */
+  readonly device: 'this_device' | 'other' | null;
+  readonly ip: string | null;
+  readonly userAgent: string | null;
+  readonly details: Readonly<Record<string, string | boolean>>;
+}
+
+export interface ActivityPage {
+  readonly events: readonly ActivityEvent[];
+  readonly nextCursor: string | null;
+}
+
 export interface SessionView {
   readonly id: string;
   readonly current: boolean;
@@ -212,6 +229,7 @@ export interface VaultMethods {
   recoveryFinish(): UnlockedVault;
   acknowledgeRecoveryNotice(): true;
   devices(): readonly DeviceView[];
+  activity(params: { cursor?: string }): ActivityPage;
   endSession(params: { sessionId: string }): true;
   revokeDevice(params: { deviceId: string; reason: 'retired' | 'lost'; password: string }): {
     secretKeyRotated: boolean;

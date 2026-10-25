@@ -353,6 +353,13 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
     timeout: 30_000,
   });
 
+  // ---- A's activity screen shows what happened (P2-15) ----
+  await a.getByRole('button', { name: 'Activity', exact: true }).click();
+  await expect(a.getByText('New Recovery Kit made').first()).toBeVisible({ timeout: 15_000 });
+  await expect(a.getByText('A device was removed as lost').first()).toBeVisible();
+  await expect(a.getByText('The Recovery Kit was used to start a recovery').first()).toBeVisible();
+  await expectAccessible(a);
+
   // ---- Capture checks: nothing secret on the wire or at rest ----
   const forbidden = [
     CHANGED,

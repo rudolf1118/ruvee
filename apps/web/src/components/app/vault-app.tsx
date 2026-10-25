@@ -10,12 +10,13 @@ import type {
   UnlockedVault,
 } from '@/vault/protocol';
 import { VaultClient } from '@/vault/client';
-import { DevicesIcon, LogoutIcon } from '../ui/icons';
+import { DevicesIcon, InfoIcon, LogoutIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';
 import { VaultShell } from '../vault/vault-shell';
 import { AuthCard } from './auth-layout';
 import { clearClipboard } from './clipboard';
 import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
+import { ActivityPanel } from './activity';
 import { DevicesPanel, SecurityPanel } from './devices';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
@@ -230,7 +231,9 @@ function UnlockedApp({
   const [items, setItems] = useState<readonly ItemSummary[]>(vault.items);
   const [status, setStatus] = useState<SyncStatus>(vault.sync);
   const [editing, setEditing] = useState<{ existing: ItemDetail | null } | null>(null);
-  const [panel, setPanel] = useState<'devices' | 'add-device' | 'password' | null>(null);
+  const [panel, setPanel] = useState<'devices' | 'add-device' | 'password' | 'activity' | null>(
+    null,
+  );
   const [selectId, setSelectId] = useState<string | null>(null);
   const [version, setVersion] = useState(0);
   const lastActivity = useRef(0);
@@ -365,6 +368,15 @@ function UnlockedApp({
               }}
             />
             <NavButton
+              icon={InfoIcon}
+              label="Activity"
+              current={panel === 'activity'}
+              onSelect={() => {
+                setEditing(null);
+                setPanel('activity');
+              }}
+            />
+            <NavButton
               icon={LogoutIcon}
               label="Log out"
               current={false}
@@ -405,6 +417,13 @@ function UnlockedApp({
               detailOverride:
                 panel === 'add-device' ? (
                   <AddDevicePanel
+                    client={client}
+                    onClose={() => {
+                      setPanel(null);
+                    }}
+                  />
+                ) : panel === 'activity' ? (
+                  <ActivityPanel
                     client={client}
                     onClose={() => {
                       setPanel(null);

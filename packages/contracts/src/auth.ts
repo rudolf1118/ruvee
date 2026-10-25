@@ -248,3 +248,49 @@ export const recoveryKeyRotateRequestSchema = z.strictObject({
   expectedRowVersion: z.int().min(1),
 });
 export type RecoveryKeyRotateRequest = z.infer<typeof recoveryKeyRotateRequestSchema>;
+
+/** database-design.md `security_events`; the details are the allow-listed fields only (INV-12). */
+export const SECURITY_EVENT_TYPES = [
+  'login_succeeded',
+  'login_failed',
+  'session_revoked',
+  'refresh_reuse',
+  'password_changed',
+  'recovery_started',
+  'recovery_failed',
+  'recovery_completed',
+  'recovery_key_rotated',
+  'secret_key_rotated',
+  'device_pairing_requested',
+  'device_enrolled',
+  'device_revoked',
+  'pairing_mac_failed',
+  'vault_reset',
+  'bootstrap_used',
+  'bootstrap_failed',
+  'integrity_warning_reported',
+] as const;
+export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
+
+/** `<created_at ms>.<event id>`: keyset pagination, newest first. Not a secret. */
+const EVENTS_CURSOR = /^[0-9]{1,15}\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export const securityEventsQuerySchema = z.strictObject({
+  cursor: z.string().regex(EVENTS_CURSOR).optional(),
+});
+export type SecurityEventsQuery = z.infer<typeof securityEventsQuerySchema>;
+
+export const securityEventSchema = z.strictObject({
+  id: uuidSchema,
+  type: z.enum(SECURITY_EVENT_TYPES),
+  deviceId: uuidSchema.nullable(),
+  ip: z.string().max(64).nullable(),
+  userAgent: z.string().max(256).nullable(),
+  details: z.record(z.string().max(64), z.union([z.string().max(64), z.boolean()])),
+  createdAt: timestamp,
+});
+export const securityEventsResponseSchema = z.strictObject({
+  events: z.array(securityEventSchema).max(50),
+  nextCursor: z.string().regex(EVENTS_CURSOR).nullable(),
+});
+export type SecurityEventsResponse = z.infer<typeof securityEventsResponseSchema>;
