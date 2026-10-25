@@ -3,7 +3,7 @@ dist/
 .next/
 # Static export produced by `next build` when `output: 'export'`.
 apps/web/out/
-apps/web/public/csp-probe-worker.js
+apps/web/out-diagnostics
 .turbo/
 coverage/
 playwright-report/

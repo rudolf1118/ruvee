@@ -7,6 +7,8 @@
  */
 
 export const EXPORT_PORT = 3101;
+/** Port for the test-only diagnostics export (`out-diagnostics/`). */
+export const DIAGNOSTICS_EXPORT_PORT = 3102;
 
 /** Phase 1 headers still sent by `next dev`. Production adds the rest via the static server. */
 export const NEXT_DEV_HEADERS: readonly { key: string; value: string }[] = [

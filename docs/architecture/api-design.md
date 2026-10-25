@@ -262,22 +262,26 @@ Static assets with content hashes in their names may be cached as `immutable`. T
 no service worker in V1, so no API response can end up in a service-worker cache
 ([sync-protocol.md §12](sync-protocol.md#12-local-storage)).
 
-### What P2-04 implemented (crypto-only)
+### What P2-04 implemented
 
-Implemented locally on 2026-10-24. **Remote CI has not run.** OPAQUE / `@serenity-kit/opaque`
-was excluded (D-02 is open). This is a development spike, not a security review.
+Implemented locally on 2026-10-24 (crypto) and 2026-10-25 (OPAQUE, diagnostics isolation, three
+engines). **Remote CI has not run.** This is a development spike, not a security review. The
+OPAQUE run is a library compatibility test under the CSP; it does **not** approve D-02 or the
+production authentication protocol.
 
-| Item                                                  | Status                                                                                                                                                                                                                             |
-| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `output: 'export'` and build-time `script-src` hashes | **Done.** Next.js 16.4.2 emits inline scripts for the RSC payload. `apps/web/security-headers.ts` hashes those bodies (`sha256-...`). `'unsafe-inline'` and `'unsafe-eval'` are never added.                                       |
-| Production headers on the static export               | **Done** in `deploy/Caddyfile` and `apps/web/scripts/serve-export.mjs`. Next.js `headers()` is ignored for the export ([Next.js docs](https://nextjs.org/docs/app/guides/static-exports)); `next dev` keeps only the Phase 1 trio. |
-| `packages/crypto` in a worker under that CSP          | **Done.** `/csp-probe` starts `/csp-probe-worker.js`, which calls `initRuveeCrypto()` and `generateKey()`. Playwright Chromium: worker succeeds and `eval` is blocked.                                                             |
-| Tailwind / Next.js with `style-src 'self'`            | **Done** for `/`, `/csp-probe` and the custom `not-found` page. The default Next.js 404 used inline styles and style attributes; it was replaced.                                                                                  |
-| HTTP test of every header                             | **Done** (`pnpm --filter @ruvee/web test:headers`).                                                                                                                                                                                |
-| Injected inline script blocked                        | **Done** in the same Playwright file.                                                                                                                                                                                              |
-| HSTS                                                  | **Local HTTP omitted**, as specified ("in public mode"). The public-mode value is documented in the Caddyfile.                                                                                                                     |
-| Caddy binary                                          | **Not run.** Caddy is not installed here. The Caddyfile is checked against the header module; the Node export server applies the same values.                                                                                      |
-| `@serenity-kit/opaque` under the CSP                  | **Not done.** D-02 is unapproved.                                                                                                                                                                                                  |
+| Item                                                   | Status                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `output: 'export'` and build-time `script-src` hashes  | **Done.** Next.js 16.4.2 emits inline scripts for the RSC payload. `apps/web/security-headers.ts` hashes those bodies (`sha256-...`). `'unsafe-inline'` and `'unsafe-eval'` are never added.                                                                                                                                                                                                                                                                                                                                    |
+| Production headers on the static export                | **Done** in `deploy/Caddyfile` and `apps/web/scripts/serve-export.mjs`. Next.js `headers()` is ignored for the export ([Next.js docs](https://nextjs.org/docs/app/guides/static-exports)); `next dev` keeps only the Phase 1 trio.                                                                                                                                                                                                                                                                                              |
+| Diagnostics isolated from the ordinary export          | **Done.** `/csp-probe` is a `page.diag.tsx` route, registered only by `scripts/build-diagnostics.mjs` (`RUVEE_DIAGNOSTICS=1`), which exports to `apps/web/out-diagnostics/` with the worker bundles. `out/` has no probe route or worker: `assert-preview-excluded.mjs` fails the build, and an HTTP test expects `404`.                                                                                                                                                                                                        |
+| `packages/crypto` in a worker under that CSP           | **Done.** `/diagnostics/crypto-worker.js` calls `initRuveeCrypto()` and `generateKey()`; `eval` is blocked. Playwright Chromium, Firefox and WebKit.                                                                                                                                                                                                                                                                                                                                                                            |
+| `@serenity-kit/opaque` 1.1.0 in a worker under the CSP | **Done** (2026-10-25). `/diagnostics/opaque-worker.js` runs both protocol sides with synthetic inputs and the `memory-constrained` preset: correct password (session keys match), the NFD-typed password after `normalizePassword` (logs in), wrong password, unknown user (`null` record; same response length) and a substituted server setup (all refused by the client). Chromium, Firefox, WebKit. A negative control removes `'wasm-unsafe-eval'` and the worker fails. The tarball integrity equals the Phase 0 spike's. |
+| Tailwind / Next.js with `style-src 'self'`             | **Done** for `/`, `/csp-probe` and the custom `not-found` page. The default Next.js 404 used inline styles and style attributes; it was replaced.                                                                                                                                                                                                                                                                                                                                                                               |
+| HTTP test of every header                              | **Done** (`pnpm --filter @ruvee/web test:headers`, which builds the diagnostics export first; the ordinary build must exist). The diagnostics policy equals the ordinary one apart from its hashes.                                                                                                                                                                                                                                                                                                                             |
+| Injected inline script blocked                         | **Done** on both exports, in all three engines.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| HSTS                                                   | **Local HTTP omitted**, as specified ("in public mode"). The public-mode value is documented in the Caddyfile.                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Caddy binary                                           | **Not run.** Caddy is not installed here. The Caddyfile is checked against the header module; the Node export server applies the same values. **Gap:** real Caddy behaviour (header merging, `try_files`, 404 handling) is unverified.                                                                                                                                                                                                                                                                                          |
+| Safari                                                 | **Not run.** Playwright WebKit is not Safari. A manual Safari run of the diagnostics export is still needed.                                                                                                                                                                                                                                                                                                                                                                                                                    |
 
 Deviations from the table above:
 
@@ -291,8 +295,9 @@ Deviations from the table above:
   `apps/web/security-headers.ts` (camera remains `(self)` for later pairing QR scans).
 - **`next dev` is not the production CSP.** React Fast Refresh needs `'unsafe-eval'`. The
   production policy is only on the static export.
-- **`/csp-probe` ships in the production export.** It is a spike page, not vault UI. Remove it
-  before any real-data build.
+- **Diagnostics share `.next/`.** The diagnostics build and the ordinary build both write
+  `.next/`; run the ordinary build last if `.next/` must match `out/`. The exports themselves are
+  separate directories.
 
 ## Changes after architecture validation
 
@@ -322,6 +327,14 @@ Status remains **Proposed**. Changes made on 2026-10-23, from the implementation
 Status remains **Proposed**. Changes made on 2026-10-24 from the implementation:
 
 - D-16 resolved for development: static export with build-time script hashes.
-- New subsection [What P2-04 implemented](#what-p2-04-implemented-crypto-only), including the
+- New subsection [What P2-04 implemented](#what-p2-04-implemented), including the
   Trusted Types omission and the fact that Next.js `headers()` does not apply to the export.
 - OPAQUE under the same CSP remains open with D-02.
+
+## Changes after P2-04 (OPAQUE under the CSP)
+
+Status remains **Proposed**. Changes made on 2026-10-25 from the implementation:
+
+- `@serenity-kit/opaque` 1.1.0 runs in a worker under the production CSP in three engines. That
+  is compatibility evidence only; D-02 is unchanged.
+- Diagnostic routes moved out of the ordinary export into a test-only build.

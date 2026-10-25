@@ -3,7 +3,7 @@ pnpm-lock.yaml
 dist
 .next
 apps/web/out
-apps/web/public/csp-probe-worker.js
+apps/web/out-diagnostics
 deploy/Caddyfile
 .turbo
 coverage

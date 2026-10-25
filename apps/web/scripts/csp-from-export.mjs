@@ -7,7 +7,12 @@ import {
   sha256SourceHash,
 } from '../security-headers.ts';
 
-export const exportDir = new URL('../out/', import.meta.url);
+// `out/` is the ordinary export; RUVEE_EXPORT_DIR=out-diagnostics selects the test-only one.
+const EXPORT_DIRS = new Set(['out', 'out-diagnostics']);
+const exportName = process.env.RUVEE_EXPORT_DIR ?? 'out';
+if (!EXPORT_DIRS.has(exportName))
+  throw new Error(`RUVEE_EXPORT_DIR must be one of ${[...EXPORT_DIRS]}`);
+export const exportDir = new URL(`../${exportName}/`, import.meta.url);
 
 function sha256(bytes) {
   return createHash('sha256').update(bytes).digest();

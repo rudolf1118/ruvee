@@ -7,7 +7,7 @@ export default [
       'playwright-report/**',
       'test-results/**',
       'out/**',
-      'public/csp-probe-worker.js',
+      'out-diagnostics/**',
     ],
   },
   ...next({ tsconfigRootDir: import.meta.dirname }),

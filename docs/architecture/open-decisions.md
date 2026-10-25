@@ -4,7 +4,7 @@ Status as of P2-04 crypto-only (2026-10-24). `packages/crypto` implements the pa
 `AUK`, the account-key password wrap and the keyset envelope for development
 ([cryptographic-design.md §10](../security/cryptographic-design.md#10-implementation-status-packagescrypto-p2-03)).
 The web static export applies the production headers and loads that package in a worker
-([api-design.md](api-design.md#what-p2-04-implemented-crypto-only)). Nothing implements
+([api-design.md](api-design.md#what-p2-04-implemented)). Nothing implements
 authentication, vault persistence, sync, recovery or device enrollment. OPAQUE is not present.
 
 The Phase 0 specifications now exist and are all **Proposed**; start from the

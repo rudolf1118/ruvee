@@ -51,7 +51,7 @@ jobs:
       - run: pnpm build
 
   e2e:
-    name: Browser tests (desktop and mobile)
+    name: Browser tests (desktop and mobile; headers and CSP in three engines)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -65,7 +65,7 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @ruvee/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @ruvee/web exec playwright install --with-deps chromium firefox webkit
       - run: pnpm --filter @ruvee/web build
       - run: pnpm --filter @ruvee/web test:headers
       - run: pnpm --filter @ruvee/web test:e2e

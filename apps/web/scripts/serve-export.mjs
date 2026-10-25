@@ -27,7 +27,7 @@ const TYPES = {
 };
 
 if (!existsSync(join(exportDir.pathname, 'index.html'))) {
-  console.error('Static export missing. Run `pnpm --filter @ruvee/web build` first.');
+  console.error(`Static export missing in ${exportDir.pathname}. Run the web build first.`);
   process.exit(1);
 }
 

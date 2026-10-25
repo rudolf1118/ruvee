@@ -7,15 +7,30 @@ import type { NextConfig } from 'next';
  */
 const includeDevPreview = process.env.NODE_ENV !== 'production';
 
+/**
+ * Diagnostic routes (`page.diag.tsx`, the P2-04 CSP probes) only exist in the test-only build
+ * from `scripts/build-diagnostics.mjs`. It exports to `out-diagnostics/` (a custom `distDir` names
+ * the export directory with `output: 'export'`), so the ordinary `out/` never contains them.
+ */
+const includeDiagnostics = process.env.RUVEE_DIAGNOSTICS === '1';
+
+const pageExtensions = [
+  ...(includeDevPreview ? ['dev.tsx'] : []),
+  ...(includeDiagnostics ? ['diag.tsx'] : []),
+  'tsx',
+  'ts',
+];
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
   // D-16: static export so production CSP can list build-time script hashes. `headers()`
   // is ignored for the export; Caddy / scripts/serve-export.mjs apply the production set.
   output: 'export',
+  ...(includeDiagnostics ? { distDir: 'out-diagnostics' } : {}),
   poweredByHeader: false,
   // Keeps the dev-only Next.js badge clear of the sidebar's bottom-left status box.
   devIndicators: { position: 'bottom-right' },
-  pageExtensions: includeDevPreview ? ['dev.tsx', 'tsx', 'ts'] : ['tsx', 'ts'],
+  pageExtensions,
   headers() {
     // Phase 1 headers for `next dev` only. Production CSP cannot be applied here:
     // Fast Refresh needs `'unsafe-eval'`, and hashes are not known until after the export.
