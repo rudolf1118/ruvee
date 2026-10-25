@@ -39,6 +39,10 @@ describe('OpenAPI document', () => {
       '/api/v1/pairings/{pairingId}/approve',
       '/api/v1/pairings/{pairingId}/complete',
       '/api/v1/pairings/{pairingId}/request',
+      '/api/v1/recovery/complete',
+      '/api/v1/recovery/material',
+      '/api/v1/recovery/password/start',
+      '/api/v1/recovery/start',
       '/api/v1/sync/changes',
       '/api/v1/sync/commits',
       '/api/v1/vault',
@@ -65,9 +69,14 @@ describe('OpenAPI document', () => {
       )) {
         if (path.startsWith('/health/')) continue;
         const access = op['x-ruvee-access'];
-        expect(['none', 'session', 'active', 'step-up'], `${method} ${path}`).toContain(access);
+        expect(['none', 'session', 'active', 'step-up', 'recovery'], `${method} ${path}`).toContain(
+          access,
+        );
         if (access === 'none') expect(op.security, `${method} ${path}`).toBeUndefined();
-        else expect(op.security, `${method} ${path}`).toEqual([{ sessionCookie: [] }]);
+        else
+          expect(op.security, `${method} ${path}`).toEqual([
+            access === 'recovery' ? { recoveryCookie: [] } : { sessionCookie: [] },
+          ]);
       }
     }
   });

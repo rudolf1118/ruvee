@@ -76,6 +76,7 @@ enum SecurityEventType {
   refresh_reuse
   password_changed
   recovery_started
+  recovery_failed
   recovery_completed
   recovery_key_rotated
   device_pairing_requested

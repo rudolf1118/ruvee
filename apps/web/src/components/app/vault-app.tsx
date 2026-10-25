@@ -20,6 +20,10 @@ import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
 import { AddDevicePanel } from './pairing';
 import { PendingDeviceScreen } from './pending-device';
+import { RecoveryFlow } from './recovery-flow';
+import { Notice } from './fields';
+import { Button } from '../ui/button';
+import { relativeTime } from './view-model';
 import { SetupFlow } from './setup-flow';
 import { SyncPanel } from './sync-panel';
 import { PERSONAL_VAULT, toView } from './view-model';
@@ -37,6 +41,7 @@ type Screen =
   | { name: 'login' }
   | { name: 'pending'; username: string }
   | { name: 'locked'; username: string; notice?: string }
+  | { name: 'recovery'; username?: string; back: Screen }
   | { name: 'unlocked'; vault: UnlockedVault };
 
 function supported(): boolean {
@@ -130,6 +135,22 @@ export function VaultApp() {
           onLogin={() => {
             setScreen({ name: 'login' });
           }}
+          onRecover={() => {
+            setScreen({ name: 'recovery', back: screen });
+          }}
+        />
+      );
+    case 'recovery':
+      return (
+        <RecoveryFlow
+          client={client}
+          {...(screen.username ? { initialUsername: screen.username } : {})}
+          onCancel={() => {
+            setScreen(screen.back);
+          }}
+          onDone={(vault) => {
+            setScreen({ name: 'unlocked', vault });
+          }}
         />
       );
     case 'setup':
@@ -174,6 +195,9 @@ export function VaultApp() {
           notice={screen.notice ?? null}
           onUnlocked={(vault) => {
             setScreen({ name: 'unlocked', vault });
+          }}
+          onRecover={() => {
+            setScreen({ name: 'recovery', username: screen.username, back: screen });
           }}
         />
       );
@@ -269,6 +293,8 @@ function UnlockedApp({
   }, [syncNow]);
 
   const views = useMemo(() => items.map(toView), [items]);
+  const [dismissed, setDismissed] = useState<readonly string[]>([]);
+  const notices = vaultNotices(vault, status).filter((n) => !dismissed.includes(n.id));
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const readOnly = status.state === 'integrity_error';
 
@@ -276,6 +302,28 @@ function UnlockedApp({
     <VaultShell
       items={views}
       vaults={[PERSONAL_VAULT]}
+      banner={
+        notices.length > 0 ? (
+          <div className="flex flex-col gap-2 border-b border-line bg-canvas px-4 py-3">
+            {notices.map((n) => (
+              <Notice key={n.id} tone={n.tone}>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span>{n.text}</span>
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      setDismissed((d) => [...d, n.id]);
+                      if (n.id === 'recovery-used') void client.call('acknowledgeRecoveryNotice');
+                    }}
+                  >
+                    Dismiss
+                  </Button>
+                </div>
+              </Notice>
+            ))}
+          </div>
+        ) : undefined
+      }
       live={{
         onAddItem: () => {
           if (readOnly) return;
@@ -366,4 +414,45 @@ function UnlockedApp({
       }}
     />
   );
+}
+
+interface VaultNotice {
+  readonly id: string;
+  readonly tone: 'caution' | 'brand';
+  readonly text: string;
+}
+
+/** What the user must know right after unlocking (account-recovery.md §3, authentication.md §9). */
+function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
+  const out: VaultNotice[] = [];
+  if (vault.recovered) {
+    const last = vault.recovered.lastChange;
+    const where = last
+      ? `the last change was ${relativeTime(last.atMs)} on ${last.byThisDevice ? 'this' : 'another'} device.`
+      : 'it has no changes yet.';
+    out.push({
+      id: 'recovered',
+      tone: 'brand',
+      text: `Recovery is complete. This device had no earlier record of your vault, so check that it looks current: ${where} If you lost devices, they still hold a copy of your vault; removing them is not available in this build yet.`,
+    });
+  }
+  if (status.recoveryUsedAtMs !== undefined)
+    out.push({
+      id: 'recovery-used',
+      tone: 'caution',
+      text: `Your Recovery Kit was used ${relativeTime(status.recoveryUsedAtMs)}. If that wasn't you, someone else has your kit and can open your vault.`,
+    });
+  if (vault.passwordUpdated)
+    out.push({
+      id: 'password-updated',
+      tone: 'brand',
+      text: 'Your master password was changed on another device. This device now uses the new one.',
+    });
+  if (vault.sessionProblem === 'login_failed')
+    out.push({
+      id: 'login-failed',
+      tone: 'caution',
+      text: "This device opened its local copy but couldn't sign in, so it won't sync. If your password was changed on another device, lock and unlock with the new one.",
+    });
+  return out;
 }

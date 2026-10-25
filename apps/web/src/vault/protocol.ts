@@ -66,6 +66,8 @@ export interface SyncStatus {
   readonly lastChange: { readonly atMs: number; readonly byThisDevice: boolean } | null;
   /** Set for `integrity_error`: the vault is read-only until resolved. */
   readonly integrity?: string;
+  /** The Recovery Kit was used at this time and this device has not acknowledged it yet. */
+  readonly recoveryUsedAtMs?: number;
 }
 
 export type DevicePhase =
@@ -82,6 +84,10 @@ export interface UnlockedVault {
   readonly sync: SyncStatus;
   /** Set when the server session could not be restored; the vault still works offline. */
   readonly sessionProblem?: 'login_failed' | 'offline' | 'rate_limited';
+  /** Set right after a recovery: this device has no trusted checkpoint (sync-protocol §5). */
+  readonly recovered?: { readonly lastChange: SyncStatus['lastChange'] };
+  /** The local password wrap was replaced because the password changed on another device. */
+  readonly passwordUpdated?: boolean;
 }
 
 export interface RecoveryKitView {
@@ -116,6 +122,8 @@ export type VaultErrorCode =
   | 'pairing_expired'
   | 'pairing_failed'
   | 'password_required'
+  | 'recovery_failed'
+  | 'integrity'
   | 'internal';
 
 export interface VaultErrorPayload {
@@ -171,6 +179,11 @@ export interface VaultMethods {
   pairingNeedsPassword(): boolean;
   pairingJoin(params: { code: string; password?: string }): true;
   pairingWait(): PairingJoinStatus;
+  recoveryBegin(params: { username: string; recoveryKey: string }): true;
+  recoverySetPassword(params: { password: string }): RecoveryKitView;
+  recoveryVerifyKit(params: { recoveryKey: string }): true;
+  recoveryFinish(): UnlockedVault;
+  acknowledgeRecoveryNotice(): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

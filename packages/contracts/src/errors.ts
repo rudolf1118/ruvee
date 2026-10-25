@@ -13,6 +13,7 @@ export const API_ERRORS = {
   unauthenticated: { status: 401, message: 'Authentication is required.' },
   login_failed: { status: 401, message: 'Login failed.' },
   bootstrap_failed: { status: 401, message: 'The setup token is not valid.' },
+  recovery_failed: { status: 401, message: 'Recovery failed.' },
   session_expired: { status: 401, message: 'The session has expired.' },
   device_revoked: { status: 401, message: 'This device has been revoked.' },
   forbidden: { status: 403, message: 'This request is not allowed.' },

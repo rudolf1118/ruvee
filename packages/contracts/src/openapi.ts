@@ -39,6 +39,13 @@ import {
   vaultStateResponseSchema,
 } from './sync.js';
 import {
+  recoveryCompleteRequestSchema,
+  recoveryMaterialResponseSchema,
+  recoveryPasswordStartRequestSchema,
+  recoveryStartRequestSchema,
+  recoveryStartResponseSchema,
+} from './recovery.js';
+import {
   createPairingRequestSchema,
   pairingApproveRequestSchema,
   pairingCancelRequestSchema,
@@ -101,7 +108,7 @@ Conventions that apply to every request:
 - Errors use the \`ErrorResponse\` shape with a code from a closed list and a fixed message.
   Unknown paths return \`404 not_found\`.`;
 
-type Access = 'none' | 'session' | 'active' | 'step-up';
+type Access = 'none' | 'session' | 'active' | 'step-up' | 'recovery';
 
 const PAIRING_ID_PARAMETER = {
   name: 'pairingId',
@@ -116,6 +123,7 @@ const ACCESS_ERRORS: Record<Access, ApiErrorCode[]> = {
   none: [],
   session: ['unauthenticated', 'session_expired', 'device_revoked'],
   active: ['unauthenticated', 'session_expired', 'device_revoked', 'device_not_enrolled'],
+  recovery: ['unauthenticated', 'session_expired', 'device_revoked'],
   'step-up': [
     'unauthenticated',
     'session_expired',
@@ -178,7 +186,13 @@ function operation(options: {
     operationId: options.operationId,
     summary: options.summary,
     'x-ruvee-access': options.access,
-    ...(options.access === 'none' ? {} : { security: [{ sessionCookie: [] }] }),
+    ...(options.access === 'none'
+      ? {}
+      : {
+          security: [
+            options.access === 'recovery' ? { recoveryCookie: [] } : { sessionCookie: [] },
+          ],
+        }),
     ...(options.parameters ? { parameters: options.parameters } : {}),
     ...(options.request
       ? {
@@ -387,6 +401,62 @@ export function buildOpenApiDocument(): JsonSchema {
           errors: ['not_found', 'seq_conflict', 'revision_conflict', 'idempotency_mismatch'],
         }),
       },
+      '/api/v1/recovery/start': {
+        post: operation({
+          operationId: 'recoveryStart',
+          summary:
+            'Proves possession of the Recovery Key with RAK; opens a 15-minute recovery session.',
+          access: 'none',
+          request: 'RecoveryStartRequest',
+          success: {
+            status: '200',
+            description: 'Recovery session in Set-Cookie.',
+            schema: 'RecoveryStartResponse',
+          },
+          errors: ['recovery_failed', 'rate_limited'],
+        }),
+      },
+      '/api/v1/recovery/material': {
+        get: operation({
+          operationId: 'recoveryMaterial',
+          summary: 'The recovery wrap of AK and the keyset. Recovery sessions only.',
+          access: 'recovery',
+          success: {
+            status: '200',
+            description: 'Recovery material.',
+            schema: 'RecoveryMaterialResponse',
+          },
+          errors: ['recovery_failed'],
+        }),
+      },
+      '/api/v1/recovery/password/start': {
+        post: operation({
+          operationId: 'recoveryPasswordStart',
+          summary: 'OPAQUE registration step 1 for the new master password.',
+          access: 'recovery',
+          request: 'RecoveryPasswordStartRequest',
+          success: {
+            status: '200',
+            description: 'OPAQUE registration response.',
+            schema: 'RegisterStartResponse',
+          },
+        }),
+      },
+      '/api/v1/recovery/complete': {
+        post: operation({
+          operationId: 'recoveryComplete',
+          summary:
+            'Replaces the OPAQUE record, password wrap and rotated recovery wrap; ends every other session.',
+          access: 'recovery',
+          request: 'RecoveryCompleteRequest',
+          success: {
+            status: '200',
+            description: 'A normal session in Set-Cookie.',
+            schema: 'SessionResponse',
+          },
+          errors: ['row_version_conflict'],
+        }),
+      },
       '/api/v1/pairings': {
         post: operation({
           operationId: 'createPairing',
@@ -453,6 +523,7 @@ export function buildOpenApiDocument(): JsonSchema {
     components: {
       securitySchemes: {
         sessionCookie: { type: 'apiKey', in: 'cookie', name: SESSION_COOKIE_SECURE },
+        recoveryCookie: { type: 'apiKey', in: 'cookie', name: '__Host-ruvee_recovery' },
       },
       schemas: {
         RegisterStartRequest: jsonSchema(registerStartRequestSchema),
@@ -471,6 +542,11 @@ export function buildOpenApiDocument(): JsonSchema {
         CommitRequest: jsonSchema(commitRequestSchema),
         CommitResponse: jsonSchema(commitResponseSchema),
         CreatePairingRequest: jsonSchema(createPairingRequestSchema),
+        RecoveryStartRequest: jsonSchema(recoveryStartRequestSchema),
+        RecoveryStartResponse: jsonSchema(recoveryStartResponseSchema),
+        RecoveryMaterialResponse: jsonSchema(recoveryMaterialResponseSchema),
+        RecoveryPasswordStartRequest: jsonSchema(recoveryPasswordStartRequestSchema),
+        RecoveryCompleteRequest: jsonSchema(recoveryCompleteRequestSchema),
         PairingCreated: {
           type: 'object',
           properties: { expiresAt: { type: 'string', format: 'date-time' } },

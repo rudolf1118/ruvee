@@ -29,6 +29,9 @@ A complete single-user web vault across several browsers, against the real API a
 - **Logins and secure notes**: create, edit, favorite, Trash, restore, permanent deletion; reveal
   and copy with clipboard clearing after 30 seconds. Passwords leave the worker only on reveal,
   copy or edit.
+- **Recovery with the Recovery Kit** on a new or existing browser: a new master password and a
+  mandatory new Recovery Kit; every other session ends, other devices are told, and they move to
+  the new password the next time they unlock online.
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -37,17 +40,17 @@ A complete single-user web vault across several browsers, against the real API a
 
 ## Verified (locally, 2026-10-25)
 
-| Check                                                                                                   | Result                          |
-| ------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                      | Pass                            |
-| `pnpm test` (contracts 33, API 68, web 65, crypto 60)                                                   | Pass                            |
-| `pnpm test:integration` (30; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)    | Pass                            |
-| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)       | Pass                            |
-| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)     | Pass                            |
-| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                   | Pass                            |
-| `pnpm --filter @ruvee/web test:vault` (two-device workflow incl. INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
-| Remote CI                                                                                               | **Not run** (nothing pushed)    |
-| Safari, a real Caddy binary, phones, older laptops                                                      | **Not run**                     |
+| Check                                                                                                                                         | Result                          |
+| --------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                            | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 66, crypto 60)                                                                                         | Pass                            |
+| `pnpm test:integration` (33; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                          | Pass                            |
+| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                             | Pass                            |
+| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                           | Pass                            |
+| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                         | Pass                            |
+| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery; INV-01 and INV-16 capture), per engine | Pass: Chromium, Firefox, WebKit |
+| Remote CI                                                                                                                                     | **Not run** (nothing pushed)    |
+| Safari, a real Caddy binary, phones, older laptops                                                                                            | **Not run**                     |
 
 ## Running it
 
@@ -97,8 +100,8 @@ D-07, D-24, D-05, D-11 to D-15, D-18.
 
 ## Known gaps and risks
 
-- **Not built:** recovery with the Recovery Kit (P2-13), device revocation and the devices and
-  sessions screens (P2-11), password change and step-up re-authentication (P2-14), the activity
+- **Not built:** revoking lost devices after a recovery and the `SK` rotation offer (P2-13 step
+  8), device revocation and the devices and sessions screens (P2-11), password change and step-up re-authentication (P2-14), the activity
   screen (P2-15), the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
   generator, cards and identities, import/export, SSE push, re-seeding, key rotation, the browser
   extension, mobile.
@@ -112,10 +115,8 @@ D-07, D-24, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**P2-13: recovery with the Recovery Kit**, because the account format already stores the
-recovery wrap and `SHA-256(RAK)`, and without it a user who loses every device has no way back:
-`/recovery/start`, `/recovery/material`, `/recovery/password/start`, `/recovery/complete` with the
-mandatory Recovery Key rotation and the recovery notice on other devices
-([account-recovery.md §3](../security/account-recovery.md#3-recovery-with-the-recovery-key)).
-Then P2-11 (revocation, with `SK` rotation per D-24 once decided) and P2-14 (password change),
-then the browser extension.
+**P2-11: devices, sessions and revocation** (`GET /sessions`, `DELETE /sessions/{id}`,
+`POST /devices/{id}/revoke` with step-up, the devices screen, and the wipe on `device_revoked`
+that already exists), which also completes recovery step 8. It needs `reauth` (P2-09's missing
+part) for step-up, and D-24 decides whether revoking as lost rotates `SK`. Then P2-14 (password
+change), then the browser extension.

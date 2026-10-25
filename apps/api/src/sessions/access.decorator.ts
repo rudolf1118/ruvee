@@ -9,8 +9,9 @@ import type { AuthenticatedSession } from './session.service.js';
  * - `session`: a valid cookie session on a pending or active device
  * - `active`: as `session`, and the device is enrolled
  * - `step-up`: as `active`, and the session authenticated with OPAQUE within 5 minutes
+ * - `recovery`: a recovery session (its own cookie); accepted only on /recovery/* endpoints
  */
-export type AccessLevel = 'none' | 'session' | 'active' | 'step-up';
+export type AccessLevel = 'none' | 'session' | 'active' | 'step-up' | 'recovery';
 
 export const ACCESS_METADATA = 'ruvee:access';
 

@@ -146,6 +146,8 @@ export const accountResponseSchema = z.strictObject({
   username: usernameSchema,
   createdAt: timestamp,
   passwordChangedAt: timestamp,
+  /** When the Recovery Kit was last used (recovery started), so every device can say so. */
+  lastRecoveryAt: timestamp.nullable(),
 });
 export type AccountResponse = z.infer<typeof accountResponseSchema>;
 

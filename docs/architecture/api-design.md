@@ -13,9 +13,12 @@ Implemented locally (remote CI not yet run): the health endpoints and transport 
 (P2-05), and on 2026-10-25 authentication, account, devices, vault sync and pairing:
 `/api/v1/auth/{register,login}/{start,finish}`, `/api/v1/auth/logout`, `GET /api/v1/account`,
 `GET /api/v1/account/keys`, `GET /api/v1/devices` and `/devices/current`, `GET /api/v1/vault`,
-`GET /api/v1/sync/changes`, `POST /api/v1/sync/commits`, and `/api/v1/pairings/*`. Everything else
-in this document (reauth, refresh, recovery, password change, revocation, sessions, events, SSE,
-re-seeding) is still **proposed** and has no contract.
+`GET /api/v1/sync/changes`, `POST /api/v1/sync/commits`, `/api/v1/pairings/*`, and
+`/api/v1/recovery/{start,material,password/start,complete}`. Everything else in this document
+(reauth, refresh, password change, revocation, sessions, events, SSE, re-seeding) is still
+**proposed** and has no contract. `GET /account` also returns `lastRecoveryAt`, the time of the
+latest `recovery_started` event, which is how every device learns that the Recovery Kit was used;
+recovery sessions use their own cookie (`__Host-ruvee_recovery`).
 
 Differences from the tables below: `register/finish` also takes `vault: { id, vkId }` and creates
 the empty vault (there is no `POST /vaults`), since the keyset already names it; `GET /vault`

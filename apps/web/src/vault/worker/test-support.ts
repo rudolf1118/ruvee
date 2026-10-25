@@ -9,6 +9,7 @@ import type {
   RegisterFinishRequest,
   SyncChangesResponse,
 } from '@ruvee/contracts';
+import { createHash } from 'node:crypto';
 import { ApiError, NetworkError, type Api } from './api';
 import { fromB64 } from './bytes';
 import type { OpaqueClient } from './vault-engine';
@@ -28,6 +29,19 @@ export class FakeServer {
   sessionValid = true;
   /** Every request body the server received, for capture checks. */
   received: string[] = [];
+  lastRecoveryAt: string | null = null;
+  recoverySessions = new Set<string>();
+  rowVersion = 1;
+  /** Stands in for the OPAQUE record: which password the server would accept. */
+  passwordTag: string | undefined;
+  /** Bumped when every session ends (recovery); a client's session from an older one is dead. */
+  generation = 0;
+
+  verifier(recoveryAuthKey: string): string {
+    return createHash('sha256')
+      .update(Buffer.from(recoveryAuthKey, 'base64url'))
+      .digest('base64url');
+  }
   devices = new Map<string, 'pending' | 'active'>();
   pairings = new Map<
     string,
@@ -62,9 +76,12 @@ export class FakeServer {
   /** One client's view: it remembers which device its session belongs to, like a cookie. */
   api(): Api {
     let sessionDevice: string | undefined;
+    let sessionGeneration = this.generation;
     let loginDevice: string | undefined;
+    let loginTag: string | undefined;
     const requireSession = () => {
-      if (!this.sessionValid || !sessionDevice) this.fail(401, 'session_expired');
+      if (!this.sessionValid || !sessionDevice || sessionGeneration !== this.generation)
+        this.fail(401, 'session_expired');
       return sessionDevice;
     };
     const requireActive = () => {
@@ -82,8 +99,10 @@ export class FakeServer {
         this.check(body);
         if (this.account) this.fail(404, 'not_found');
         this.account = body;
+        this.passwordTag = body.registrationRecord.slice(0, 43);
         this.devices.set(body.device.id, 'active');
         sessionDevice = body.device.id;
+        sessionGeneration = this.generation;
         return Promise.resolve({
           accountId: body.accountId,
           device: { id: body.device.id, status: 'active' },
@@ -92,12 +111,13 @@ export class FakeServer {
       loginStart: (body) => {
         this.check(body);
         loginDevice = body.deviceId;
+        loginTag = body.startLoginRequest.slice(0, 43);
         return Promise.resolve({ loginId: 'L'.repeat(22), loginResponse: 'R'.repeat(427) });
       },
       loginFinish: (body) => {
         this.check(body);
         const account = this.account;
-        if (!account) this.fail(401, 'login_failed');
+        if (!account || loginTag !== this.passwordTag) this.fail(401, 'login_failed');
         this.sessionValid = true;
         let id = loginDevice;
         if (!id || !this.devices.has(id)) {
@@ -105,6 +125,7 @@ export class FakeServer {
           this.devices.set(id, 'pending');
         }
         sessionDevice = id;
+        sessionGeneration = this.generation;
         const status = this.devices.get(id) ?? 'pending';
         return Promise.resolve({ accountId: account.accountId, device: { id, status } });
       },
@@ -155,7 +176,7 @@ export class FakeServer {
       },
       changes: (since) => {
         this.check();
-        if (!this.sessionValid) this.fail(401, 'session_expired');
+        requireActive();
         const response: SyncChangesResponse = {
           vaultId: this.account?.vault.id ?? '',
           currentSeq: this.currentSeq,
@@ -169,8 +190,91 @@ export class FakeServer {
       },
       commit: (body) => {
         this.check(body);
-        if (!this.sessionValid) this.fail(401, 'session_expired');
+        requireActive();
         return Promise.resolve(this.applyCommit(body));
+      },
+      account: () => {
+        this.check();
+        requireSession();
+        const account = this.account;
+        if (!account) this.fail(404, 'not_found');
+        const at = new Date(0).toISOString();
+        return Promise.resolve({
+          accountId: account.accountId,
+          username: account.username,
+          createdAt: at,
+          passwordChangedAt: at,
+          lastRecoveryAt: this.lastRecoveryAt,
+        });
+      },
+      recoveryStart: (body) => {
+        this.check(body);
+        const account = this.account;
+        if (account?.username !== body.username) this.fail(401, 'recovery_failed');
+        // The fake compares RAK through the verifier the client registered.
+        if (this.verifier(body.recoveryAuthKey) !== account.keys.recoveryVerifier)
+          this.fail(401, 'recovery_failed');
+        if (!this.devices.has(body.device.id)) this.devices.set(body.device.id, 'pending');
+        this.recoverySessions.add(body.device.id);
+        sessionDevice = body.device.id;
+        this.lastRecoveryAt = new Date().toISOString();
+        return Promise.resolve({
+          accountId: account.accountId,
+          deviceId: body.device.id,
+          expiresAt: new Date(Date.now() + 900_000).toISOString(),
+        });
+      },
+      recoveryMaterial: () => {
+        this.check();
+        const account = this.account;
+        if (!account || !sessionDevice || !this.recoverySessions.has(sessionDevice))
+          this.fail(401, 'unauthenticated');
+        const keys = account.keys;
+        return Promise.resolve({
+          accountId: account.accountId,
+          recoveryKeyId: keys.recoveryKeyId,
+          wrappedAkRecovery: keys.wrappedAkRecovery,
+          akId: keys.akId,
+          akEpoch: keys.akEpoch,
+          keysetVersion: keys.keysetVersion,
+          keyset: keys.keyset,
+          rowVersion: this.rowVersion,
+        });
+      },
+      recoveryPasswordStart: () => {
+        this.check({});
+        return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
+      },
+      recoveryComplete: (body) => {
+        this.check(body);
+        const account = this.account;
+        const device = sessionDevice;
+        if (!account || !device || !this.recoverySessions.has(device))
+          this.fail(401, 'unauthenticated');
+        if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
+        if (body.recoveryKeyId === account.keys.recoveryKeyId) this.fail(400, 'invalid_request');
+        this.account = {
+          ...account,
+          keys: {
+            ...account.keys,
+            saltPw: body.saltPw,
+            wrappedAkPassword: body.wrappedAkPassword,
+            recoveryKeyId: body.recoveryKeyId,
+            wrappedAkRecovery: body.wrappedAkRecovery,
+            recoveryVerifier: body.recoveryVerifier,
+          },
+        };
+        this.rowVersion++;
+        this.passwordTag = body.registrationRecord.slice(0, 43);
+        this.recoverySessions.clear();
+        this.devices.set(device, 'active');
+        // Every other session ends: one generation counter shared by all clients.
+        this.generation++;
+        sessionGeneration = this.generation;
+        return Promise.resolve({
+          accountId: account.accountId,
+          device: { id: device, status: 'active' },
+        });
       },
       pairingCreate: (pairingId) => {
         this.check({ pairingId });
@@ -276,10 +380,18 @@ export class FakeServer {
   }
 }
 
-/** Stand-in OPAQUE client: the fake server does not run OPAQUE. Only the engine flow is tested. */
+/**
+ * Stand-in OPAQUE client: the fake server does not run OPAQUE. Registration and login carry a
+ * hash of the password, so the fake server can refuse a password it was not registered with.
+ */
+const tag = (password: string) => createHash('sha256').update(password).digest('base64url');
+
 export const fakeOpaque: OpaqueClient = {
   startRegistration: () => ({ clientRegistrationState: 's', registrationRequest: 'A'.repeat(43) }),
-  finishRegistration: () => 'A'.repeat(256),
-  startLogin: () => ({ clientLoginState: 's', startLoginRequest: 'A'.repeat(128) }),
+  finishRegistration: (_state, _response, password) => tag(password).padEnd(256, 'A'),
+  startLogin: (password) => ({
+    clientLoginState: 's',
+    startLoginRequest: tag(password).padEnd(128, 'A'),
+  }),
   finishLogin: () => 'A'.repeat(86),
 };

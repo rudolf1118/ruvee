@@ -151,6 +151,9 @@ interface Session {
   lastChange: SyncStatus['lastChange'];
   state: SyncStatus['state'];
   integrity: string | undefined;
+  /** When the Recovery Kit was used, if this device has not acknowledged it (§3 step 2). */
+  recoveryNotice: number | undefined;
+  recoveryAcknowledgedMs: number;
 }
 
 interface PendingSetup {
@@ -221,6 +224,31 @@ interface HostPairing {
   };
 }
 
+interface PendingRecovery {
+  readonly username: string;
+  readonly accountId: string;
+  readonly deviceId: string;
+  readonly accountKey: Uint8Array;
+  readonly accountKeyId: Uint8Array;
+  readonly accountKeyEpoch: number;
+  readonly secretKey: Uint8Array;
+  readonly vaultId: string;
+  readonly vaultKey: Uint8Array;
+  readonly vaultKeyId: Uint8Array;
+  readonly keysetVersion: number;
+  readonly keyset: Uint8Array;
+  readonly rowVersion: number;
+  complete?: {
+    readonly registrationRecord: string;
+    readonly saltPw: Uint8Array;
+    readonly wrappedAkPassword: Uint8Array;
+    readonly recoveryKeyId: Uint8Array;
+    readonly wrappedAkRecovery: Uint8Array;
+    readonly recoveryVerifier: Uint8Array;
+    verified: boolean;
+  };
+}
+
 interface JoinPairing {
   readonly secret: Uint8Array;
   readonly pairingId: Uint8Array;
@@ -241,6 +269,8 @@ export class VaultEngine {
    * reply arrives (§3.2 step 1); after that it asks again.
    */
   private pendingPassword: { readonly value: string; readonly expiresAtMs: number } | undefined;
+  /** An unfinished recovery: what `RK` unlocked, then the new password and Recovery Key. */
+  private recovery: PendingRecovery | undefined;
   /** Serializes every state change, so a save never interleaves with a sync. */
   private queue: Promise<unknown> = Promise.resolve();
 
@@ -540,7 +570,7 @@ export class VaultEngine {
       const device = await this.deps.store.device();
       if (!device?.enrolled || device.status !== 'active')
         throw new VaultError('device_not_enrolled');
-      const enrolled = device.enrolled;
+      let enrolled = device.enrolled;
       const { crypto } = this.deps;
       let password: string;
       try {
@@ -556,7 +586,8 @@ export class VaultEngine {
         secretKey: enrolled.secretKey,
         accountId,
       });
-      let accountKey: Uint8Array;
+      let accountKey: Uint8Array | undefined;
+      let passwordUpdated = false;
       try {
         accountKey = crypto.unwrapAccountKey({
           accountUnlockKey: auk,
@@ -568,8 +599,12 @@ export class VaultEngine {
           envelope: enrolled.wrappedAkPassword,
         });
       } catch {
-        // During unlock, a failing password wrap means a wrong password (§7).
-        throw new VaultError('wrong_password');
+        // The local wrap did not open: a wrong password, or a password changed on another
+        // device (a password change or a recovery). Only the server can tell which.
+        const updated = await this.unlockWithServerWrap(device, enrolled, password);
+        if (!updated) throw new VaultError('wrong_password');
+        ({ accountKey, enrolled } = updated);
+        passwordUpdated = true;
       } finally {
         auk.fill(0);
       }
@@ -596,8 +631,72 @@ export class VaultEngine {
         await this.refreshKeyset(session);
         await this.syncNow();
       } else session.state = sessionProblem === 'offline' ? 'offline' : 'session_expired';
-      return { ...this.unlockedView(), ...(sessionProblem ? { sessionProblem } : {}) };
+      return {
+        ...this.unlockedView(),
+        ...(sessionProblem ? { sessionProblem } : {}),
+        ...(passwordUpdated ? { passwordUpdated } : {}),
+      };
     });
+  }
+
+  /**
+   * authentication.md §9 step 4 ("online"): after the password changed elsewhere, the device
+   * logs in with the new password, unwraps the new server wrap with its own `SK`, and replaces
+   * its local wrap. A password that fails OPAQUE is a wrong password, whatever the local state.
+   */
+  private async unlockWithServerWrap(
+    device: DeviceRecord,
+    enrolled: EnrolledKeys,
+    password: string,
+  ): Promise<{ accountKey: Uint8Array; enrolled: EnrolledKeys } | undefined> {
+    const { crypto, api } = this.deps;
+    try {
+      await this.opaqueLogin(device.username, password, device.deviceId);
+    } catch (error) {
+      const e = vaultErrorFrom(error);
+      if (e.code === 'device_revoked') return this.revoked();
+      if (e.code === 'rate_limited') throw e;
+      return undefined;
+    }
+    let keys;
+    try {
+      keys = await api.accountKeys();
+    } catch {
+      return undefined;
+    }
+    const accountId = uuidToBytes(device.accountId);
+    const saltPw = fromB64(keys.saltPw);
+    const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
+    const auk = crypto.deriveAccountUnlockKey({
+      password,
+      passwordSalt: saltPw,
+      profile: keys.kdfProfile,
+      secretKey: enrolled.secretKey,
+      accountId,
+    });
+    try {
+      const accountKey = crypto.unwrapAccountKey({
+        accountUnlockKey: auk,
+        accountId,
+        accountKeyId: fromB64(keys.akId),
+        accountKeyEpoch: keys.akEpoch,
+        profile: keys.kdfProfile,
+        passwordSalt: saltPw,
+        envelope: wrappedAkPassword,
+      });
+      const updated: EnrolledKeys = {
+        ...enrolled,
+        saltPw,
+        wrappedAkPassword,
+        kdfProfile: keys.kdfProfile,
+      };
+      await this.deps.store.putDevice({ ...device, enrolled: updated });
+      return { accountKey, enrolled: updated };
+    } catch {
+      return undefined;
+    } finally {
+      auk.fill(0);
+    }
   }
 
   /**
@@ -704,6 +803,8 @@ export class VaultEngine {
       lastChange: null,
       state: 'syncing',
       integrity: undefined,
+      recoveryNotice: undefined,
+      recoveryAcknowledgedMs: 0,
     };
   }
 
@@ -802,6 +903,11 @@ export class VaultEngine {
       const a = z.strictObject({ seq: z.int().min(0), manifestHash: z.string() }).parse(anchor);
       session.anchor = { seq: a.seq, manifestHash: fromB64(a.manifestHash) };
     }
+    const notices = open('notices', await store.local('notices'));
+    if (notices !== undefined)
+      session.recoveryAcknowledgedMs = z
+        .strictObject({ recoveryAcknowledgedMs: z.int().min(0) })
+        .parse(notices).recoveryAcknowledgedMs;
     const conflicts = open('conflicts', await store.local('conflicts'));
     if (conflicts !== undefined)
       for (const c of conflictsSchema.parse(conflicts))
@@ -1485,6 +1591,282 @@ export class VaultEngine {
     });
   }
 
+  // ---- Recovery with the Recovery Kit (account-recovery.md §3, D-22) ----
+
+  /** Steps 1 to 3: checks the key offline, proves it with `RAK`, unwraps `AK` and the keyset. */
+  recoveryBegin(params: { username: string; recoveryKey: string }): Promise<true> {
+    return this.exclusive(async () => {
+      const { crypto, api } = this.deps;
+      const username = normalizeUsername(params.username);
+      if (!username) throw new VaultError('recovery_failed');
+      let rk: Uint8Array;
+      try {
+        rk = crypto.parseRecoveryKey(params.recoveryKey);
+      } catch {
+        throw new VaultError('invalid_recovery_key');
+      }
+      const keys = crypto.deriveRecoveryKeys(rk);
+      rk.fill(0);
+      // On a device that is already set up, recovery keeps its id (the forgotten-password case).
+      const local = await this.deps.store.device();
+      const deviceId = local?.username === username ? local.deviceId : crypto.generateUuid();
+      try {
+        const started = await api.recoveryStart({
+          username,
+          recoveryAuthKey: toB64(keys.recoveryAuthKey),
+          device: { id: deviceId, platform: 'web' },
+        });
+        const material = await api.recoveryMaterial();
+        const accountId = uuidToBytes(started.accountId);
+        const accountKeyId = fromB64(material.akId);
+        let accountKey: Uint8Array;
+        let keyset;
+        try {
+          accountKey = crypto.unwrapAccountKeyForRecovery({
+            recoveryWrapKey: keys.recoveryWrapKey,
+            recoveryKeyId: fromB64(material.recoveryKeyId),
+            accountId,
+            accountKeyId,
+            accountKeyEpoch: material.akEpoch,
+            envelope: fromB64(material.wrappedAkRecovery),
+          });
+          keyset = crypto.openKeyset({
+            accountKey,
+            accountKeyId,
+            accountId,
+            keysetVersion: material.keysetVersion,
+            envelope: fromB64(material.keyset),
+          });
+        } catch {
+          // RAK matched, so a wrap that does not open is an integrity failure, not a wrong key.
+          throw new VaultError('integrity');
+        }
+        const vault = keyset.vaults[0];
+        this.recovery = {
+          username,
+          accountId: started.accountId,
+          deviceId: started.deviceId,
+          accountKey,
+          accountKeyId,
+          accountKeyEpoch: material.akEpoch,
+          secretKey: keyset.secretKey,
+          vaultId: vault.vaultId,
+          vaultKey: vault.vk,
+          vaultKeyId: vault.vkId,
+          keysetVersion: material.keysetVersion,
+          keyset: fromB64(material.keyset),
+          rowVersion: material.rowVersion,
+        };
+      } catch (error) {
+        if (error instanceof ApiError && error.code === 'recovery_failed')
+          throw new VaultError('recovery_failed');
+        throw vaultErrorFrom(error);
+      } finally {
+        keys.recoveryWrapKey.fill(0);
+        keys.recoveryAuthKey.fill(0);
+      }
+      return true as const;
+    });
+  }
+
+  /** Steps 4 and 5: the new master password, and the mandatory new Recovery Key. */
+  recoverySetPassword(params: { password: string }): Promise<RecoveryKitView> {
+    return this.exclusive(async () => {
+      const r = this.recovery;
+      if (!r) throw new VaultError('recovery_failed');
+      if (!checkMasterPassword(params.password).ok) throw new VaultError('invalid_password');
+      const password = normalizePassword(params.password);
+      const { crypto, api, opaque } = this.deps;
+      const registration = opaque.startRegistration(password);
+      let response: string;
+      try {
+        ({ registrationResponse: response } = await api.recoveryPasswordStart(
+          registration.registrationRequest,
+        ));
+      } catch (error) {
+        throw vaultErrorFrom(error);
+      }
+      const registrationRecord = opaque.finishRegistration(
+        registration.clientRegistrationState,
+        response,
+        password,
+      );
+      const accountId = uuidToBytes(r.accountId);
+      const saltPw = crypto.generatePasswordSalt();
+      const auk = crypto.deriveAccountUnlockKey({
+        password,
+        passwordSalt: saltPw,
+        profile: DEFAULT_KDF_PROFILE,
+        secretKey: r.secretKey,
+        accountId,
+      });
+      const wrappedAkPassword = crypto.wrapAccountKey({
+        accountUnlockKey: auk,
+        accountKey: r.accountKey,
+        accountId,
+        accountKeyId: r.accountKeyId,
+        accountKeyEpoch: r.accountKeyEpoch,
+        profile: DEFAULT_KDF_PROFILE,
+        passwordSalt: saltPw,
+      });
+      auk.fill(0);
+      const { recoveryKey, recoveryKeyId } = crypto.generateRecoveryKey();
+      const rotated = crypto.deriveRecoveryKeys(recoveryKey);
+      const wrappedAkRecovery = crypto.wrapAccountKeyForRecovery({
+        recoveryWrapKey: rotated.recoveryWrapKey,
+        recoveryKeyId,
+        accountId,
+        accountKeyId: r.accountKeyId,
+        accountKeyEpoch: r.accountKeyEpoch,
+        accountKey: r.accountKey,
+      });
+      const recoveryVerifier = crypto.recoveryVerifier(rotated.recoveryAuthKey);
+      rotated.recoveryWrapKey.fill(0);
+      rotated.recoveryAuthKey.fill(0);
+      const text = crypto.formatRecoveryKey(recoveryKey);
+      recoveryKey.fill(0);
+      r.complete = {
+        registrationRecord,
+        saltPw,
+        wrappedAkPassword,
+        recoveryKeyId,
+        wrappedAkRecovery,
+        recoveryVerifier,
+        verified: false,
+      };
+      this.pendingPassword = { value: password, expiresAtMs: this.deps.now() + PAIRING_TTL_MS };
+      return {
+        recoveryKey: text,
+        recoveryKeyIdShort: toB64(recoveryKeyId).slice(0, 8),
+        username: r.username,
+        serverOrigin: this.deps.origin,
+        createdAtMs: this.deps.now(),
+      };
+    });
+  }
+
+  /** The new kit is checked like at setup (§2) before anything is sent. */
+  recoveryVerifyKit(params: { recoveryKey: string }): Promise<true> {
+    const r = this.recovery;
+    const c = r?.complete;
+    if (!r || !c) return Promise.reject(new VaultError('recovery_failed'));
+    const { crypto } = this.deps;
+    let rk: Uint8Array;
+    try {
+      rk = crypto.parseRecoveryKey(params.recoveryKey);
+    } catch {
+      return Promise.reject(new VaultError('invalid_recovery_key'));
+    }
+    const keys = crypto.deriveRecoveryKeys(rk);
+    rk.fill(0);
+    try {
+      const ak = crypto.unwrapAccountKeyForRecovery({
+        recoveryWrapKey: keys.recoveryWrapKey,
+        recoveryKeyId: c.recoveryKeyId,
+        accountId: uuidToBytes(r.accountId),
+        accountKeyId: r.accountKeyId,
+        accountKeyEpoch: r.accountKeyEpoch,
+        envelope: c.wrappedAkRecovery,
+      });
+      const ok = same(ak, r.accountKey);
+      ak.fill(0);
+      if (!ok) return Promise.reject(new VaultError('kit_mismatch'));
+    } catch {
+      return Promise.reject(new VaultError('kit_mismatch'));
+    } finally {
+      keys.recoveryWrapKey.fill(0);
+      keys.recoveryAuthKey.fill(0);
+    }
+    c.verified = true;
+    return Promise.resolve(true);
+  }
+
+  /** Step 6 and 7: the server replaces everything at once; this device starts from genesis. */
+  recoveryFinish(): Promise<UnlockedVault> {
+    return this.exclusive(async () => {
+      const r = this.recovery;
+      const c = r?.complete;
+      if (!r || !c?.verified) throw new VaultError('kit_mismatch');
+      try {
+        await this.deps.api.recoveryComplete({
+          registrationRecord: c.registrationRecord,
+          kdfProfile: 1,
+          saltPw: toB64(c.saltPw),
+          wrappedAkPassword: toB64(c.wrappedAkPassword),
+          recoveryKeyId: toB64(c.recoveryKeyId),
+          wrappedAkRecovery: toB64(c.wrappedAkRecovery),
+          recoveryVerifier: toB64(c.recoveryVerifier),
+          expectedRowVersion: r.rowVersion,
+        });
+      } catch (error) {
+        throw vaultErrorFrom(error);
+      }
+      const device: DeviceRecord & { enrolled: EnrolledKeys } = {
+        v: 1,
+        accountId: r.accountId,
+        deviceId: r.deviceId,
+        username: r.username,
+        status: 'active',
+        enrolled: {
+          secretKey: r.secretKey,
+          kdfProfile: 1,
+          saltPw: c.saltPw,
+          akId: r.accountKeyId,
+          akEpoch: r.accountKeyEpoch,
+          wrappedAkPassword: c.wrappedAkPassword,
+          keysetVersion: r.keysetVersion,
+          keyset: r.keyset,
+          vaultId: r.vaultId,
+          vkId: r.vaultKeyId,
+        },
+      };
+      // Anything this browser held before is replaced; it has no trusted checkpoint now.
+      await this.deps.store.wipe();
+      await this.deps.store.putDevice(device);
+      this.session = this.newSession(device, r.accountKey, r.vaultKey, {
+        vaultId: r.vaultId,
+        seq: 0,
+        manifestHash: ZERO_HASH,
+        keysetVersion: r.keysetVersion,
+      });
+      this.recovery = undefined;
+      this.pendingPassword = undefined;
+      // This device ran the recovery, so it does not warn about it. (Assumes the device clock is
+      // not minutes behind the server's, which recorded the start before this finish.)
+      this.session.recoveryAcknowledgedMs = this.deps.now();
+      await this.persistLocal({ checkpoint: true });
+      await this.deps.store.apply({
+        local: {
+          notices: this.sealLocal(this.session, 'notices', {
+            recoveryAcknowledgedMs: this.session.recoveryAcknowledgedMs,
+          }),
+        },
+      });
+      await this.syncNow();
+      const view = this.unlockedView();
+      return { ...view, recovered: { lastChange: view.sync.lastChange } };
+    });
+  }
+
+  acknowledgeRecoveryNotice(): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      if (session.recoveryNotice !== undefined) {
+        session.recoveryAcknowledgedMs = session.recoveryNotice;
+        session.recoveryNotice = undefined;
+        await this.deps.store.apply({
+          local: {
+            notices: this.sealLocal(session, 'notices', {
+              recoveryAcknowledgedMs: session.recoveryAcknowledgedMs,
+            }),
+          },
+        });
+      }
+      this.emitStatus(session);
+      return true as const;
+    });
+  }
+
   // ---- Sync ----
 
   sync(): Promise<SyncStatus> {
@@ -1507,6 +1889,7 @@ export class VaultEngine {
     try {
       await this.pull(session);
       if (!readOnly(session)) await this.push(session);
+      await this.checkRecoveryNotice(session);
       if (!readOnly(session)) {
         session.state = session.pending.length > 0 || session.inflight ? 'pending' : 'synced';
         session.lastSyncedAtMs = this.deps.now();
@@ -1721,6 +2104,13 @@ export class VaultEngine {
     }
   }
 
+  /** Every device shows that the Recovery Kit was used, from the moment recovery starts. */
+  private async checkRecoveryNotice(session: Session): Promise<void> {
+    const account = await this.deps.api.account();
+    const at = account.lastRecoveryAt === null ? 0 : Date.parse(account.lastRecoveryAt);
+    if (at > session.recoveryAcknowledgedMs) session.recoveryNotice = at;
+  }
+
   private integrity(session: Session, reason: string): void {
     // Nothing is applied; the vault stays readable from the local copy (cryptographic-design §7).
     session.state = 'integrity_error';
@@ -1734,6 +2124,7 @@ export class VaultEngine {
       lastSyncedAtMs: session.lastSyncedAtMs,
       lastChange: session.lastChange,
       ...(session.integrity ? { integrity: session.integrity } : {}),
+      ...(session.recoveryNotice !== undefined ? { recoveryUsedAtMs: session.recoveryNotice } : {}),
     };
   }
 

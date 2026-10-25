@@ -4,6 +4,8 @@ import { AccountController } from '../account/account.controller.js';
 import { DatabaseModule } from '../database/database.module.js';
 import { PairingController } from '../pairing/pairing.controller.js';
 import { PairingService } from '../pairing/pairing.service.js';
+import { RecoveryController } from '../recovery/recovery.controller.js';
+import { RecoveryService } from '../recovery/recovery.service.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
 import { AccessGuard } from '../sessions/access.guard.js';
 import { SessionService } from '../sessions/session.service.js';
@@ -18,7 +20,13 @@ import { ThrottleService } from './throttle.service.js';
 /** Authentication, sessions, account and vault endpoints, behind the global access guard. */
 @Module({
   imports: [DatabaseModule],
-  controllers: [AuthController, AccountController, VaultController, PairingController],
+  controllers: [
+    AuthController,
+    AccountController,
+    VaultController,
+    PairingController,
+    RecoveryController,
+  ],
   providers: [
     AuthService,
     OpaqueServerService,
@@ -28,6 +36,7 @@ import { ThrottleService } from './throttle.service.js';
     SecurityEventsService,
     SyncService,
     PairingService,
+    RecoveryService,
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
   exports: [SessionService, SecurityEventsService, ThrottleService],

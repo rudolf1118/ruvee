@@ -9,6 +9,7 @@ const LOGIN_FREE_FAILURES = 5;
 const LOGIN_FIRST_DELAY_MS = 30_000;
 const LOGIN_MAX_DELAY_MS = 15 * 60_000;
 const BOOTSTRAP_FAILURES_PER_HOUR = 10;
+const RECOVERY_STARTS_PER_HOUR = 5;
 const HOUR_MS = 60 * 60_000;
 
 const IP_WINDOW_MS = 60_000;
@@ -100,6 +101,45 @@ export class ThrottleService {
     await this.prisma.authThrottle.update({
       where: { scope_subjectHash: key },
       data: { failureCount: { increment: 1 } },
+    });
+  }
+
+  /**
+   * Recovery starts per username: 5 per hour, counted for unknown usernames too, so the limit
+   * says nothing about whether an account exists (authentication.md §7).
+   */
+  async assertRecoveryAllowed(username: string, now = new Date()): Promise<void> {
+    const row = await this.prisma.authThrottle.findUnique({
+      where: {
+        scope_subjectHash: { scope: 'recovery', subjectHash: subject('recovery', username) },
+      },
+    });
+    if (
+      row &&
+      now.getTime() - row.windowStart.getTime() < HOUR_MS &&
+      row.failureCount >= RECOVERY_STARTS_PER_HOUR
+    )
+      throw new ApiException(
+        'rate_limited',
+        undefined,
+        (row.windowStart.getTime() + HOUR_MS - now.getTime()) / 1000,
+      );
+  }
+
+  async recordRecoveryAttempt(username: string, now = new Date()): Promise<void> {
+    const key = { scope: 'recovery' as const, subjectHash: subject('recovery', username) };
+    const row = await this.prisma.authThrottle.findUnique({ where: { scope_subjectHash: key } });
+    const fresh = !row || now.getTime() - row.windowStart.getTime() >= HOUR_MS;
+    await this.prisma.authThrottle.upsert({
+      where: { scope_subjectHash: key },
+      create: { ...key, failureCount: 1, windowStart: now },
+      update: fresh ? { failureCount: 1, windowStart: now } : { failureCount: { increment: 1 } },
+    });
+  }
+
+  async resetRecovery(username: string): Promise<void> {
+    await this.prisma.authThrottle.deleteMany({
+      where: { scope: 'recovery', subjectHash: subject('recovery', username) },
     });
   }
 

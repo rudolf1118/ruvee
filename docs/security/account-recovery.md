@@ -220,3 +220,30 @@ Status remains **Proposed**. Changes made on 2026-10-22 from
 - §3: a `RAK` holder can also destroy the working recovery wrap; the second-OPAQUE alternative
   is now decision D-22 (V-07).
 - §5: rotation does not take back `AK` from someone who used the old kit.
+
+## Implementation status (2026-10-25)
+
+Implemented locally for development (D-22 approved for development; not reviewed):
+
+- Steps 1 to 7 of §3, on a new browser or on one that is already set up. `POST /recovery/start`
+  compares `SHA-256(RAK)` in constant time and fails the same way for an unknown username; starts
+  are limited to 5 per hour per username; every failure is a `recovery_failed` event. The recovery
+  session has its own cookie, lasts 15 minutes and is refused by every other endpoint, and the
+  normal session is refused by the recovery endpoints.
+- The Recovery Key rotation is mandatory: the server refuses a completion that keeps the old
+  `recovery_key_id`, and the client shows the new kit and requires it to be typed back.
+- Completion replaces the OPAQUE record, the password wrap and the recovery wrap and verifier in
+  one transaction conditioned on `row_version`, and ends every session of the account.
+- The notice: `GET /account` returns `lastRecoveryAt` (the `recovery_started` time), and every
+  device shows it until dismissed there. The device that ran the recovery does not, which assumes
+  its clock is not minutes behind the server's.
+- Other devices: the old password still opens their local copy offline (as §3 says), but they
+  cannot sign in and say so; the new password, once online, opens the new server wrap with their
+  own `SK` and replaces their local wrap.
+- The recovered device starts from genesis with no trusted checkpoint and tells the user when the
+  vault last changed and on which device.
+
+Not done: step 8 (listing and revoking lost devices, and offering `SK` rotation) waits for P2-11
+and D-24. A recovery on a browser that was already set up replaces its local copy, so changes it
+had not uploaded are lost. Check Recovery Kit in Settings (§2) and Recovery Key rotation from
+Settings (§5) are not built.

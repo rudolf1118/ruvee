@@ -14,6 +14,7 @@ const USERNAME = 'synthetic-e2e-owner';
 const MASTER = 'synthetic e2e harbor lantern 58';
 const ITEM_PASSWORD = 'synthetic-e2e-item-secret-3e9';
 const NOTE_TEXT = 'synthetic note body 41f';
+const RECOVERED = 'synthetic recovered lantern 93';
 
 interface Captured {
   readonly urls: string[];
@@ -81,7 +82,7 @@ async function expectAccessible(page: Page) {
 
 test.describe.configure({ mode: 'serial' });
 
-test('two devices: setup, items, pairing, sync, conflict, lock', async ({ browser }) => {
+test('devices: setup, items, pairing, sync, conflict, lock, recovery', async ({ browser }) => {
   test.setTimeout(300_000);
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
@@ -234,8 +235,56 @@ test('two devices: setup, items, pairing, sync, conflict, lock', async ({ browse
   await a.getByRole('button', { name: 'Unlock' }).click();
   await expect(a.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
 
+  // ---- Device C: a new browser recovers with the Recovery Kit (account-recovery.md §3) ----
+  const contextC = await browser.newContext();
+  const capturedC = capture(contextC);
+  const c = await contextC.newPage();
+  await c.goto('/');
+  await c.getByRole('button', { name: /Use your Recovery Kit/ }).click();
+  await c.getByLabel('Username').fill(USERNAME);
+  await c.getByLabel('Recovery Key').fill(kit);
+  await c.getByRole('button', { name: 'Continue' }).click();
+  await c.getByRole('textbox', { name: 'New master password', exact: true }).fill(RECOVERED);
+  await c.getByRole('textbox', { name: 'Type it again', exact: true }).fill(RECOVERED);
+  await c.getByRole('button', { name: 'Continue' }).click();
+  await expect(c.getByRole('heading', { name: 'Save your new Recovery Kit' })).toBeVisible({
+    timeout: 30_000,
+  });
+  const newKit = (await c.getByTestId('recovery-key').innerText()).trim();
+  expect(newKit).not.toBe(kit);
+  await c.getByRole('button', { name: "I've saved it" }).click();
+  await c.getByLabel('Recovery Key').fill(kit);
+  await c.getByRole('button', { name: 'Finish recovery' }).click();
+  await expect(c.getByText("doesn't match")).toBeVisible();
+  await c.getByLabel('Recovery Key').fill(newKit);
+  await c.getByRole('button', { name: 'Finish recovery' }).click();
+  await expect(c.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
+  await expect(c.getByText(/Recovery is complete/)).toBeVisible();
+
+  // A: its session ended with the recovery, so it locks; the new password moves it over.
+  await a.getByRole('button', { name: 'Sync now' }).click();
+  await expect(a.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await a.getByRole('textbox', { name: 'Master password', exact: true }).fill(RECOVERED);
+  await a.getByRole('button', { name: 'Unlock' }).click();
+  await expect(a.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
+  await expect(
+    a.getByText(/changed on another device. This device now uses the new one/),
+  ).toBeVisible();
+  await expect(a.getByText(/Your Recovery Kit was used/)).toBeVisible({ timeout: 15_000 });
+
+  // B: the old password still opens its local copy, but it can't sign in any more.
+  await b.getByRole('button', { name: 'Lock now' }).click();
+  await b.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  await b.getByRole('button', { name: 'Unlock' }).click();
+  await expect(b.getByText(/couldn't sign in, so it won't sync/)).toBeVisible({ timeout: 30_000 });
+
   // ---- Capture checks: nothing secret on the wire or at rest ----
   const forbidden = [
+    RECOVERED,
+    newKit,
+    newKit.replace(/-/g, ''),
     MASTER,
     ITEM_PASSWORD,
     NOTE_TEXT,
@@ -244,11 +293,11 @@ test('two devices: setup, items, pairing, sync, conflict, lock', async ({ browse
     'Synthetic Mail',
     'owner@mail.example',
   ];
-  for (const captured of [capturedA, capturedB]) {
+  for (const captured of [capturedA, capturedB, capturedC]) {
     const wire = [...captured.urls, ...captured.headers, ...captured.bodies].join('\n');
     for (const secret of forbidden) expect(wire, `on the wire: ${secret}`).not.toContain(secret);
   }
-  for (const page of [a, b]) {
+  for (const page of [a, b, c]) {
     const stored = await indexedDbText(page);
     for (const secret of forbidden) expect(stored, `in IndexedDB: ${secret}`).not.toContain(secret);
     for (const key of ['localStorage', 'sessionStorage'] as const)
@@ -258,4 +307,5 @@ test('two devices: setup, items, pairing, sync, conflict, lock', async ({ browse
 
   await contextA.close();
   await contextB.close();
+  await contextC.close();
 });

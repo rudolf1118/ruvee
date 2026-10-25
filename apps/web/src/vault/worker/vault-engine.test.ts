@@ -2,6 +2,7 @@
 import { initRuveeCrypto, type RuveeCrypto } from '@ruvee/crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import type { ItemDraft, VaultEvent } from '../protocol';
+import type { Api } from './api';
 import { DeviceStore, STORES } from './store';
 import { FakeServer, fakeOpaque } from './test-support';
 import { VaultEngine, VaultError } from './vault-engine';
@@ -16,24 +17,30 @@ beforeAll(async () => {
 
 interface Device {
   engine: VaultEngine;
+  /** The device's cookie jar: reuse it to model the same browser after a restart. */
+  api: Api;
   store: DeviceStore;
   factory: IDBFactory;
   events: VaultEvent[];
 }
 
-async function device(server: FakeServer, factory = new IDBFactory()): Promise<Device> {
+async function device(
+  server: FakeServer,
+  factory = new IDBFactory(),
+  api = server.api(),
+): Promise<Device> {
   const store = await DeviceStore.open(factory);
   const events: VaultEvent[] = [];
   const engine = new VaultEngine({
     crypto,
-    api: server.api(),
+    api,
     store,
     opaque: fakeOpaque,
     origin: 'http://127.0.0.1:3101',
     now: () => Date.now(),
     emit: (e) => events.push(e),
   });
-  return { engine, store, factory, events };
+  return { engine, api, store, factory, events };
 }
 
 const login = (title: string, password = 'synthetic-item-secret'): ItemDraft => ({
@@ -182,7 +189,8 @@ describe('vault engine', () => {
     const { a } = await createAccount(server);
     await a.engine.save({ draft: login('Offline item') });
     await a.engine.sync();
-    const again = await device(server, a.factory);
+    // The same browser after a restart: same IndexedDB, same session cookie.
+    const again = await device(server, a.factory, a.api);
     await again.engine.phase();
     expect(await code(again.engine.unlock({ password: 'synthetic wrong passphrase' }))).toBe(
       'wrong_password',
@@ -382,6 +390,60 @@ describe('vault engine', () => {
     expect(await code(b.engine.pairingWait())).toBe('pairing_failed');
     expect(await b.engine.phase()).toMatchObject({ phase: 'pending' });
     expect((await b.store.device())?.enrolled).toBeUndefined();
+  });
+
+  it('recovers on a new device with the Recovery Kit, rotating the kit and moving other devices over', async () => {
+    const server = new FakeServer();
+    const { a, kit } = await createAccount(server);
+    await a.engine.save({ draft: login('Before recovery') });
+    await a.engine.sync();
+
+    const c = await device(server);
+    expect(
+      await code(c.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: 'RK1-00000' })),
+    ).toBe('invalid_recovery_key');
+    const other = crypto.formatRecoveryKey(crypto.generateRecoveryKey().recoveryKey);
+    expect(
+      await code(c.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: other })),
+    ).toBe('recovery_failed');
+    await c.engine.recoveryBegin({ username: 'Synthetic-User', recoveryKey: kit });
+    const NEW = 'synthetic recovered passphrase 61aa';
+    const rotated = await c.engine.recoverySetPassword({ password: NEW });
+    expect(rotated.recoveryKey).not.toBe(kit);
+    expect(await code(c.engine.recoveryFinish())).toBe('kit_mismatch');
+    expect(await code(c.engine.recoveryVerifyKit({ recoveryKey: kit }))).toBe('kit_mismatch');
+    await c.engine.recoveryVerifyKit({ recoveryKey: rotated.recoveryKey });
+    const recovered = await c.engine.recoveryFinish();
+    expect(recovered.items.map((i) => i.title)).toEqual(['Before recovery']);
+    expect(recovered.recovered).toBeDefined();
+    // This device ran the recovery, so it shows no notice about it.
+    expect(recovered.sync.recoveryUsedAtMs).toBeUndefined();
+
+    // The old kit no longer works; the new one would.
+    const d = await device(server);
+    expect(
+      await code(d.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: kit })),
+    ).toBe('recovery_failed');
+
+    // Device A: its session ended. The old password still opens its local copy offline, and the
+    // new password moves it to the new wrap once it reaches the server (authentication §9).
+    expect((await a.engine.sync()).state).toBe('session_expired');
+    const again = await device(server, a.factory);
+    const offline = await again.engine.unlock({ password: PASSWORD });
+    expect(offline.sessionProblem).toBeDefined();
+    const updated = await (await device(server, a.factory)).engine.unlock({ password: NEW });
+    expect(updated.passwordUpdated).toBe(true);
+    expect(updated.items.map((i) => i.title)).toEqual(['Before recovery']);
+    expect(updated.sync.recoveryUsedAtMs).toEqual(expect.any(Number));
+    const afterUpdate = await device(server, a.factory);
+    expect((await afterUpdate.engine.unlock({ password: NEW })).passwordUpdated).toBeUndefined();
+    expect(
+      await code(
+        (await device(server, a.factory)).engine.unlock({ password: 'synthetic wrong passphrase' }),
+      ),
+    ).toBe('wrong_password');
+    await afterUpdate.engine.acknowledgeRecoveryNotice();
+    expect((await afterUpdate.engine.sync()).recoveryUsedAtMs).toBeUndefined();
   });
 
   it('ends the unlocked session when the server session expires', async () => {

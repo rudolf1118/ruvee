@@ -14,6 +14,7 @@ const DETAIL_FIELDS: Readonly<Record<SecurityEventType, readonly string[]>> = {
   refresh_reuse: ['sessionId'],
   password_changed: [],
   recovery_started: [],
+  recovery_failed: [],
   recovery_completed: [],
   recovery_key_rotated: [],
   device_pairing_requested: ['requesterDeviceId'],

@@ -16,9 +16,11 @@ const showPreviewLink = process.env.NODE_ENV !== 'production';
 export function WelcomeScreen({
   onCreate,
   onLogin,
+  onRecover,
 }: {
   onCreate: () => void;
   onLogin: () => void;
+  onRecover: () => void;
 }) {
   return (
     <AuthCard title="Keep every password in one calm, safe place.">
@@ -35,6 +37,9 @@ export function WelcomeScreen({
           I already have an account
         </Button>
       </div>
+      <Button variant="link" className="-ml-2 self-start" onClick={onRecover}>
+        Lost your password or devices? Use your Recovery Kit
+      </Button>
       {showPreviewLink ? (
         <Link
           href="/preview"
@@ -135,11 +140,13 @@ export function LockScreen({
   username,
   notice,
   onUnlocked,
+  onRecover,
 }: {
   client: VaultClient;
   username: string;
   notice?: string | null;
   onUnlocked: (vault: UnlockedVault) => void;
+  onRecover: () => void;
 }) {
   const [password, setPassword] = useState('');
   const { busy, error, run } = useSubmit();
@@ -199,6 +206,9 @@ export function LockScreen({
         </Button>
       </form>
       <RecoveryWarning />
+      <Button variant="link" className="-ml-2 self-start" onClick={onRecover}>
+        Forgot your master password? Use your Recovery Kit
+      </Button>
     </AuthCard>
   );
 }

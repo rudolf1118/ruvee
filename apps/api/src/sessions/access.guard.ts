@@ -53,6 +53,13 @@ export class AccessGuard implements CanActivate {
       }
     }
     if (level === 'none') return true;
+    if (level === 'recovery') {
+      if (!req.path.startsWith('/api/v1/recovery/')) throw new ApiException('internal_error');
+      req.ruveeSession = await this.sessions.authenticateRecovery(
+        readCookie(req, this.sessions.recoveryCookieName),
+      );
+      return true;
+    }
 
     const session = await this.sessions.authenticate(readCookie(req, this.sessions.cookieName));
     if (level !== 'session' && session.deviceStatus !== 'active')

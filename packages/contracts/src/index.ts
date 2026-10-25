@@ -4,5 +4,6 @@ export * from './errors.js';
 export * from './health.js';
 export * from './http.js';
 export * from './pairing.js';
+export * from './recovery.js';
 export * from './sync.js';
 export { buildOpenApiDocument } from './openapi.js';

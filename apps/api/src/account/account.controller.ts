@@ -41,11 +41,18 @@ export class AccountController {
       include: { opaqueCredential: { select: { updatedAt: true } } },
     });
     if (!account?.opaqueCredential) throw new ApiException('unauthenticated');
+    // Every device shows when the Recovery Kit was last used (account-recovery.md §3 step 2).
+    const recovery = await this.prisma.securityEvent.findFirst({
+      where: { accountId: account.id, type: 'recovery_started' },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true },
+    });
     return {
       accountId: account.id,
       username: account.usernameNormalized,
       createdAt: iso(account.createdAt),
       passwordChangedAt: iso(account.opaqueCredential.updatedAt),
+      lastRecoveryAt: recovery ? iso(recovery.createdAt) : null,
     };
   }
 

@@ -1,7 +1,13 @@
 import { randomUUID } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { SESSION_COOKIE_INSECURE_DEV, SESSION_COOKIE_SECURE } from '@ruvee/contracts';
+import {
+  RECOVERY_COOKIE_INSECURE_DEV,
+  RECOVERY_COOKIE_SECURE,
+  RECOVERY_SESSION_MS,
+  SESSION_COOKIE_INSECURE_DEV,
+  SESSION_COOKIE_SECURE,
+} from '@ruvee/contracts';
 import type { Response } from 'express';
 import { ApiException } from '../common/api-exception.js';
 import { randomToken, sha256 } from '../common/secrets.js';
@@ -29,6 +35,8 @@ export interface AuthenticatedSession {
 @Injectable()
 export class SessionService {
   readonly cookieName: string;
+  /** The recovery session's own cookie, so it can never stand in for a normal session. */
+  readonly recoveryCookieName: string;
   private readonly secure: boolean;
 
   constructor(
@@ -37,6 +45,65 @@ export class SessionService {
   ) {
     this.secure = config.get('SESSION_COOKIE_SECURE', { infer: true }) === 'true';
     this.cookieName = this.secure ? SESSION_COOKIE_SECURE : SESSION_COOKIE_INSECURE_DEV;
+    this.recoveryCookieName = this.secure ? RECOVERY_COOKIE_SECURE : RECOVERY_COOKIE_INSECURE_DEV;
+  }
+
+  /** account-recovery.md §3 step 2: 15 minutes, usable only on the recovery endpoints. */
+  async createRecovery(
+    accountId: string,
+    deviceId: string,
+    tx: Prisma.TransactionClient = this.prisma,
+    now = new Date(),
+  ): Promise<{ token: string; absoluteExpiresAt: Date }> {
+    const token = randomToken();
+    const absoluteExpiresAt = new Date(now.getTime() + RECOVERY_SESSION_MS);
+    await tx.session.create({
+      data: {
+        id: randomUUID(),
+        accountId,
+        deviceId,
+        kind: 'recovery',
+        secretHash: sha256(token),
+        authAt: now,
+        createdAt: now,
+        lastUsedAt: now,
+        idleExpiresAt: absoluteExpiresAt,
+        absoluteExpiresAt,
+      },
+    });
+    return { token, absoluteExpiresAt };
+  }
+
+  setRecoveryCookie(res: Response, token: string, absoluteExpiresAt: Date, now = new Date()): void {
+    const maxAge = Math.max(0, Math.floor((absoluteExpiresAt.getTime() - now.getTime()) / 1000));
+    res.append('Set-Cookie', this.cookie(token, maxAge, this.recoveryCookieName));
+  }
+
+  clearRecoveryCookie(res: Response): void {
+    res.append('Set-Cookie', this.cookie('', 0, this.recoveryCookieName));
+  }
+
+  /** A live recovery session; normal sessions are never accepted here, and the reverse. */
+  async authenticateRecovery(
+    token: string | undefined,
+    now = new Date(),
+  ): Promise<AuthenticatedSession> {
+    if (token === undefined || !TOKEN_TEXT.test(token)) throw new ApiException('unauthenticated');
+    const session = await this.prisma.session.findUnique({
+      where: { secretHash: sha256(token) },
+      include: { device: { select: { status: true } } },
+    });
+    if (session?.kind !== 'recovery' || session.revokedAt !== null)
+      throw new ApiException('unauthenticated');
+    if (session.device.status === 'revoked') throw new ApiException('device_revoked');
+    if (session.absoluteExpiresAt <= now) throw new ApiException('session_expired');
+    return {
+      sessionId: session.id,
+      accountId: session.accountId,
+      deviceId: session.deviceId,
+      deviceStatus: session.device.status,
+      authAt: session.authAt,
+    };
   }
 
   /** Creates a cookie session for a device and returns the raw token, which is never stored. */
@@ -75,9 +142,9 @@ export class SessionService {
     res.append('Set-Cookie', this.cookie('', 0));
   }
 
-  private cookie(value: string, maxAge: number): string {
+  private cookie(value: string, maxAge: number, name = this.cookieName): string {
     const parts = [
-      `${this.cookieName}=${value}`,
+      `${name}=${value}`,
       'Path=/',
       'HttpOnly',
       'SameSite=Strict',

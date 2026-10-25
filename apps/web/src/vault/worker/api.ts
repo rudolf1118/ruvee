@@ -6,7 +6,10 @@ import {
   CSRF_HEADER_VALUE,
   deviceSchema,
   errorResponseSchema,
+  accountResponseSchema,
   loginStartResponseSchema,
+  recoveryMaterialResponseSchema,
+  recoveryStartResponseSchema,
   pairingStateResponseSchema,
   registerStartResponseSchema,
   sessionResponseSchema,
@@ -18,6 +21,8 @@ import {
   type LoginStartRequest,
   type PairingApproveRequest,
   type PairingJoinRequest,
+  type RecoveryCompleteRequest,
+  type RecoveryStartRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
 } from '@ruvee/contracts';
@@ -111,6 +116,16 @@ export const api = {
   changes: (since: number) =>
     request('GET', `/sync/changes?since=${String(since)}`, syncChangesResponseSchema),
   commit: (body: CommitRequest) => request('POST', '/sync/commits', commitResponseSchema, body),
+  account: () => request('GET', '/account', accountResponseSchema),
+  recoveryStart: (body: RecoveryStartRequest) =>
+    request('POST', '/recovery/start', recoveryStartResponseSchema, body),
+  recoveryMaterial: () => request('GET', '/recovery/material', recoveryMaterialResponseSchema),
+  recoveryPasswordStart: (registrationRequest: string) =>
+    request('POST', '/recovery/password/start', registerStartResponseSchema, {
+      registrationRequest,
+    }),
+  recoveryComplete: (body: RecoveryCompleteRequest) =>
+    request('POST', '/recovery/complete', sessionResponseSchema, body),
   pairingCreate: (pairingId: string) =>
     request('POST', '/pairings', z.strictObject({ expiresAt: z.iso.datetime() }), { pairingId }),
   pairingState: (pairingId: string) =>
