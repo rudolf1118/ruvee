@@ -105,7 +105,8 @@ self-review.
 ## Decisions
 
 Approved by the owner **for development only** on 2026-10-25: D-02 (OPAQUE), D-21 (pairing),
-D-22 (`RAK` recovery verifier), D-24 (`SK` rotation on lost removal, offered after recovery),
+D-22 (`RAK` recovery verifier), D-24 (`SK` rotation on lost removal, offered after recovery), D-27 (extension `AK` in
+`chrome.storage.session`),
 and the product defaults D-17, D-09, D-06, D-08, D-10, D-23.
 Earlier: D-25, D-01, D-04, D-20. D-16 resolved for development by evidence. Interpretations made
 while building, to confirm in review:

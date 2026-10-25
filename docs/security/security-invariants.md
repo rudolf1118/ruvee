@@ -84,3 +84,7 @@ Status remains **Proposed**. Each invariant is mapped to the tests that prove it
 The review added tests for INV-09 on the client, INV-13 token hashing, INV-21 and the
 single-use recovery completion (INV-23). INV-11 and INV-18 are structural; INV-15 is limited by
 JavaScript (R-11); INV-19 waits for Phase 5. No invariant changed.
+
+D-27 (2026-10-25): for the MV3 extension, INV-16's "persists" means written to persistent
+storage. `AK` may sit in `chrome.storage.session`, which the browser keeps in memory only
+([extension-design.md §3](extension-design.md#3-unlocked-state-across-service-worker-restarts-d-27)).
