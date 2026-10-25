@@ -1,8 +1,11 @@
 # Database design (V1)
 
-Status: **Proposed (Phase 0).** Not owner-approved, not independently reviewed. **No migration
-exists**, and the Prisma schema still has no models. Phase 2 adds the identity tables, and
-Phase 3 and Phase 4 add the vault tables.
+Status: **Proposed (Phase 0).** Not independently reviewed. On 2026-10-25 the owner asked for the
+minimal schema to be implemented for the web-vault development milestone; that is authorization to
+build it, not a design review. The first migration
+(`apps/api/prisma/migrations/20261025120000_web_vault_initial`) creates the tables marked
+**implemented** below. `server_instance` (dropped by V-02), `refresh_tokens` (token clients,
+Phase 5) and `pairings` (P2-12) are not created yet.
 
 V1 serves one user with one personal vault. Only the tables that V1 needs are listed. Sharing,
 organizations, attachments, passkeys and audit exports come later, with their own designs.
@@ -49,6 +52,8 @@ is not approved either way.
 
 ### `accounts`
 
+**Implemented** in the first migration.
+
 | Column                | Type        | Class | Purpose                                            |
 | --------------------- | ----------- | ----- | -------------------------------------------------- |
 | `id`                  | uuid PK     | M     | `account_id`, chosen by the client.                |
@@ -56,6 +61,8 @@ is not approved either way.
 | `created_at`          | timestamptz | M     |                                                    |
 
 ### `opaque_credentials`
+
+**Implemented** in the first migration.
 
 | Column                | Type        | Class | Purpose                                                                                                                                       |
 | --------------------- | ----------- | ----- | --------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -65,6 +72,8 @@ is not approved either way.
 | `updated_at`          | timestamptz | M     | Shown as "password last changed".                                                                                                             |
 
 ### `account_keys`
+
+**Implemented** in the first migration.
 
 There is one row per account. Changes are compare-and-swap on `row_version`.
 
@@ -86,6 +95,8 @@ There is one row per account. Changes are compare-and-swap on `row_version`.
 
 ### `devices`
 
+**Implemented** in the first migration.
+
 | Column                                                    | Type                                          | Class | Purpose                                                                      |
 | --------------------------------------------------------- | --------------------------------------------- | ----- | ---------------------------------------------------------------------------- |
 | `id`                                                      | uuid PK                                       | M     | `device_id`, chosen by the client.                                           |
@@ -100,6 +111,8 @@ There is one row per account. Changes are compare-and-swap on `row_version`.
 A `pending` device that is never enrolled is deleted after 24 hours.
 
 ### `sessions`
+
+**Implemented** in the first migration.
 
 One row per session. For token clients, the session is also the refresh-token family.
 
@@ -130,6 +143,8 @@ Rows are deleted 30 days after they expire or are revoked.
 
 ### `auth_throttle`
 
+**Implemented** in the first migration.
+
 | Column          | Type                                       | Class | Purpose                                                                                                                                                                                        |
 | --------------- | ------------------------------------------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `scope`         | enum `login, recovery, bootstrap, pairing` | S     |                                                                                                                                                                                                |
@@ -142,6 +157,8 @@ The primary key is (`scope`, `subject_hash`). Limits are in [authentication.md Â
 Per-IP and per-session request rates are counted in memory, not in this table.
 
 ### `bootstrap_tokens`
+
+**Implemented** in the first migration.
 
 | Column                     | Type                  | Class | Purpose     |
 | -------------------------- | --------------------- | ----- | ----------- |
@@ -170,6 +187,8 @@ The row is deleted when the pairing completes, is cancelled or expires.
 
 ### `security_events`
 
+**Implemented** in the first migration.
+
 The user sees these on the account activity screen. They contain no secrets
 ([INV-12](../security/security-invariants.md)).
 
@@ -190,6 +209,8 @@ Events are kept for 365 days (owner decision [D-15](open-decisions.md)).
 
 ### `vaults`
 
+**Implemented** in the first migration.
+
 | Column                     | Type        | Class | Purpose                                                  |
 | -------------------------- | ----------- | ----- | -------------------------------------------------------- |
 | `id`                       | uuid PK     | M     | `vault_id`, the same value as in the keyset.             |
@@ -199,6 +220,8 @@ Events are kept for 365 days (owner decision [D-15](open-decisions.md)).
 | `created_at`, `updated_at` | timestamptz | M     |                                                          |
 
 ### `vault_items`
+
+**Implemented** in the first migration.
 
 | Column                     | Type                       | Class | Purpose                                             |
 | -------------------------- | -------------------------- | ----- | --------------------------------------------------- |
@@ -211,6 +234,8 @@ Events are kept for 365 days (owner decision [D-15](open-decisions.md)).
 | `created_at`, `updated_at` | timestamptz                | M     |                                                     |
 
 ### `vault_commits`
+
+**Implemented** in the first migration.
 
 | Column           | Type                            | Class | Purpose                                                                      |
 | ---------------- | ------------------------------- | ----- | ---------------------------------------------------------------------------- |
@@ -245,3 +270,16 @@ Database backups contain exactly the tables above. What restoring them means for
 
 Status remains **Proposed**, and the schema is not approved. On 2026-10-22, `server_instance` was
 marked as likely unnecessary (V-02). No other table changed.
+
+## Changes after the first migration (2026-10-25)
+
+- The tables marked implemented exist, with Prisma models in `apps/api/prisma/schema.prisma`.
+  Fixed byte lengths, the tombstone rule, `revoked_at`/`revoke_reason` consistency and "pending
+  devices have no `enrolled_via`" are `CHECK` constraints in the migration SQL.
+- Interpretations: `opaque_credentials.registration_record` is bounded to 1 to 1,024 bytes (the
+  1.1.0 record is 192 bytes); `account_keys.keyset_version` is bounded to u32, as in the AAD;
+  `vault_commits.device_id` uses `NO ACTION` so an account deletion can cascade through devices
+  and vaults in one statement.
+- Every column's confidentiality class is in `apps/api/src/database/column-classes.ts`. The
+  migration integration test fails if the database and that list differ (INV-10), and checks
+  that `down.sql` reverses the migration on a database the test creates and drops itself.
