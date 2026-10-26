@@ -28,6 +28,7 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     keyset: 'C',
     row_version: 'S',
     updated_at: 'M',
+    ak_verify_key: 'M',
   },
   devices: {
     id: 'M',
@@ -41,6 +42,7 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     enrolled_at: 'M',
     last_seen_at: 'M',
     revoked_at: 'M',
+    public_key: 'M',
   },
   refresh_tokens: {
     token_hash: 'V',
@@ -62,6 +64,18 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     absolute_expires_at: 'S',
     revoked_at: 'M',
     revoke_reason: 'M',
+    proven_at: 'S',
+  },
+  proof_nonces: {
+    id: 'S',
+    account_id: 'M',
+    device_id: 'M',
+    session_id: 'M',
+    operation: 'S',
+    nonce_hash: 'V',
+    created_at: 'S',
+    expires_at: 'S',
+    consumed_at: 'S',
   },
   auth_throttle: {
     scope: 'S',
@@ -93,6 +107,7 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     requested_at: 'S',
     response_ciphertext: 'C',
     response_mac: 'S',
+    request_device_public_key: 'M',
     created_at: 'S',
     expires_at: 'S',
   },

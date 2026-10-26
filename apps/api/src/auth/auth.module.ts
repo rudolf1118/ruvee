@@ -13,6 +13,7 @@ import { ReopenController } from '../reopen/reopen.controller.js';
 import { ReopenService } from '../reopen/reopen.service.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
 import { AccessGuard } from '../sessions/access.guard.js';
+import { ProofService } from '../sessions/proof.service.js';
 import { SessionService } from '../sessions/session.service.js';
 import { SyncService } from '../vault/sync.service.js';
 import { VaultController } from '../vault/vault.controller.js';
@@ -47,6 +48,7 @@ import { ThrottleService } from './throttle.service.js';
     RecoveryService,
     ReopenService,
     AccountSecurityService,
+    ProofService,
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
   exports: [SessionService, SecurityEventsService, ThrottleService],

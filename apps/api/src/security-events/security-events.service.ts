@@ -8,7 +8,7 @@ import type { Prisma, SecurityEventType } from '../generated/prisma/client.js';
  * Values are ids and closed-set strings; request bodies, usernames and secrets never appear.
  */
 const DETAIL_FIELDS: Readonly<Record<SecurityEventType, readonly string[]>> = {
-  login_succeeded: ['newDevice'],
+  login_succeeded: ['newDevice', 'proven'],
   login_failed: [],
   session_revoked: ['sessionId', 'reason'],
   refresh_reuse: ['sessionId'],
@@ -32,6 +32,7 @@ const DETAIL_FIELDS: Readonly<Record<SecurityEventType, readonly string[]>> = {
   reopen_started: ['via'],
   reopen_failed: ['reason'],
   restore_reopened: ['restoreId', 'via'],
+  device_proof_failed: ['operation'],
 };
 
 const DETAIL_VALUE = /^[A-Za-z0-9_-]{1,64}$/;

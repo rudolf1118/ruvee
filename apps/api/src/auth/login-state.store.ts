@@ -17,6 +17,8 @@ export interface PendingLogin {
   readonly sessionId?: string;
   /** Set for a reopening (backup-restore.md §3.13): finishes only at /reopen/login/finish. */
   readonly reopenCodeId?: string;
+  /** The 32-byte nonce an enrolled device signs at finish (device-proof.md §5). */
+  readonly challenge: Uint8Array;
   readonly expiresAt: number;
 }
 
@@ -29,7 +31,13 @@ export interface PendingLogin {
 export class LoginStateStore {
   private readonly pending = new Map<string, PendingLogin>();
 
-  put(login: Omit<PendingLogin, 'expiresAt'>, now = Date.now()): string {
+  put(
+    login: Omit<PendingLogin, 'expiresAt' | 'challenge'>,
+    now = Date.now(),
+  ): {
+    loginId: string;
+    challenge: Uint8Array;
+  } {
     if (this.pending.size >= MAX_PENDING) this.sweep(now);
     if (this.pending.size >= MAX_PENDING) {
       // Still full of live entries: drop the oldest rather than refuse every new login.
@@ -37,8 +45,9 @@ export class LoginStateStore {
       if (oldest !== undefined) this.pending.delete(oldest);
     }
     const loginId = randomBytes(16).toString('base64url');
-    this.pending.set(loginId, { ...login, expiresAt: now + LOGIN_STATE_TTL_MS });
-    return loginId;
+    const challenge = new Uint8Array(randomBytes(32));
+    this.pending.set(loginId, { ...login, challenge, expiresAt: now + LOGIN_STATE_TTL_MS });
+    return { loginId, challenge };
   }
 
   consume(loginId: string, now = Date.now()): PendingLogin | undefined {

@@ -1,9 +1,12 @@
 import { Body, Controller, Get, HttpCode, Post, Req, Res } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
+  proofNonceRequestSchema,
   recoveryCompleteRequestSchema,
   recoveryPasswordStartRequestSchema,
   recoveryStartRequestSchema,
+  type ProofNonceRequest,
+  type ProofNonceResponse,
   type RecoveryCompleteRequest,
   type RecoveryMaterialResponse,
   type RecoveryPasswordStartRequest,
@@ -59,6 +62,16 @@ export class RecoveryController {
   @Access('recovery')
   material(@CurrentSession() session: AuthenticatedSession): Promise<RecoveryMaterialResponse> {
     return this.recovery.material(session);
+  }
+
+  @Post('proof-nonce')
+  @HttpCode(200)
+  @Access('recovery')
+  proofNonce(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(proofNonceRequestSchema)) body: ProofNonceRequest,
+  ): Promise<ProofNonceResponse> {
+    return this.recovery.proofNonce(session, body.operation);
   }
 
   @Post('password/start')

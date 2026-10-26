@@ -1,4 +1,4 @@
-import { uuidToBytes } from '@ruvee/crypto';
+import { uuidToBytes, type ProofField, type ProofOperation } from '@ruvee/crypto';
 import {
   accountKeysResponseSchema,
   API_ERRORS,
@@ -26,6 +26,7 @@ import {
   syntheticAccount,
   type SyntheticAccount,
 } from './support/synthetic-client.js';
+import { proofNonce, signOperation } from './support/device-proof.js';
 import { query } from './support/temp-database.js';
 
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
@@ -95,6 +96,32 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     return { start, finished };
   }
 
+  /** `body` with a fresh nonce and the device's (and, for key changes, AK's) proof over it. */
+  async function signed<T extends object>(
+    operation: ProofOperation,
+    body: T,
+    fields: readonly ProofField[],
+    accountKey = false,
+  ) {
+    const nonce = await proofNonce(h, cookieA, operation);
+    return { ...body, ...signOperation(account, operation, nonce, fields, { accountKey }) };
+  }
+  const revokeBody = (deviceId: string, reason: 'retired' | 'lost') =>
+    signed('device_revoke', { reason }, [uuidToBytes(deviceId), { text: reason }]);
+  const passwordFields = (b: {
+    registrationRecord: string;
+    kdfProfile: number;
+    saltPw: string;
+    wrappedAkPassword: string;
+    expectedRowVersion: number;
+  }): ProofField[] => [
+    unb64(b.registrationRecord),
+    { u8: b.kdfProfile },
+    unb64(b.saltPw),
+    unb64(b.wrappedAkPassword),
+    { u64: b.expectedRowVersion },
+  ];
+
   /** Makes every session's last OPAQUE authentication older than the 5-minute step-up window. */
   async function ageAuth() {
     await query(h.db.url, `UPDATE sessions SET auth_at = now() - interval '10 minutes'`);
@@ -104,7 +131,7 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     await ageAuth();
     const other = account.crypto.generateUuid();
     expectError(
-      await h.post(`/api/v1/devices/${other}/revoke`, { reason: 'retired' }, cookieA),
+      await h.post(`/api/v1/devices/${other}/revoke`, await revokeBody(other, 'retired'), cookieA),
       'step_up_required',
     );
     expectError(
@@ -136,7 +163,7 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       'login_failed',
     );
     expectError(
-      await h.post(`/api/v1/devices/${other}/revoke`, { reason: 'retired' }, cookieA),
+      await h.post(`/api/v1/devices/${other}/revoke`, await revokeBody(other, 'retired'), cookieA),
       'not_found',
     );
     // A wrong password cannot step up.
@@ -169,11 +196,32 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       )
       .expect(200);
     expectError(
-      await h.post(`/api/v1/devices/${account.deviceId}/revoke`, { reason: 'retired' }, cookieA),
+      await h.post(
+        `/api/v1/devices/${account.deviceId}/revoke`,
+        await revokeBody(account.deviceId, 'retired'),
+        cookieA,
+      ),
       'forbidden',
     );
+    // The proof covers the device and the reason: signed for "retired", sent as "lost", refused.
+    const retired = await revokeBody(deviceId, 'retired');
+    expectError(
+      await h.post(`/api/v1/devices/${deviceId}/revoke`, { ...retired, reason: 'lost' }, cookieA),
+      'device_proof_failed',
+    );
+    // ...and that nonce is burnt.
+    expectError(
+      await h.post(`/api/v1/devices/${deviceId}/revoke`, retired, cookieA),
+      'device_proof_failed',
+    );
     expect(
-      (await h.post(`/api/v1/devices/${deviceId}/revoke`, { reason: 'lost' }, cookieA)).status,
+      (
+        await h.post(
+          `/api/v1/devices/${deviceId}/revoke`,
+          await revokeBody(deviceId, 'lost'),
+          cookieA,
+        )
+      ).status,
     ).toBe(204);
     for (const cookie of cookies)
       expectError(await h.get('/api/v1/devices/current', cookie), 'device_revoked');
@@ -278,15 +326,34 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       ),
       expectedRowVersion: keys.rowVersion,
     };
+    const stale = { ...body, expectedRowVersion: keys.rowVersion + 1 };
     expectError(
       await h.post(
         '/api/v1/account/password/finish',
-        { ...body, expectedRowVersion: keys.rowVersion + 1 },
+        await signed('password_change', stale, passwordFields(stale), true),
         cookieA,
       ),
       'row_version_conflict',
     );
-    expect((await h.post('/api/v1/account/password/finish', body, cookieA)).status).toBe(204);
+    // Without AK's proof, a wrap cannot be replaced (R2): the device proof alone is refused.
+    const deviceOnly = await signed('password_change', body, passwordFields(body), true);
+    expectError(
+      await h.post(
+        '/api/v1/account/password/finish',
+        { ...deviceOnly, proof: { ...deviceOnly.proof, accountKey: deviceOnly.proof.device } },
+        cookieA,
+      ),
+      'device_proof_failed',
+    );
+    expect(
+      (
+        await h.post(
+          '/api/v1/account/password/finish',
+          await signed('password_change', body, passwordFields(body), true),
+          cookieA,
+        )
+      ).status,
+    ).toBe(204);
     await h.get('/api/v1/account', cookieA).expect(200);
     expectError(await h.get('/api/v1/account', otherCookie), 'unauthenticated');
     expect(await login(SYNTHETIC_PASSWORD)).toBeUndefined();
@@ -363,8 +430,20 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       ),
       expectedRowVersion: keys.rowVersion,
     };
+    const skFields = (b: typeof body): ProofField[] => [
+      { u32: b.keysetVersion },
+      unb64(b.keyset),
+      { u8: b.kdfProfile },
+      unb64(b.saltPw),
+      unb64(b.wrappedAkPassword),
+      { u64: b.expectedRowVersion },
+    ];
+    const skSigned = (b: typeof body) => signed('secret_key_rotate', b, skFields(b), true);
     await ageAuth();
-    expectError(await h.post('/api/v1/account/secret-key', body, cookieA), 'step_up_required');
+    expectError(
+      await h.post('/api/v1/account/secret-key', await skSigned(body), cookieA),
+      'step_up_required',
+    );
     const up = await stepUp(cookieA, NEW_PASSWORD);
     await h
       .post(
@@ -376,11 +455,20 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     // The version must be exactly the next one: no rollback and no gap (INV-09).
     for (const v of [keys.keysetVersion, keysetVersion + 1])
       expectError(
-        await h.post('/api/v1/account/secret-key', { ...body, keysetVersion: v }, cookieA),
+        await h.post(
+          '/api/v1/account/secret-key',
+          await skSigned({ ...body, keysetVersion: v }),
+          cookieA,
+        ),
         'invalid_request',
       );
-    expect((await h.post('/api/v1/account/secret-key', body, cookieA)).status).toBe(204);
-    expectError(await h.post('/api/v1/account/secret-key', body, cookieA), 'row_version_conflict');
+    expect((await h.post('/api/v1/account/secret-key', await skSigned(body), cookieA)).status).toBe(
+      204,
+    );
+    expectError(
+      await h.post('/api/v1/account/secret-key', await skSigned(body), cookieA),
+      'row_version_conflict',
+    );
 
     const after = accountKeysResponseSchema.parse(
       (await h.get('/api/v1/account/keys', cookieA)).body,
@@ -455,13 +543,25 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       recoveryVerifier: b64(crypto.recoveryVerifier(derived.recoveryAuthKey)),
       expectedRowVersion: keys.rowVersion,
     };
-    const put = (payload: unknown) =>
-      h
+    const put = async (payload: typeof body) => {
+      const signedBody = await signed(
+        'recovery_key_rotate',
+        payload,
+        [
+          unb64(payload.recoveryKeyId),
+          unb64(payload.wrappedAkRecovery),
+          unb64(payload.recoveryVerifier),
+          { u64: payload.expectedRowVersion },
+        ],
+        true,
+      );
+      return h
         .http()
         .put('/api/v1/account/recovery')
         .set({ Origin: 'http://127.0.0.1:3100', 'X-Ruvee-Request': '1' })
         .set('Cookie', cookieA)
-        .send(payload as object);
+        .send(signedBody);
+    };
     await ageAuth();
     expectError(await put(body), 'step_up_required');
     const up = await stepUp(cookieA, NEW_PASSWORD);

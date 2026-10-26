@@ -1,4 +1,4 @@
-import { uuidToBytes } from '@ruvee/crypto';
+import { uuidToBytes, type DeviceKeyPair } from '@ruvee/crypto';
 import {
   loginStartResponseSchema,
   registerStartResponseSchema,
@@ -7,6 +7,7 @@ import {
 } from '@ruvee/contracts';
 import type request from 'supertest';
 import type { Harness } from './api-harness.js';
+import { signCompletion, signLogin } from './device-proof.js';
 import {
   finishLogin,
   finishRegistration,
@@ -37,7 +38,14 @@ export async function reopenWithPassword(
   h: Harness,
   account: SyntheticAccount,
   reopenCode: string,
-  options: { password?: string; deviceId?: string; username?: string } = {},
+  options: {
+    password?: string;
+    deviceId?: string;
+    username?: string;
+    /** false: the password and code alone, without the device's proof (R12). */
+    prove?: boolean;
+    deviceKey?: DeviceKeyPair;
+  } = {},
 ) {
   const password = options.password ?? SYNTHETIC_PASSWORD;
   const client = startLogin(password);
@@ -51,9 +59,19 @@ export async function reopenWithPassword(
   const parsed = loginStartResponseSchema.parse(start.body);
   const finished = finishLogin(client.clientLoginState, parsed.loginResponse, password);
   if (!finished) return { start, finish: undefined };
+  // The device active in the snapshot proves its restored key (device-proof.md §8, op 10).
   const finish = await h.post('/api/v1/reopen/login/finish', {
     loginId: parsed.loginId,
     finishLoginRequest: finished.finishLoginRequest,
+    ...(options.prove === false
+      ? {}
+      : {
+          deviceProof: signLogin(account, parsed, finished.finishLoginRequest, {
+            operation: 'reopen_login',
+            deviceId: options.deviceId ?? account.deviceId,
+            ...(options.deviceKey ? { deviceKey: options.deviceKey } : {}),
+          }),
+        }),
   });
   return { start, finish };
 }
@@ -145,8 +163,19 @@ export async function reopenCompleteBody(
   material: ReopenMaterialResponse,
   unwrapped: { accountKey: Uint8Array; secretKey: Uint8Array },
   newPassword: string,
-  options: { keepKit?: boolean } = {},
+  options: {
+    keepKit?: boolean;
+    /**
+     * The device key the completion proves: the restored one (password path, the default) or
+     * the new device's on the Recovery Kit path, which must be given.
+     */
+    device?: { key: DeviceKeyPair; id: string };
+    /** Sign a different `expectedRowVersion` (a stale one) instead of the material's. */
+    rowVersion?: number;
+  } = {},
 ) {
+  if (material.via === 'recovery' && !options.device)
+    throw new Error('the Recovery Kit path enrolls a new device key: pass options.device');
   const { crypto } = account;
   const accountId = uuidToBytes(account.accountId);
   const reg = startRegistration(newPassword);
@@ -174,34 +203,45 @@ export async function reopenCompleteBody(
   const rotatedKeys = crypto.deriveRecoveryKeys(rotated.recoveryKey);
   return {
     newKitText: crypto.formatRecoveryKey(rotated.recoveryKey),
-    body: {
-      registrationRecord: record,
-      kdfProfile: 1,
-      saltPw: b64(saltPw),
-      wrappedAkPassword: b64(
-        crypto.wrapAccountKey({
-          accountUnlockKey: auk,
-          accountKey: unwrapped.accountKey,
-          accountId,
-          accountKeyId: unb64(material.akId),
-          accountKeyEpoch: material.akEpoch,
-          profile: 1,
-          passwordSalt: saltPw,
-        }),
-      ),
-      recoveryKeyId: b64(recoveryKeyId),
-      wrappedAkRecovery: b64(
-        crypto.wrapAccountKeyForRecovery({
-          recoveryWrapKey: rotatedKeys.recoveryWrapKey,
-          recoveryKeyId,
-          accountId,
-          accountKeyId: unb64(material.akId),
-          accountKeyEpoch: material.akEpoch,
-          accountKey: unwrapped.accountKey,
-        }),
-      ),
-      recoveryVerifier: b64(crypto.recoveryVerifier(rotatedKeys.recoveryAuthKey)),
-      expectedRowVersion: material.rowVersion,
-    },
+    body: await signCompletion(
+      h,
+      account,
+      cookie,
+      'reopen_complete',
+      {
+        registrationRecord: record,
+        kdfProfile: 1,
+        saltPw: b64(saltPw),
+        wrappedAkPassword: b64(
+          crypto.wrapAccountKey({
+            accountUnlockKey: auk,
+            accountKey: unwrapped.accountKey,
+            accountId,
+            accountKeyId: unb64(material.akId),
+            accountKeyEpoch: material.akEpoch,
+            profile: 1,
+            passwordSalt: saltPw,
+          }),
+        ),
+        recoveryKeyId: b64(recoveryKeyId),
+        wrappedAkRecovery: b64(
+          crypto.wrapAccountKeyForRecovery({
+            recoveryWrapKey: rotatedKeys.recoveryWrapKey,
+            recoveryKeyId,
+            accountId,
+            accountKeyId: unb64(material.akId),
+            accountKeyEpoch: material.akEpoch,
+            accountKey: unwrapped.accountKey,
+          }),
+        ),
+        recoveryVerifier: b64(crypto.recoveryVerifier(rotatedKeys.recoveryAuthKey)),
+        expectedRowVersion: options.rowVersion ?? material.rowVersion,
+      },
+      {
+        deviceKey: options.device?.key ?? account.deviceKey,
+        deviceId: options.device?.id ?? account.deviceId,
+        accountKey: unwrapped.accountKey,
+      },
+    ),
   };
 }

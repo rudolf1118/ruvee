@@ -2,6 +2,7 @@ import { Controller, Get } from '@nestjs/common';
 import type {
   AccountKeysResponse,
   AccountResponse,
+  CurrentDeviceResponse,
   Device,
   DevicesResponse,
 } from '@ruvee/contracts';
@@ -9,7 +10,7 @@ import { ApiException } from '../common/api-exception.js';
 import { toBase64url } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { Device as DeviceRow } from '../generated/prisma/client.js';
-import { Access, CurrentSession } from '../sessions/access.decorator.js';
+import { Access, AllowBeforeProof, CurrentSession } from '../sessions/access.decorator.js';
 import type { AuthenticatedSession } from '../sessions/session.service.js';
 
 const iso = (date: Date) => date.toISOString();
@@ -67,9 +68,14 @@ export class AccountController {
     };
   }
 
-  /** The password wrap and keyset for unlocking; the recovery wrap is never returned here. */
+  /**
+   * The password wrap and keyset for unlocking; the recovery wrap is never returned here. On the
+   * pre-proof allowlist (device-proof.md §5): a device whose local wrap no longer opens needs
+   * the server's wrap, opened with its own SK, before it can prove its key.
+   */
   @Get('account/keys')
   @Access('active')
+  @AllowBeforeProof()
   async keys(@CurrentSession() session: AuthenticatedSession): Promise<AccountKeysResponse> {
     const keys = await this.prisma.accountKeys.findUnique({
       where: { accountId: session.accountId },
@@ -90,9 +96,16 @@ export class AccountController {
   /** The calling device; a pending device polls this while it waits to be enrolled. */
   @Get('devices/current')
   @Access('session')
-  async currentDevice(@CurrentSession() session: AuthenticatedSession): Promise<Device> {
+  @AllowBeforeProof()
+  async currentDevice(
+    @CurrentSession() session: AuthenticatedSession,
+  ): Promise<CurrentDeviceResponse> {
     const device = await this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } });
-    return toDevice(device);
+    return {
+      ...toDevice(device),
+      sessionProven: session.proven,
+      hasDeviceKey: device.publicKey !== null,
+    };
   }
 
   @Get('devices')

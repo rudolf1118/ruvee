@@ -44,6 +44,7 @@ import {
   reopenWithPassword,
   unwrapReopenMaterial,
 } from './support/reopen-client.js';
+import { proofNonce, signLogin } from './support/device-proof.js';
 import { createTempDatabase, migrate, query, type TempDatabase } from './support/temp-database.js';
 
 /**
@@ -120,9 +121,13 @@ describe('server restore into a maintenance-mode installation (real database, re
     const parsed = loginStartResponseSchema.parse(start.body);
     const finished = finishLogin(client.clientLoginState, parsed.loginResponse, password);
     if (!finished) throw new Error('login rejected');
+    // The owner's enrolled device signs the challenge with its key (device-proof.md §5).
     return h.post('/api/v1/auth/login/finish', {
       loginId: parsed.loginId,
       finishLoginRequest: finished.finishLoginRequest,
+      ...(deviceId === account.deviceId
+        ? { deviceProof: signLogin(account, parsed, finished.finishLoginRequest) }
+        : {}),
     });
   }
 
@@ -184,6 +189,8 @@ describe('server restore into a maintenance-mode installation (real database, re
     };
     pairingId = randomBytes(16).toString('base64url');
     await source.post('/api/v1/pairings', { pairingId }, owner).expect(201);
+    // An open proof nonce at snapshot time (device-proof.md §10): it must not survive a restore.
+    await proofNonce(source, owner, 'device_revoke');
 
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-restore-it-'));
     key = await testBackupKey();
@@ -204,6 +211,17 @@ describe('server restore into a maintenance-mode installation (real database, re
     expect(result.provenance).toBe('trusted-digest');
     expect(result.removed.pairings).toBe(1);
     expect(result.removed.sessions).toBeGreaterThanOrEqual(4);
+    const [nonces] = await query<{ n: string }>(
+      target.url,
+      'SELECT count(*) AS n FROM proof_nonces',
+    );
+    expect(nonces?.n).toBe('0');
+    // Restored sessions are ended, proven or not: none can act after the reopening.
+    const [live] = await query<{ n: string }>(
+      target.url,
+      'SELECT count(*) AS n FROM sessions WHERE revoked_at IS NULL',
+    );
+    expect(live?.n).toBe('0');
 
     vi.resetModules();
     restored = await startHarness({ database: target });

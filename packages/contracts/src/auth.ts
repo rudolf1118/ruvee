@@ -61,6 +61,35 @@ export const deviceStatusSchema = z.enum(['pending', 'active', 'revoked']);
 /** A `DEVICE_LABEL` envelope (61 to 189 bytes). */
 export const deviceLabelSchema = base64urlBytes({ min: 61, max: 189 });
 
+/**
+ * Device proof of possession (docs/security/device-proof.md, D-31 A). Ed25519 public keys and
+ * signatures, and the single-use 32-byte server nonces they sign.
+ */
+export const devicePublicKeySchema = base64urlBytes({ length: 32 });
+export const signatureSchema = base64urlBytes({ length: 64 });
+export const proofNonceSchema = base64urlBytes({ length: 32 });
+/** A `DSK` signature over the operation's `DSI`. */
+export const deviceProofSchema = z.strictObject({ device: signatureSchema });
+/** A `DSK` signature and an `AVSK` signature over the same operation, for key replacement. */
+export const keyProofSchema = z.strictObject({
+  device: signatureSchema,
+  accountKey: signatureSchema,
+});
+/** Operations a server nonce can be issued for (device-proof.md §6). */
+export const proofNonceOperationSchema = z.enum([
+  'session_proof',
+  'password_change',
+  'secret_key_rotate',
+  'recovery_key_rotate',
+  'device_revoke',
+  'pairing_approve',
+  'recovery_complete',
+  'reopen_complete',
+]);
+export type ProofNonceOperation = z.infer<typeof proofNonceOperationSchema>;
+export const proofNonceRequestSchema = z.strictObject({ operation: proofNonceOperationSchema });
+export type ProofNonceRequest = z.infer<typeof proofNonceRequestSchema>;
+
 export const BOOTSTRAP_TOKEN_BYTES = 32;
 export const bootstrapTokenSchema = base64urlBytes({ length: BOOTSTRAP_TOKEN_BYTES });
 
@@ -111,6 +140,11 @@ export const registerFinishRequestSchema = z.strictObject({
   }),
   keys: accountKeyMaterialSchema,
   vault: z.strictObject({ id: uuidSchema, vkId: base64urlBytes({ length: 16 }) }),
+  /** `DPK` of this first device and `AVPK` of the account (device-proof.md §8). */
+  devicePublicKey: devicePublicKeySchema,
+  akVerifyKey: devicePublicKeySchema,
+  /** Op 3, bound to the setup token: possession of `DSK` and of `AK`. */
+  proof: keyProofSchema,
 });
 export type RegisterFinishRequest = z.infer<typeof registerFinishRequestSchema>;
 
@@ -128,12 +162,16 @@ export type LoginStartRequest = z.infer<typeof loginStartRequestSchema>;
 export const loginStartResponseSchema = z.strictObject({
   loginId: loginIdSchema,
   loginResponse: base64urlBytes({ length: OPAQUE_BYTES.loginResponse }),
+  /** The nonce an enrolled device signs at finish (device-proof.md §5). */
+  challenge: proofNonceSchema,
 });
 export type LoginStartResponse = z.infer<typeof loginStartResponseSchema>;
 
 export const loginFinishRequestSchema = z.strictObject({
   loginId: loginIdSchema,
   finishLoginRequest: base64urlBytes({ length: OPAQUE_BYTES.finishLoginRequest }),
+  /** An enrolled device's `DSK` signature (op 1, or 10 when reopening); absent otherwise. */
+  deviceProof: signatureSchema.optional(),
 });
 export type LoginFinishRequest = z.infer<typeof loginFinishRequestSchema>;
 
@@ -152,6 +190,11 @@ export type TokenPair = z.infer<typeof tokenPairSchema>;
 export const sessionResponseSchema = z.strictObject({
   accountId: uuidSchema,
   device: z.strictObject({ id: uuidSchema, status: deviceStatusSchema }),
+  /**
+   * Whether this session proved the device's key. An active device's unproven session is a
+   * pre-proof session (device-proof.md §5) until `POST /auth/session-proof`.
+   */
+  proven: z.boolean(),
   /** Present only for token platforms; the web gets a cookie instead. */
   tokens: tokenPairSchema.optional(),
 });
@@ -204,6 +247,29 @@ export const deviceSchema = z.strictObject({
 });
 export type Device = z.infer<typeof deviceSchema>;
 
+/** `GET /devices/current`: the device, and what this session has proved (device-proof.md §5). */
+export const currentDeviceResponseSchema = deviceSchema.extend({
+  sessionProven: z.boolean(),
+  hasDeviceKey: z.boolean(),
+});
+export type CurrentDeviceResponse = z.infer<typeof currentDeviceResponseSchema>;
+
+const nonceTimestamp = z.iso.datetime({ offset: false });
+export const proofNonceResponseSchema = z.strictObject({
+  nonce: proofNonceSchema,
+  /** `session_ref`, the binding of every proof made with this session (§4). */
+  sessionRef: base64urlBytes({ length: 32 }),
+  expiresAt: nonceTimestamp,
+});
+export type ProofNonceResponse = z.infer<typeof proofNonceResponseSchema>;
+
+/** `POST /auth/session-proof`: a pre-proof session proves the device key (op 2). */
+export const sessionProofRequestSchema = z.strictObject({
+  nonce: proofNonceSchema,
+  proof: deviceProofSchema,
+});
+export type SessionProofRequest = z.infer<typeof sessionProofRequestSchema>;
+
 export const devicesResponseSchema = z.strictObject({ devices: z.array(deviceSchema).max(1000) });
 export type DevicesResponse = z.infer<typeof devicesResponseSchema>;
 
@@ -240,7 +306,11 @@ export const sessionsResponseSchema = z.strictObject({
 export type SessionsResponse = z.infer<typeof sessionsResponseSchema>;
 
 /** device-enrollment §6 step 3: retired, or lost or possibly compromised. */
-export const revokeDeviceRequestSchema = z.strictObject({ reason: z.enum(['retired', 'lost']) });
+export const revokeDeviceRequestSchema = z.strictObject({
+  reason: z.enum(['retired', 'lost']),
+  nonce: proofNonceSchema,
+  proof: deviceProofSchema,
+});
 export type RevokeDeviceRequest = z.infer<typeof revokeDeviceRequestSchema>;
 
 /** authentication.md §9: the new OPAQUE record and password wrap replace the old ones at once. */
@@ -250,6 +320,8 @@ export const passwordChangeFinishRequestSchema = z.strictObject({
   saltPw: base64urlBytes({ length: 16 }),
   wrappedAkPassword: base64urlBytes({ length: 93 }),
   expectedRowVersion: z.int().min(1),
+  nonce: proofNonceSchema,
+  proof: keyProofSchema,
 });
 export type PasswordChangeFinishRequest = z.infer<typeof passwordChangeFinishRequestSchema>;
 
@@ -264,6 +336,8 @@ export const secretKeyRotateRequestSchema = z.strictObject({
   saltPw: base64urlBytes({ length: 16 }),
   wrappedAkPassword: base64urlBytes({ length: 93 }),
   expectedRowVersion: z.int().min(1),
+  nonce: proofNonceSchema,
+  proof: keyProofSchema,
 });
 export type SecretKeyRotateRequest = z.infer<typeof secretKeyRotateRequestSchema>;
 
@@ -273,6 +347,8 @@ export const recoveryKeyRotateRequestSchema = z.strictObject({
   wrappedAkRecovery: base64urlBytes({ length: 93 }),
   recoveryVerifier: base64urlBytes({ length: 32 }),
   expectedRowVersion: z.int().min(1),
+  nonce: proofNonceSchema,
+  proof: keyProofSchema,
 });
 export type RecoveryKeyRotateRequest = z.infer<typeof recoveryKeyRotateRequestSchema>;
 
@@ -302,6 +378,7 @@ export const SECURITY_EVENT_TYPES = [
   'reopen_started',
   'reopen_failed',
   'restore_reopened',
+  'device_proof_failed',
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
 

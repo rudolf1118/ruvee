@@ -2,12 +2,15 @@ import { Body, Controller, Get, HttpCode, Post, Req, Res } from '@nestjs/common'
 import { ConfigService } from '@nestjs/config';
 import {
   loginFinishRequestSchema,
+  proofNonceRequestSchema,
   recoveryCompleteRequestSchema,
   recoveryPasswordStartRequestSchema,
   reopenLoginStartRequestSchema,
   reopenRecoveryStartRequestSchema,
   type LoginFinishRequest,
   type LoginStartResponse,
+  type ProofNonceRequest,
+  type ProofNonceResponse,
   type RecoveryCompleteRequest,
   type RecoveryPasswordStartRequest,
   type RegisterStartResponse,
@@ -90,6 +93,16 @@ export class ReopenController {
     );
     this.sessions.setReopenCookie(res, token, absoluteExpiresAt);
     return response;
+  }
+
+  @Post('proof-nonce')
+  @HttpCode(200)
+  @Access('reopen')
+  proofNonce(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(proofNonceRequestSchema)) body: ProofNonceRequest,
+  ): Promise<ProofNonceResponse> {
+    return this.reopen.proofNonce(session, body.operation);
   }
 
   @Get('material')

@@ -5,7 +5,12 @@ import { CSRF_HEADER, CSRF_HEADER_VALUE } from '@ruvee/contracts';
 import { ThrottleService } from '../auth/throttle.service.js';
 import { ApiException } from '../common/api-exception.js';
 import type { Env } from '../config/env.js';
-import { ACCESS_METADATA, type AccessLevel, type RequestWithSession } from './access.decorator.js';
+import {
+  ACCESS_METADATA,
+  BEFORE_PROOF_METADATA,
+  type AccessLevel,
+  type RequestWithSession,
+} from './access.decorator.js';
 import { readCookie } from './client-info.js';
 import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { ROUTE_CLASS_METADATA, type RouteClass } from './route-class.js';
@@ -145,6 +150,15 @@ export class AccessGuard implements CanActivate {
         ? await this.sessions.authenticate(readCookie(req, this.sessions.cookieName))
         : await this.sessions.authenticate(bearer, new Date(), 'token'),
     );
+    // device-proof.md §5 and §7: an active device acts as itself only after proving its key.
+    // The password alone reaches the five allowlisted handlers and nothing else (R2).
+    if (session.deviceStatus === 'active' && !session.proven) {
+      const allowed = this.reflector.getAllAndOverride<boolean | undefined>(BEFORE_PROOF_METADATA, [
+        context.getHandler(),
+        context.getClass(),
+      ]);
+      if (allowed !== true) throw new ApiException('device_proof_required');
+    }
     if (level !== 'session' && session.deviceStatus !== 'active')
       throw new ApiException('device_not_enrolled');
     if (level === 'step-up' && Date.now() - session.authAt.getTime() > STEP_UP_MS)

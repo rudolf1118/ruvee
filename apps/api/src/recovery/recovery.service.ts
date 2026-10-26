@@ -2,6 +2,7 @@ import { timingSafeEqual } from 'node:crypto';
 import { Injectable } from '@nestjs/common';
 import {
   OPAQUE_CONFIG_ID,
+  type ProofNonceOperation,
   type RecoveryCompleteRequest,
   type RecoveryMaterialResponse,
   type RecoveryStartRequest,
@@ -15,6 +16,8 @@ import { ApiException } from '../common/api-exception.js';
 import { envelopeHeaderOk, fromBase64url, sha256, toBase64url } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
+import { proveCompletion } from '../sessions/completion-proof.js';
+import { ProofService } from '../sessions/proof.service.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 
 /** Compared against when the username is unknown, so both paths do the same work. */
@@ -33,6 +36,7 @@ export class RecoveryService {
     private readonly sessions: SessionService,
     private readonly throttle: ThrottleService,
     private readonly events: SecurityEventsService,
+    private readonly proofs: ProofService,
   ) {}
 
   async start(
@@ -105,6 +109,12 @@ export class RecoveryService {
     };
   }
 
+  /** A nonce for `recovery_complete`, bound to this recovery session (device-proof.md §6). */
+  proofNonce(session: AuthenticatedSession, operation: ProofNonceOperation) {
+    if (operation !== 'recovery_complete') throw new ApiException('forbidden');
+    return this.proofs.issue(session, operation);
+  }
+
   async passwordStart(session: AuthenticatedSession, registrationRequest: string): Promise<string> {
     const account = await this.prisma.account.findUniqueOrThrow({
       where: { id: session.accountId },
@@ -143,8 +153,18 @@ export class RecoveryService {
       Buffer.compare(recoveryKeyId, keys.recoveryKeyId) === 0
     )
       throw new ApiException('invalid_request');
+    // device-proof.md §8: the recovering device's new key proves itself, and AK is proved.
+    const proof = await proveCompletion(
+      this.proofs,
+      'recovery_complete',
+      session,
+      body,
+      keys,
+      fromBase64url(body.devicePublicKey),
+    );
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'recovery_complete', proof.nonce);
       const updated = await tx.accountKeys.updateMany({
         where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
         data: {
@@ -154,6 +174,7 @@ export class RecoveryService {
           recoveryKeyId,
           wrappedAkRecovery,
           recoveryVerifier: fromBase64url(body.recoveryVerifier),
+          akVerifyKey: proof.akVerifyKey,
           rowVersion: { increment: 1 },
           updatedAt: now,
         },
@@ -178,10 +199,17 @@ export class RecoveryService {
           enrolledVia: 'recovery',
           enrolledAt: now,
           lastSeenAt: now,
+          publicKey: proof.devicePublicKey,
           ...(label === null ? {} : { label }),
         },
       });
-      const created = await this.sessions.create(session.accountId, session.deviceId, tx, now);
+      const created = await this.sessions.create(
+        session.accountId,
+        session.deviceId,
+        tx,
+        now,
+        true,
+      );
       const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
       await this.events.record('recovery_completed', context, tx);
       await this.events.record('recovery_key_rotated', context, tx);
@@ -194,6 +222,7 @@ export class RecoveryService {
     return {
       accountId: session.accountId,
       device: { id: session.deviceId, status: 'active' },
+      proven: true,
       ...result,
     };
   }

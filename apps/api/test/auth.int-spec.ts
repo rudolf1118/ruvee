@@ -1,6 +1,6 @@
 import {
   API_ERRORS,
-  deviceSchema,
+  currentDeviceResponseSchema,
   errorResponseSchema,
   loginStartResponseSchema,
   registerStartResponseSchema,
@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import type request from 'supertest';
 import { ThrottleService } from '../src/auth/throttle.service.js';
+import { signLogin } from './support/device-proof.js';
 import { query } from './support/temp-database.js';
 import { sessionCookie, startHarness, WRITE_HEADERS, type Harness } from './support/api-harness.js';
 import {
@@ -68,9 +69,15 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
       password,
     );
     if (!finished) throw new Error('client rejected the login');
+    // The enrolled device signs the challenge with its key (device-proof.md §5).
+    const proof =
+      deviceId === account.deviceId
+        ? { deviceProof: signLogin(account, loginStart(start), finished.finishLoginRequest) }
+        : {};
     return h.post('/api/v1/auth/login/finish', {
       loginId: loginStart(start).loginId,
       finishLoginRequest: finished.finishLoginRequest,
+      ...proof,
     });
   }
 
@@ -105,6 +112,7 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
     expect(sessionResponseSchema.parse(res.body)).toEqual({
       accountId: account.accountId,
       device: { id: account.deviceId, status: 'active' },
+      proven: true,
     });
     const setCookie = (res.headers['set-cookie'] as unknown as string[])[0] ?? '';
     // INV-13: __Host- prefix, HttpOnly, Secure, SameSite=Strict, Path=/, no Domain.
@@ -153,13 +161,18 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
     const enrolled = await login(account.username, SYNTHETIC_PASSWORD, account.deviceId);
     expect(enrolled.status, enrolled.text).toBe(200);
     expect(session(enrolled).device).toEqual({ id: account.deviceId, status: 'active' });
+    expect(session(enrolled).proven).toBe(true);
 
     const fresh = await login(account.username);
     expect(fresh.status).toBe(200);
     expect(session(fresh).device.status).toBe('pending');
     const pendingCookie = sessionCookie(fresh);
     const current = await h.get('/api/v1/devices/current', pendingCookie).expect(200);
-    expect(deviceSchema.parse(current.body).status).toBe('pending');
+    expect(currentDeviceResponseSchema.parse(current.body)).toMatchObject({
+      status: 'pending',
+      sessionProven: false,
+      hasDeviceKey: false,
+    });
     // A pending device reaches no encrypted data (device-enrollment §1).
     expectError(await h.get('/api/v1/account/keys', pendingCookie), 'device_not_enrolled');
     expectError(await h.get('/api/v1/sync/changes?since=0', pendingCookie), 'device_not_enrolled');
@@ -371,7 +384,15 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
     );
     for (const { details: d } of details)
       for (const key of Object.keys(d))
-        expect(['newDevice', 'sessionId', 'reason', 'enrolledDeviceId', 'via']).toContain(key);
+        expect([
+          'newDevice',
+          'proven',
+          'sessionId',
+          'reason',
+          'enrolledDeviceId',
+          'via',
+          'operation',
+        ]).toContain(key);
   });
 
   it('never stores, logs or returns the OPAQUE server setup (INV-21)', async () => {

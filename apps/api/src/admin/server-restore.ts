@@ -518,6 +518,8 @@ async function restoreVerified(
         `UPDATE sessions SET revoked_at = now(), revoke_reason = 'restored' WHERE revoked_at IS NULL`,
       );
       const pairings = await c.query('DELETE FROM pairings');
+      // Proof nonces are never trusted after a restore (device-proof.md §10).
+      await c.query('DELETE FROM proof_nonces');
       const setupTokens = await c.query('DELETE FROM bootstrap_tokens WHERE used_at IS NULL');
       const account = await c.query<{ id: string }>('SELECT id FROM accounts LIMIT 1');
       await c.query(

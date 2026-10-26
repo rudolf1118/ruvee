@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import {
   OPAQUE_CONFIG_ID,
   type PasswordChangeFinishRequest,
+  type RevokeDeviceRequest,
   type RecoveryKeyRotateRequest,
   type SecretKeyRotateRequest,
   type SecurityEventsResponse,
@@ -16,7 +17,10 @@ import {
   allowedDetails,
   SecurityEventsService,
 } from '../security-events/security-events.service.js';
+import { uuidToBytes, type ProofField, type ProofOperation } from '@ruvee/crypto';
+import { ProofService } from '../sessions/proof.service.js';
 import type { AuthenticatedSession } from '../sessions/session.service.js';
+import type { Bytes } from '../common/secrets.js';
 
 /** Sessions, device revocation (device-enrollment §6) and password change (authentication §9). */
 @Injectable()
@@ -25,7 +29,52 @@ export class AccountSecurityService {
     private readonly prisma: PrismaService,
     private readonly opaque: OpaqueServerService,
     private readonly events: SecurityEventsService,
+    private readonly proofs: ProofService,
   ) {}
+
+  /**
+   * device-proof.md §7, tiers 3: the device's own `DSK` proof, and for key replacement an `AVSK`
+   * proof, over this operation's exact payload and a nonce of this session. Checked before
+   * anything changes; the caller consumes the returned nonce inside its transaction.
+   */
+  private async prove(
+    session: AuthenticatedSession,
+    operation: ProofOperation,
+    body: { nonce: string; proof: { device: string; accountKey?: string } },
+    fields: readonly ProofField[],
+  ): Promise<Bytes> {
+    const [device, keys] = await Promise.all([
+      this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } }),
+      this.prisma.accountKeys.findUniqueOrThrow({ where: { accountId: session.accountId } }),
+    ]);
+    const nonce = fromBase64url(body.nonce);
+    const wantsAccountKey = body.proof.accountKey !== undefined;
+    if (!device.publicKey || (wantsAccountKey && !keys.akVerifyKey))
+      throw new ApiException('device_proof_failed');
+    await this.proofs.verifyBound(
+      {
+        operation,
+        accountId: session.accountId,
+        deviceId: session.deviceId,
+        binding: this.proofs.sessionRef(session.sessionId),
+        nonce,
+        payload: this.proofs.payload(operation, fields),
+        device: { publicKey: device.publicKey, signature: fromBase64url(body.proof.device) },
+        ...(wantsAccountKey && keys.akVerifyKey
+          ? {
+              accountKey: {
+                akId: keys.akId,
+                akEpoch: keys.akEpoch,
+                publicKey: keys.akVerifyKey,
+                signature: fromBase64url(body.proof.accountKey ?? ''),
+              },
+            }
+          : {}),
+      },
+      session.sessionId,
+    );
+    return nonce;
+  }
 
   async sessions(session: AuthenticatedSession): Promise<SessionsResponse> {
     const now = new Date();
@@ -80,12 +129,18 @@ export class AccountSecurityService {
   async revokeDevice(
     session: AuthenticatedSession,
     deviceId: string,
-    reason: 'retired' | 'lost',
+    body: RevokeDeviceRequest,
     client: ClientContext,
   ): Promise<void> {
     if (deviceId === session.deviceId) throw new ApiException('forbidden');
+    const reason = body.reason;
+    const nonce = await this.prove(session, 'device_revoke', body, [
+      uuidToBytes(deviceId),
+      { text: reason },
+    ]);
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'device_revoke', nonce);
       const updated = await tx.device.updateMany({
         where: { id: deviceId, accountId: session.accountId, status: { not: 'revoked' } },
         data: { status: 'revoked', revokedAt: now },
@@ -140,8 +195,16 @@ export class AccountSecurityService {
     const wrappedAkPassword = fromBase64url(body.wrappedAkPassword);
     if (!envelopeHeaderOk(wrappedAkPassword, 0x01, { min: 93, max: 93 }, keys.akId))
       throw new ApiException('invalid_request');
+    const nonce = await this.prove(session, 'password_change', body, [
+      fromBase64url(body.registrationRecord),
+      { u8: body.kdfProfile },
+      fromBase64url(body.saltPw),
+      wrappedAkPassword,
+      { u64: body.expectedRowVersion },
+    ]);
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'password_change', nonce);
       const updated = await tx.accountKeys.updateMany({
         where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
         data: {
@@ -196,7 +259,16 @@ export class AccountSecurityService {
       BigInt(body.keysetVersion) !== keys.keysetVersion + 1n
     )
       throw new ApiException('invalid_request');
+    const nonce = await this.prove(session, 'secret_key_rotate', body, [
+      { u32: body.keysetVersion },
+      keyset,
+      { u8: body.kdfProfile },
+      fromBase64url(body.saltPw),
+      wrappedAkPassword,
+      { u64: body.expectedRowVersion },
+    ]);
     await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'secret_key_rotate', nonce);
       const updated = await tx.accountKeys.updateMany({
         where: {
           accountId: session.accountId,
@@ -244,14 +316,22 @@ export class AccountSecurityService {
       Buffer.compare(recoveryKeyId, keys.recoveryKeyId) === 0
     )
       throw new ApiException('invalid_request');
+    const recoveryVerifier = fromBase64url(body.recoveryVerifier);
+    const nonce = await this.prove(session, 'recovery_key_rotate', body, [
+      recoveryKeyId,
+      wrappedAkRecovery,
+      recoveryVerifier,
+      { u64: body.expectedRowVersion },
+    ]);
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'recovery_key_rotate', nonce);
       const updated = await tx.accountKeys.updateMany({
         where: { accountId: session.accountId, rowVersion: keys.rowVersion },
         data: {
           recoveryKeyId,
           wrappedAkRecovery,
-          recoveryVerifier: fromBase64url(body.recoveryVerifier),
+          recoveryVerifier,
           rowVersion: { increment: 1 },
           updatedAt: now,
         },

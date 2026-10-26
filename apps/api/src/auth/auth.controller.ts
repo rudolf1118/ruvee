@@ -3,6 +3,8 @@ import { ConfigService } from '@nestjs/config';
 import {
   loginFinishRequestSchema,
   loginStartRequestSchema,
+  proofNonceRequestSchema,
+  sessionProofRequestSchema,
   reauthStartRequestSchema,
   refreshRequestSchema,
   registerFinishRequestSchema,
@@ -10,6 +12,9 @@ import {
   type LoginFinishRequest,
   type LoginStartRequest,
   type LoginStartResponse,
+  type ProofNonceRequest,
+  type ProofNonceResponse,
+  type SessionProofRequest,
   type ReauthFinishResponse,
   type ReauthStartRequest,
   type RefreshRequest,
@@ -22,7 +27,7 @@ import {
 import type { Request, Response } from 'express';
 import { ContractValidationPipe } from '../common/contract-validation.pipe.js';
 import type { Env } from '../config/env.js';
-import { Access, CurrentSession } from '../sessions/access.decorator.js';
+import { Access, AllowBeforeProof, CurrentSession } from '../sessions/access.decorator.js';
 import { clientIp, userAgent } from '../sessions/client-info.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { AuthService, type ClientContext } from './auth.service.js';
@@ -123,9 +128,35 @@ export class AuthController {
     return this.auth.reauthFinish(session, body, this.client(req));
   }
 
+  /** device-proof.md §6: a single-use nonce for one operation of this session. */
+  @Post('proof-nonce')
+  @HttpCode(200)
+  @Access('session')
+  @AllowBeforeProof()
+  proofNonce(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(proofNonceRequestSchema)) body: ProofNonceRequest,
+  ): Promise<ProofNonceResponse> {
+    return this.auth.proofNonce(session, body.operation);
+  }
+
+  /** device-proof.md §5: a pre-proof session proves the device key. */
+  @Post('session-proof')
+  @HttpCode(204)
+  @Access('session')
+  @AllowBeforeProof()
+  sessionProof(
+    @CurrentSession() session: AuthenticatedSession,
+    @Body(new ContractValidationPipe(sessionProofRequestSchema)) body: SessionProofRequest,
+    @Req() req: Request,
+  ): Promise<void> {
+    return this.auth.sessionProof(session, body, this.client(req));
+  }
+
   @Post('logout')
   @HttpCode(204)
   @Access('session')
+  @AllowBeforeProof()
   async logout(
     @CurrentSession() session: AuthenticatedSession,
     @Req() req: Request,

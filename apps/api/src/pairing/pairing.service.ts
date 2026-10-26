@@ -12,6 +12,8 @@ import { envelopeHeaderOk, fromBase64url, sha256, toBase64url } from '../common/
 import { PrismaService } from '../database/prisma.service.js';
 import type { Pairing } from '../generated/prisma/client.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
+import { uuidToBytes } from '@ruvee/crypto';
+import { ProofService } from '../sessions/proof.service.js';
 import type { AuthenticatedSession } from '../sessions/session.service.js';
 import type { ClientContext } from '../auth/auth.service.js';
 
@@ -27,6 +29,7 @@ export class PairingService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly events: SecurityEventsService,
+    private readonly proofs: ProofService,
   ) {}
 
   private async live(pairingIdText: string, accountId: string): Promise<Pairing> {
@@ -104,6 +107,7 @@ export class PairingService {
       row.requesterDeviceId &&
       row.requestPlatform &&
       row.requestEpk &&
+      row.requestDevicePublicKey &&
       row.requestMac &&
       row.requestedAt
     )
@@ -113,6 +117,7 @@ export class PairingService {
           requesterDeviceId: row.requesterDeviceId,
           platform: row.requestPlatform,
           epk: toBase64url(row.requestEpk),
+          devicePublicKey: toBase64url(row.requestDevicePublicKey),
           mac: toBase64url(row.requestMac),
           requestedAt: row.requestedAt.toISOString(),
         },
@@ -152,6 +157,8 @@ export class PairingService {
         requesterDeviceId: session.deviceId,
         requestPlatform: body.platform,
         requestEpk: fromBase64url(body.epk),
+        // B's DPK, covered by `req_mac`, which only A can check (device-proof.md §8).
+        requestDevicePublicKey: fromBase64url(body.devicePublicKey),
         requestMac: fromBase64url(body.mac),
         requestedAt: new Date(),
       },
@@ -165,7 +172,11 @@ export class PairingService {
     });
   }
 
-  /** Device A, after verifying `req_mac`: stores the sealed reply and enrolls B. */
+  /**
+   * Device A, after verifying `req_mac`: stores the sealed reply and enrolls B with the device key
+   * of B's request. A's own `DSK` proof (op 8) covers B's id and key, the reply and the label, so
+   * the server enrolls exactly the key A verified and approved.
+   */
   async approve(
     session: AuthenticatedSession,
     pairingIdText: string,
@@ -178,15 +189,44 @@ export class PairingService {
     if (label !== null && !envelopeHeaderOk(label, 0x08, { min: 61, max: 189 }))
       throw new ApiException('invalid_request');
     const requester = row.requesterDeviceId;
-    if (row.state !== 'requested' || !requester) throw new ApiException('pairing_state');
+    const requesterKey = row.requestDevicePublicKey;
+    if (row.state !== 'requested' || !requester || !requesterKey)
+      throw new ApiException('pairing_state');
+    const approver = await this.prisma.device.findUniqueOrThrow({
+      where: { id: session.deviceId },
+    });
+    if (!approver.publicKey) throw new ApiException('device_proof_failed');
+    const nonce = fromBase64url(body.nonce);
+    const ciphertext = fromBase64url(body.ciphertext);
+    const mac = fromBase64url(body.mac);
+    await this.proofs.verifyBound(
+      {
+        operation: 'pairing_approve',
+        accountId: session.accountId,
+        deviceId: session.deviceId,
+        binding: this.proofs.sessionRef(session.sessionId),
+        nonce,
+        payload: this.proofs.payload('pairing_approve', [
+          row.pairingId,
+          uuidToBytes(requester),
+          requesterKey,
+          ciphertext,
+          mac,
+          label,
+        ]),
+        device: { publicKey: approver.publicKey, signature: fromBase64url(body.proof.device) },
+      },
+      session.sessionId,
+    );
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'pairing_approve', nonce);
       const updated = await tx.pairing.updateMany({
         where: { pairingId: row.pairingId, state: 'requested', requesterDeviceId: requester },
         data: {
           state: 'approved',
-          responseCiphertext: fromBase64url(body.ciphertext),
-          responseMac: fromBase64url(body.mac),
+          responseCiphertext: ciphertext,
+          responseMac: mac,
         },
       });
       if (updated.count !== 1) throw new ApiException('pairing_state');
@@ -198,6 +238,7 @@ export class PairingService {
           approvedByDeviceId: session.deviceId,
           enrolledAt: now,
           label,
+          publicKey: requesterKey,
         },
       });
       if (device.count !== 1) throw new ApiException('pairing_state');

@@ -28,6 +28,8 @@ export const REFRESH_IDLE_MS = 30 * 24 * 60 * 60 * 1000;
 export const REFRESH_ABSOLUTE_MS = 90 * 24 * 60 * 60 * 1000;
 /** Step-up window for INV-14 endpoints. */
 export const STEP_UP_MS = 5 * 60 * 1000;
+/** device-proof.md §5: an active device's session that has not proved its key ends this soon. */
+export const PRE_PROOF_MS = 10 * 60 * 1000;
 /** `last_used_at`, `idle_expires_at` and `last_seen_at` are written at most this often. */
 const TOUCH_INTERVAL_MS = 60 * 1000;
 const TOKEN_TEXT = /^[A-Za-z0-9_-]{43}$/;
@@ -38,6 +40,11 @@ export interface AuthenticatedSession {
   readonly deviceId: string;
   readonly deviceStatus: DeviceStatus;
   readonly authAt: Date;
+  /**
+   * The session proved the device's key (device-proof.md §5). An active device's session that
+   * has not is a pre-proof session; pending devices, recovery and reopen sessions have none.
+   */
+  readonly proven: boolean;
   /** Reopen sessions only: which snapshot-time credential opened it (backup-restore.md §3.13). */
   readonly via?: 'password' | 'recovery';
 }
@@ -130,6 +137,7 @@ export class SessionService {
       deviceId: session.deviceId,
       deviceStatus: session.device.status,
       authAt: session.authAt,
+      proven: false,
       via: link.via,
     };
   }
@@ -189,6 +197,7 @@ export class SessionService {
       deviceId: session.deviceId,
       deviceStatus: session.device.status,
       authAt: session.authAt,
+      proven: false,
     };
   }
 
@@ -198,6 +207,7 @@ export class SessionService {
     deviceId: string,
     tx: Prisma.TransactionClient = this.prisma,
     now = new Date(),
+    proven = false,
   ): Promise<{ token: string; absoluteExpiresAt: Date }> {
     const token = randomToken();
     const absoluteExpiresAt = new Date(now.getTime() + SESSION_ABSOLUTE_MS);
@@ -213,6 +223,7 @@ export class SessionService {
         lastUsedAt: now,
         idleExpiresAt: new Date(now.getTime() + SESSION_IDLE_MS),
         absoluteExpiresAt,
+        provenAt: proven ? now : null,
       },
     });
     return { token, absoluteExpiresAt };
@@ -227,6 +238,7 @@ export class SessionService {
     deviceId: string,
     tx: Prisma.TransactionClient = this.prisma,
     now = new Date(),
+    proven = false,
   ): Promise<TokenPair> {
     const accessToken = randomToken();
     const refreshToken = randomToken();
@@ -245,6 +257,7 @@ export class SessionService {
         lastUsedAt: now,
         idleExpiresAt: new Date(now.getTime() + REFRESH_IDLE_MS),
         absoluteExpiresAt: new Date(now.getTime() + REFRESH_ABSOLUTE_MS),
+        provenAt: proven ? now : null,
       },
     });
     await tx.refreshToken.create({
@@ -365,6 +378,15 @@ export class SessionService {
     // A token session's access token expires on its own; the client refreshes it.
     if (kind === 'token' && (session.accessExpiresAt === null || session.accessExpiresAt <= now))
       throw new ApiException('session_expired');
+    // device-proof.md §5: an active device's session that never proved its key is short-lived.
+    // Pending devices have no key to prove and keep their normal session.
+    const proven = session.provenAt !== null;
+    if (
+      !proven &&
+      session.device.status === 'active' &&
+      now.getTime() - session.createdAt.getTime() >= PRE_PROOF_MS
+    )
+      throw new ApiException('session_expired');
 
     if (kind === 'token') {
       if (now.getTime() - session.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS)
@@ -390,6 +412,7 @@ export class SessionService {
       deviceId: session.deviceId,
       deviceStatus: session.device.status,
       authAt: session.authAt,
+      proven,
     };
   }
 

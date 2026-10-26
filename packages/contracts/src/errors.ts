@@ -21,6 +21,15 @@ export const API_ERRORS = {
   step_up_required: { status: 403, message: 'Confirm your password to continue.' },
   device_not_enrolled: { status: 403, message: 'This device is not enrolled yet.' },
   csrf_rejected: { status: 403, message: 'The request origin is not allowed.' },
+  device_proof_required: {
+    status: 403,
+    message: 'This device must prove its key before it can do this.',
+  },
+  device_proof_failed: { status: 401, message: 'The device proof was not valid.' },
+  device_key_mismatch: {
+    status: 409,
+    message: 'The account verification key does not match this account.',
+  },
   not_found: { status: 404, message: 'The requested resource does not exist.' },
   seq_conflict: { status: 409, message: 'The vault has changed; pull and try again.' },
   revision_conflict: { status: 409, message: 'An item has changed on the server.' },

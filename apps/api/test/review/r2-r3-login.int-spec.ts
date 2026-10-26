@@ -1,9 +1,10 @@
 import {
-  accountKeysResponseSchema,
+  API_ERRORS,
+  errorResponseSchema,
   loginStartResponseSchema,
-  registerStartResponseSchema,
   sessionResponseSchema,
 } from '@ruvee/contracts';
+import type request from 'supertest';
 import {
   registerAccount,
   sessionCookie,
@@ -11,29 +12,35 @@ import {
   WRITE_HEADERS,
   type Harness,
 } from '../support/api-harness.js';
+import { loginDevice, proofNonce, signLogin, signOperation } from '../support/device-proof.js';
 import { query } from '../support/temp-database.js';
 import {
   startLogin,
   syntheticAccount,
   type SyntheticAccount,
 } from '../support/synthetic-client.js';
-import { finishLogin, finishRegistration, startRegistration } from '../support/synthetic-client.js';
+import { finishLogin } from '../support/synthetic-client.js';
 
-const ATTACKER_PASSWORD = 'synthetic attacker chosen passphrase 1';
+function expectError(res: request.Response, code: keyof typeof API_ERRORS) {
+  expect(res.status, res.text).toBe(API_ERRORS[code].status);
+  expect(errorResponseSchema.parse(res.body).error).toBe(code);
+}
 
 /**
- * Pre-deployment review, findings R2 and R3 (docs/security/predeployment-review.md). The R2 tests
- * describe the CURRENT behaviour (R2 is open, D-31 proposed) and are expected to fail once it is
- * fixed. The R3 tests below are regressions: the throttle holds under parallel requests.
+ * Pre-deployment review, findings R2 and R3 (docs/security/predeployment-review.md), as
+ * regressions. R2: the password plus a device's public id no longer acts as that device; only a
+ * proof with its own key does (docs/security/device-proof.md, D-31 A). R3: the throttle holds
+ * under parallel requests. Synthetic data only.
  */
-describe('REVIEW R2: login device binding (open)', () => {
+describe('REVIEW R2 (regression): the password alone never acts as an enrolled device', () => {
   let h: Harness;
   let account: SyntheticAccount;
+  let owner: string;
 
   beforeAll(async () => {
     h = await startHarness();
     account = await syntheticAccount('synthetic-review-r2');
-    await registerAccount(h, account);
+    owner = await registerAccount(h, account);
   }, 60_000);
 
   afterAll(async () => {
@@ -43,116 +50,269 @@ describe('REVIEW R2: login device binding (open)', () => {
   beforeEach(async () => {
     const { ThrottleService } = await import('../../src/auth/throttle.service.js');
     h.app.get(ThrottleService).clearIpWindows();
+    await query(h.db.url, 'DELETE FROM auth_throttle');
   });
 
-  it('R2: the password plus a known device id yields an ACTIVE device, with no device secret', async () => {
-    // A fresh client that holds no key: only the password and the (non-secret) device id.
+  /** What R2 did: the password and the public device id, with no key at all. */
+  async function passwordOnly() {
+    const res = await loginDevice(h, account, { prove: false });
+    expect(res.status, res.text).toBe(200);
+    return { body: sessionResponseSchema.parse(res.body), cookie: sessionCookie(res) };
+  }
+
+  it('gives a pre-proof session that reaches only the allowlist, and leaves the device signed in', async () => {
+    const { body, cookie } = await passwordOnly();
+    expect(body.device).toEqual({ id: account.deviceId, status: 'active' });
+    expect(body.proven).toBe(false);
+    // The allowlist (device-proof.md §5): the device record and the encrypted key material.
+    await h.get('/api/v1/account/keys', cookie).expect(200);
+    const current = await h.get('/api/v1/devices/current', cookie).expect(200);
+    expect(current.body).toMatchObject({ sessionProven: false, hasDeviceKey: true });
+    // Everything else is refused, whatever the level.
+    for (const path of ['/api/v1/account', '/api/v1/devices', '/api/v1/sessions', '/api/v1/vault'])
+      expect((await h.get(path, cookie)).body).toMatchObject({ error: 'device_proof_required' });
+    expect((await h.get('/api/v1/sync/changes?since=0', cookie)).body).toMatchObject({
+      error: 'device_proof_required',
+    });
+    // The genuine device was not signed out (R2's "superseded").
+    await h.get('/api/v1/devices', owner).expect(200);
+  });
+
+  it('cannot step up, replace wraps, rotate the kit, revoke devices or commit', async () => {
+    const { cookie } = await passwordOnly();
     const client = startLogin();
-    const start = await h.post('/api/v1/auth/login/start', {
-      username: account.username,
-      startLoginRequest: client.startLoginRequest,
-      platform: 'web',
-      deviceId: account.deviceId,
+    expectError(
+      await h.post(
+        '/api/v1/auth/reauth/start',
+        { startLoginRequest: client.startLoginRequest },
+        cookie,
+      ),
+      'device_proof_required',
+    );
+    const junk = Buffer.alloc(93, 0x41).toString('base64url');
+    const fakeProof = {
+      device: Buffer.alloc(64, 1).toString('base64url'),
+      accountKey: Buffer.alloc(64, 2).toString('base64url'),
+    };
+    const nonce = Buffer.alloc(32, 3).toString('base64url');
+    expectError(
+      await h.post(
+        '/api/v1/account/password/finish',
+        {
+          registrationRecord: Buffer.alloc(192, 1).toString('base64url'),
+          kdfProfile: 1,
+          saltPw: Buffer.alloc(16, 2).toString('base64url'),
+          wrappedAkPassword: junk,
+          expectedRowVersion: 1,
+          nonce,
+          proof: fakeProof,
+        },
+        cookie,
+      ),
+      'device_proof_required',
+    );
+    expectError(await h.post('/api/v1/sync/commits', {}, cookie), 'device_proof_required');
+    expectError(
+      await h.post(
+        `/api/v1/devices/${account.crypto.generateUuid()}/revoke`,
+        { reason: 'lost', nonce, proof: { device: fakeProof.device } },
+        cookie,
+      ),
+      'device_proof_required',
+    );
+    // A pre-proof session gets a nonce only for proving itself.
+    expectError(
+      await h.post('/api/v1/auth/proof-nonce', { operation: 'password_change' }, cookie),
+      'device_proof_required',
+    );
+    // Without DSK it cannot prove itself: any other key fails, and that ends the session.
+    const proofNonceRes = await proofNonce(h, cookie, 'session_proof');
+    const stolen = signOperation(account, 'session_proof', proofNonceRes, [], {
+      deviceKey: account.crypto.generateDeviceKey(),
     });
-    const parsed = loginStartResponseSchema.parse(start.body);
-    const finished = finishLogin(client.clientLoginState, parsed.loginResponse);
-    const res = await h.post('/api/v1/auth/login/finish', {
-      loginId: parsed.loginId,
-      finishLoginRequest: finished?.finishLoginRequest,
-    });
-    expect(sessionResponseSchema.parse(res.body).device).toEqual({
-      id: account.deviceId,
-      status: 'active',
-    });
-    // An active session: the full key material, and step-up is one more OPAQUE run away.
-    const cookie = (res.headers['set-cookie'] as unknown as string[])[0]?.split(';')[0] ?? '';
-    expect((await h.get('/api/v1/account/keys', cookie)).status).toBe(200);
+    expectError(await h.post('/api/v1/auth/session-proof', stolen, cookie), 'device_proof_failed');
+    expectError(await h.get('/api/v1/account/keys', cookie), 'unauthenticated');
+    const [event] = await query<{ n: string }>(
+      h.db.url,
+      `SELECT count(*) AS n FROM security_events WHERE type = 'device_proof_failed'`,
+    );
+    expect(Number(event?.n)).toBeGreaterThanOrEqual(1);
   });
 
-  it('R2: that session can replace the password with a junk wrap, locking the owner out', async () => {
-    // Password only: no SK, no AK. Log in as the known device, step up, change the password.
-    const loginAs = async () => {
+  it('refuses a login proof made with a substituted key, another operation or another login', async () => {
+    const other = account.crypto.generateDeviceKey();
+    expectError(await loginDevice(h, account, { deviceKey: other }), 'device_proof_failed');
+    // A signature from another login's challenge (binding and nonce differ).
+    const client = startLogin();
+    const first = loginStartResponseSchema.parse(
+      (
+        await h.post('/api/v1/auth/login/start', {
+          username: account.username,
+          startLoginRequest: client.startLoginRequest,
+          platform: 'web',
+          deviceId: account.deviceId,
+        })
+      ).body,
+    );
+    const finished = finishLogin(client.clientLoginState, first.loginResponse);
+    const client2 = startLogin();
+    const second = loginStartResponseSchema.parse(
+      (
+        await h.post('/api/v1/auth/login/start', {
+          username: account.username,
+          startLoginRequest: client2.startLoginRequest,
+          platform: 'web',
+          deviceId: account.deviceId,
+        })
+      ).body,
+    );
+    const finished2 = finishLogin(client2.clientLoginState, second.loginResponse);
+    expectError(
+      await h.post('/api/v1/auth/login/finish', {
+        loginId: second.loginId,
+        finishLoginRequest: finished2?.finishLoginRequest,
+        deviceProof: signLogin(account, first, finished?.finishLoginRequest ?? ''),
+      }),
+      'device_proof_failed',
+    );
+    // The reopening operation's signature is not a login's.
+    expectError(
+      await h.post('/api/v1/auth/login/finish', {
+        loginId: first.loginId,
+        finishLoginRequest: finished?.finishLoginRequest,
+        deviceProof: signLogin(account, first, finished?.finishLoginRequest ?? '', {
+          operation: 'reopen_login',
+        }),
+      }),
+      'device_proof_failed',
+    );
+    // The genuine key still works.
+    const ok = await loginDevice(h, account);
+    expect(sessionResponseSchema.parse(ok.body).proven).toBe(true);
+  });
+
+  it('proves a session with the device key; nonces are bound, single-use and expire', async () => {
+    const { cookie } = await passwordOnly();
+    const n1 = await proofNonce(h, cookie, 'session_proof');
+    // Signed for another session (its session_ref), or with another operation: refused.
+    const elsewhere = signOperation(
+      account,
+      'session_proof',
+      { ...n1, sessionRef: Buffer.alloc(32, 9).toString('base64url') },
+      [],
+    );
+    expectError(
+      await h.post('/api/v1/auth/session-proof', elsewhere, cookie),
+      'device_proof_failed',
+    );
+    // That failure ended the pre-proof session; start again.
+    const second = await passwordOnly();
+    const n2 = await proofNonce(h, second.cookie, 'session_proof');
+    // An expired nonce fails safely (and the failure ends the session).
+    await query(h.db.url, `UPDATE proof_nonces SET expires_at = now() - interval '1 second'`);
+    expectError(
+      await h.post(
+        '/api/v1/auth/session-proof',
+        signOperation(account, 'session_proof', n2, []),
+        second.cookie,
+      ),
+      'device_proof_failed',
+    );
+    // Two concurrent proofs with one nonce: exactly one succeeds.
+    const third = await passwordOnly();
+    const n3 = await proofNonce(h, third.cookie, 'session_proof');
+    const proof = signOperation(account, 'session_proof', n3, []);
+    const results = await Promise.all([
+      h.post('/api/v1/auth/session-proof', proof, third.cookie),
+      h.post('/api/v1/auth/session-proof', proof, third.cookie),
+    ]);
+    // Exactly one succeeds; the other is refused (the nonce is gone, or the session is proven).
+    const statuses = results.map((r) => r.status).sort();
+    expect(statuses[0]).toBe(204);
+    expect([401, 403]).toContain(statuses[1]);
+    // The proven session acts as the device, and the device's other sessions ended.
+    await h.get('/api/v1/devices', third.cookie).expect(200);
+    expectError(await h.get('/api/v1/devices', owner), 'unauthenticated');
+    owner = third.cookie;
+  });
+
+  it('lets an unproven session lapse after 10 minutes', async () => {
+    const { cookie } = await passwordOnly();
+    await query(
+      h.db.url,
+      `UPDATE sessions SET created_at = now() - interval '11 minutes' WHERE proven_at IS NULL AND revoked_at IS NULL`,
+    );
+    expectError(await h.get('/api/v1/devices/current', cookie), 'session_expired');
+  });
+
+  it('keeps proof status across token refreshes, proven or not', async () => {
+    const EXTENSION_HEADERS = {
+      Origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop',
+      'X-Ruvee-Request': '1',
+    };
+    // An enrolled extension device with its own key (as pairing would have enrolled it).
+    const extKey = account.crypto.generateDeviceKey();
+    const extId = account.crypto.generateUuid();
+    await query(
+      h.db.url,
+      `INSERT INTO devices (id, account_id, platform, status, enrolled_via, public_key, created_at, enrolled_at)
+       VALUES ($1, $2, 'extension', 'active', 'pairing', $3, now(), now())`,
+      [extId, account.accountId, Buffer.from(extKey.publicKey)],
+    );
+    const tokenLogin = async (prove: boolean) => {
       const client = startLogin();
       const start = loginStartResponseSchema.parse(
         (
-          await h.post('/api/v1/auth/login/start', {
+          await h.http().post('/api/v1/auth/login/start').set(EXTENSION_HEADERS).send({
             username: account.username,
             startLoginRequest: client.startLoginRequest,
-            platform: 'web',
-            deviceId: account.deviceId,
+            platform: 'extension',
+            deviceId: extId,
           })
         ).body,
       );
       const finished = finishLogin(client.clientLoginState, start.loginResponse);
-      const res = await h.post('/api/v1/auth/login/finish', {
-        loginId: start.loginId,
-        finishLoginRequest: finished?.finishLoginRequest,
-      });
-      return (res.headers['set-cookie'] as unknown as string[])[0]?.split(';')[0] ?? '';
+      const res = await h
+        .http()
+        .post('/api/v1/auth/login/finish')
+        .set(EXTENSION_HEADERS)
+        .send({
+          loginId: start.loginId,
+          finishLoginRequest: finished?.finishLoginRequest,
+          ...(prove
+            ? {
+                deviceProof: signLogin(account, start, finished?.finishLoginRequest ?? '', {
+                  deviceKey: extKey,
+                  deviceId: extId,
+                }),
+              }
+            : {}),
+        });
+      const body = sessionResponseSchema.parse(res.body);
+      if (!body.tokens) throw new Error('no tokens');
+      return body;
     };
-    const cookie = await loginAs();
-    const client = startLogin();
-    const reauth = loginStartResponseSchema.parse(
-      (
-        await h.post(
-          '/api/v1/auth/reauth/start',
-          { startLoginRequest: client.startLoginRequest },
-          cookie,
-        )
-      ).body,
-    );
-    const up = finishLogin(client.clientLoginState, reauth.loginResponse);
-    expect(
-      (
-        await h.post(
-          '/api/v1/auth/reauth/finish',
-          { loginId: reauth.loginId, finishLoginRequest: up?.finishLoginRequest },
-          cookie,
-        )
-      ).status,
-    ).toBe(200);
-    const keys = accountKeysResponseSchema.parse(
-      (await h.get('/api/v1/account/keys', cookie)).body,
-    );
-    const reg = startRegistration(ATTACKER_PASSWORD);
-    const regStart = await h.post(
-      '/api/v1/account/password/start',
-      { registrationRequest: reg.registrationRequest },
-      cookie,
-    );
-    const record = finishRegistration(
-      reg.clientRegistrationState,
-      registerStartResponseSchema.parse(regStart.body).registrationResponse,
-      ATTACKER_PASSWORD,
-    );
-    // A "wrap" that keeps the real header (purpose, key id) and replaces the ciphertext: it
-    // wraps nothing. The server checks only the header.
-    const junk = Buffer.from(keys.wrappedAkPassword, 'base64url');
-    junk.fill(0x41, 40);
-    const res = await h.post(
-      '/api/v1/account/password/finish',
-      {
-        registrationRecord: record,
-        kdfProfile: 1,
-        saltPw: Buffer.alloc(16, 2).toString('base64url'),
-        wrappedAkPassword: junk.toString('base64url'),
-        expectedRowVersion: keys.rowVersion,
-      },
-      cookie,
-    );
-    expect(res.status, res.text).toBe(204);
-    // The owner's password no longer logs in; the server's password wrap opens nothing.
-    const owner = startLogin();
-    const start = loginStartResponseSchema.parse(
-      (
-        await h.post('/api/v1/auth/login/start', {
-          username: account.username,
-          startLoginRequest: owner.startLoginRequest,
-          platform: 'web',
-        })
-      ).body,
-    );
-    expect(finishLogin(owner.clientLoginState, start.loginResponse)).toBeUndefined();
+    const refreshAndRead = async (refreshToken: string) => {
+      const refreshed = await h
+        .http()
+        .post('/api/v1/auth/refresh')
+        .set(EXTENSION_HEADERS)
+        .send({ refreshToken });
+      expect(refreshed.status, refreshed.text).toBe(200);
+      const access = (refreshed.body as { accessToken: string }).accessToken;
+      return h
+        .http()
+        .get('/api/v1/devices')
+        .set({ Authorization: `Bearer ${access}` });
+    };
+    const unproven = await tokenLogin(false);
+    expect(unproven.proven).toBe(false);
+    expect((await refreshAndRead(unproven.tokens?.refreshToken ?? '')).body).toMatchObject({
+      error: 'device_proof_required',
+    });
+    const proven = await tokenLogin(true);
+    expect(proven.proven).toBe(true);
+    expect((await refreshAndRead(proven.tokens?.refreshToken ?? '')).status).toBe(200);
   });
 });
 
@@ -251,10 +411,12 @@ describe('REVIEW R3 (regression): the per-username throttle holds under parallel
       ).body,
     );
     const finished = finishLogin(client.clientLoginState, start.loginResponse);
+    // A session proven by the device key: only such a session may step up (device-proof.md §7).
     const cookie = sessionCookie(
       await post('/api/v1/auth/login/finish', {
         loginId: start.loginId,
         finishLoginRequest: finished?.finishLoginRequest,
+        deviceProof: signLogin(account, start, finished?.finishLoginRequest ?? ''),
       }),
     );
     const reauths = await Promise.all(

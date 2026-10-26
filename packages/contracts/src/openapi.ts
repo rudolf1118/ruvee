@@ -10,7 +10,11 @@ import {
   accountResponseSchema,
   CSRF_HEADER,
   CSRF_HEADER_VALUE,
+  currentDeviceResponseSchema,
   deviceSchema,
+  proofNonceRequestSchema,
+  proofNonceResponseSchema,
+  sessionProofRequestSchema,
   devicesResponseSchema,
   loginFinishRequestSchema,
   loginStartRequestSchema,
@@ -146,8 +150,14 @@ const PAIRING_ID_PARAMETER = {
 
 const ACCESS_ERRORS: Record<Access, ApiErrorCode[]> = {
   none: [],
-  session: ['unauthenticated', 'session_expired', 'device_revoked'],
-  active: ['unauthenticated', 'session_expired', 'device_revoked', 'device_not_enrolled'],
+  session: ['unauthenticated', 'session_expired', 'device_revoked', 'device_proof_required'],
+  active: [
+    'unauthenticated',
+    'session_expired',
+    'device_revoked',
+    'device_not_enrolled',
+    'device_proof_required',
+  ],
   recovery: ['unauthenticated', 'session_expired', 'device_revoked'],
   reopen: ['unauthenticated', 'session_expired'],
   'step-up': [
@@ -155,6 +165,7 @@ const ACCESS_ERRORS: Record<Access, ApiErrorCode[]> = {
     'session_expired',
     'device_revoked',
     'device_not_enrolled',
+    'device_proof_required',
     'step_up_required',
   ],
 };
@@ -304,7 +315,7 @@ export function buildOpenApiDocument(): JsonSchema {
             description: 'Account created; Set-Cookie carries the session.',
             schema: 'SessionResponse',
           },
-          errors: ['bootstrap_failed', 'not_found', 'rate_limited'],
+          errors: ['device_proof_failed', 'bootstrap_failed', 'not_found', 'rate_limited'],
         }),
       },
       '/api/v1/auth/login/start': {
@@ -333,7 +344,7 @@ export function buildOpenApiDocument(): JsonSchema {
             description: 'Logged in; Set-Cookie carries the session.',
             schema: 'SessionResponse',
           },
-          errors: ['login_failed', 'device_revoked', 'rate_limited'],
+          errors: ['device_proof_failed', 'login_failed', 'device_revoked', 'rate_limited'],
         }),
       },
       '/api/v1/auth/refresh': {
@@ -353,6 +364,28 @@ export function buildOpenApiDocument(): JsonSchema {
           summary: 'Revokes the current session and clears the cookie.',
           access: 'session',
           success: { status: '204', description: 'Logged out.' },
+        }),
+      },
+      '/api/v1/auth/proof-nonce': {
+        post: operation({
+          operationId: 'proofNonce',
+          summary:
+            'A single-use 2-minute nonce for one operation, bound to this session (device-proof.md §6). A pre-proof session may ask only for session_proof.',
+          access: 'session',
+          request: 'ProofNonceRequest',
+          success: { status: '200', description: 'The nonce.', schema: 'ProofNonceResponse' },
+          errors: ['rate_limited'],
+        }),
+      },
+      '/api/v1/auth/session-proof': {
+        post: operation({
+          operationId: 'sessionProof',
+          summary:
+            "A pre-proof session proves the device key (op 2): it becomes proven and the device's other sessions end. A failed proof ends it.",
+          access: 'session',
+          request: 'SessionProofRequest',
+          success: { status: '204', description: 'Proven.' },
+          errors: ['device_proof_failed'],
         }),
       },
       '/api/v1/auth/reauth/start': {
@@ -414,7 +447,7 @@ export function buildOpenApiDocument(): JsonSchema {
           parameters: [idParameter('deviceId', 'The device to revoke; never the caller.')],
           request: 'RevokeDeviceRequest',
           success: { status: '204', description: 'Revoked.' },
-          errors: ['not_found', 'forbidden'],
+          errors: ['device_proof_failed', 'not_found', 'forbidden'],
         }),
       },
       '/api/v1/account/password/start': {
@@ -438,7 +471,7 @@ export function buildOpenApiDocument(): JsonSchema {
           access: 'step-up',
           request: 'PasswordChangeFinishRequest',
           success: { status: '204', description: 'Changed.' },
-          errors: ['row_version_conflict'],
+          errors: ['device_proof_failed', 'device_key_mismatch', 'row_version_conflict'],
         }),
       },
       '/api/v1/account/events': {
@@ -473,7 +506,7 @@ export function buildOpenApiDocument(): JsonSchema {
           access: 'step-up',
           request: 'RecoveryKeyRotateRequest',
           success: { status: '204', description: 'Rotated.' },
-          errors: ['row_version_conflict'],
+          errors: ['device_proof_failed', 'device_key_mismatch', 'row_version_conflict'],
         }),
       },
       '/api/v1/account/secret-key': {
@@ -484,7 +517,7 @@ export function buildOpenApiDocument(): JsonSchema {
           access: 'step-up',
           request: 'SecretKeyRotateRequest',
           success: { status: '204', description: 'Rotated.' },
-          errors: ['row_version_conflict'],
+          errors: ['device_proof_failed', 'device_key_mismatch', 'row_version_conflict'],
         }),
       },
       '/api/v1/account': {
@@ -511,9 +544,10 @@ export function buildOpenApiDocument(): JsonSchema {
       '/api/v1/devices/current': {
         get: operation({
           operationId: 'getCurrentDevice',
-          summary: 'The calling device, also while it is pending.',
+          summary:
+            'The calling device, also while it is pending, and whether this session proved the device key.',
           access: 'session',
-          success: { status: '200', description: 'The device.', schema: 'Device' },
+          success: { status: '200', description: 'The device.', schema: 'CurrentDeviceResponse' },
         }),
       },
       '/api/v1/devices': {
@@ -619,6 +653,16 @@ export function buildOpenApiDocument(): JsonSchema {
           },
         }),
       },
+      '/api/v1/recovery/proof-nonce': {
+        post: operation({
+          operationId: 'recoveryProofNonce',
+          summary: 'A single-use nonce for recovery_complete, bound to this recovery session.',
+          access: 'recovery',
+          request: 'ProofNonceRequest',
+          success: { status: '200', description: 'The nonce.', schema: 'ProofNonceResponse' },
+          errors: ['rate_limited'],
+        }),
+      },
       '/api/v1/recovery/complete': {
         post: operation({
           operationId: 'recoveryComplete',
@@ -631,7 +675,7 @@ export function buildOpenApiDocument(): JsonSchema {
             description: 'A normal session in Set-Cookie.',
             schema: 'SessionResponse',
           },
-          errors: ['row_version_conflict'],
+          errors: ['device_proof_failed', 'device_key_mismatch', 'row_version_conflict'],
         }),
       },
       '/api/v1/reopen/login/start': {
@@ -661,7 +705,7 @@ export function buildOpenApiDocument(): JsonSchema {
             description: 'Reopen session in Set-Cookie.',
             schema: 'ReopenStartResponse',
           },
-          errors: ['reopen_failed', 'device_revoked', 'rate_limited'],
+          errors: ['device_proof_failed', 'reopen_failed', 'device_revoked', 'rate_limited'],
         }),
       },
       '/api/v1/reopen/recovery/start': {
@@ -704,6 +748,16 @@ export function buildOpenApiDocument(): JsonSchema {
           },
         }),
       },
+      '/api/v1/reopen/proof-nonce': {
+        post: operation({
+          operationId: 'reopenProofNonce',
+          summary: 'A single-use nonce for reopen_complete, bound to this reopen session.',
+          access: 'reopen',
+          request: 'ProofNonceRequest',
+          success: { status: '200', description: 'The nonce.', schema: 'ProofNonceResponse' },
+          errors: ['rate_limited'],
+        }),
+      },
       '/api/v1/reopen/complete': {
         post: operation({
           operationId: 'reopenComplete',
@@ -716,7 +770,12 @@ export function buildOpenApiDocument(): JsonSchema {
             description: 'A normal session in Set-Cookie.',
             schema: 'SessionResponse',
           },
-          errors: ['row_version_conflict', 'reopen_failed'],
+          errors: [
+            'device_proof_failed',
+            'device_key_mismatch',
+            'row_version_conflict',
+            'reopen_failed',
+          ],
         }),
       },
       '/api/v1/pairings': {
@@ -768,7 +827,7 @@ export function buildOpenApiDocument(): JsonSchema {
           parameters: [PAIRING_ID_PARAMETER],
           request: 'PairingApproveRequest',
           success: { status: '204', description: 'Approved.' },
-          errors: ['not_found', 'pairing_state'],
+          errors: ['device_proof_failed', 'not_found', 'pairing_state'],
         }),
       },
       '/api/v1/pairings/{pairingId}/complete': {
@@ -802,6 +861,10 @@ export function buildOpenApiDocument(): JsonSchema {
         AccountResponse: jsonSchema(accountResponseSchema),
         AccountKeysResponse: jsonSchema(accountKeysResponseSchema),
         Device: jsonSchema(deviceSchema),
+        CurrentDeviceResponse: jsonSchema(currentDeviceResponseSchema),
+        ProofNonceRequest: jsonSchema(proofNonceRequestSchema),
+        ProofNonceResponse: jsonSchema(proofNonceResponseSchema),
+        SessionProofRequest: jsonSchema(sessionProofRequestSchema),
         DevicesResponse: jsonSchema(devicesResponseSchema),
         VaultStateResponse: jsonSchema(vaultStateResponseSchema),
         SyncChangesResponse: jsonSchema(syncChangesResponseSchema),

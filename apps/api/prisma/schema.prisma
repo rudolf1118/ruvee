@@ -60,6 +60,7 @@ enum RevokeReason {
   superseded
   restored
   reopened
+  proof_failed
 
   @@map("revoke_reason")
 }
@@ -98,6 +99,7 @@ enum SecurityEventType {
   reopen_started
   reopen_failed
   restore_reopened
+  device_proof_failed
 
   @@map("security_event_type")
 }
@@ -130,6 +132,7 @@ model Account {
   securityEvents   SecurityEvent[]
   vaults           Vault[]
   pairings         Pairing[]
+  proofNonces      ProofNonce[]
 
   @@map("accounts")
 }
@@ -159,6 +162,8 @@ model AccountKeys {
   keyset            Bytes
   rowVersion        BigInt   @default(1) @map("row_version")
   updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  /// `AVPK`: public key of the AK-derived proof key (device-proof.md §2); null before D-31.
+  akVerifyKey       Bytes?   @map("ak_verify_key")
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
@@ -177,6 +182,8 @@ model Device {
   enrolledAt         DateTime?      @map("enrolled_at") @db.Timestamptz(3)
   lastSeenAt         DateTime?      @map("last_seen_at") @db.Timestamptz(3)
   revokedAt          DateTime?      @map("revoked_at") @db.Timestamptz(3)
+  /// `DPK`: the device's Ed25519 public key (device-proof.md §2); null until enrolled with one.
+  publicKey          Bytes?         @map("public_key")
 
   account           Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
   approvedBy        Device?         @relation("DeviceApproval", fields: [approvedByDeviceId], references: [id], onDelete: SetNull)
@@ -205,10 +212,13 @@ model Session {
   absoluteExpiresAt DateTime      @map("absolute_expires_at") @db.Timestamptz(3)
   revokedAt         DateTime?     @map("revoked_at") @db.Timestamptz(3)
   revokeReason      RevokeReason? @map("revoke_reason")
+  /// When the session proved the device key; null for a pre-proof or pending session.
+  provenAt          DateTime?     @map("proven_at") @db.Timestamptz(3)
 
   account       Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
   device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   refreshTokens RefreshToken[]
+  proofNonces   ProofNonce[]
 
   @@index([accountId])
   @@index([deviceId])
@@ -270,19 +280,20 @@ model SecurityEvent {
  * One enrollment attempt (device-enrollment.md §3); deleted on completion, cancel or expiry.
  */
 model Pairing {
-  pairingId          Bytes           @id @map("pairing_id")
-  accountId          String          @map("account_id") @db.Uuid
-  initiatorDeviceId  String          @map("initiator_device_id") @db.Uuid
-  state              PairingState
-  requesterDeviceId  String?         @map("requester_device_id") @db.Uuid
-  requestPlatform    DevicePlatform? @map("request_platform")
-  requestEpk         Bytes?          @map("request_epk")
-  requestMac         Bytes?          @map("request_mac")
-  requestedAt        DateTime?       @map("requested_at") @db.Timestamptz(3)
-  responseCiphertext Bytes?          @map("response_ciphertext")
-  responseMac        Bytes?          @map("response_mac")
-  createdAt          DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
-  expiresAt          DateTime        @map("expires_at") @db.Timestamptz(3)
+  pairingId              Bytes           @id @map("pairing_id")
+  accountId              String          @map("account_id") @db.Uuid
+  initiatorDeviceId      String          @map("initiator_device_id") @db.Uuid
+  state                  PairingState
+  requesterDeviceId      String?         @map("requester_device_id") @db.Uuid
+  requestPlatform        DevicePlatform? @map("request_platform")
+  requestEpk             Bytes?          @map("request_epk")
+  requestMac             Bytes?          @map("request_mac")
+  requestedAt            DateTime?       @map("requested_at") @db.Timestamptz(3)
+  responseCiphertext     Bytes?          @map("response_ciphertext")
+  responseMac            Bytes?          @map("response_mac")
+  requestDevicePublicKey Bytes?          @map("request_device_public_key")
+  createdAt              DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt              DateTime        @map("expires_at") @db.Timestamptz(3)
 
   account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
   initiator Device  @relation("PairingInitiator", fields: [initiatorDeviceId], references: [id], onDelete: Cascade)
@@ -290,6 +301,25 @@ model Pairing {
 
   @@index([accountId])
   @@map("pairings")
+}
+
+/// A single-use server nonce for one operation of one session (device-proof.md §6).
+model ProofNonce {
+  id         String    @id @db.Uuid
+  accountId  String    @map("account_id") @db.Uuid
+  deviceId   String    @map("device_id") @db.Uuid
+  sessionId  String    @map("session_id") @db.Uuid
+  operation  Int       @db.SmallInt
+  nonceHash  Bytes     @unique @map("nonce_hash")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("proof_nonces")
 }
 
 model Vault {

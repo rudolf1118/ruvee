@@ -1,9 +1,10 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { loginStartResponseSchema } from '@ruvee/contracts';
+import { loginStartResponseSchema, reopenStartResponseSchema } from '@ruvee/contracts';
 import * as opaque from '@serenity-kit/opaque';
 import { pgToolsFromEnv } from '../src/admin/pg-tools.js';
+import { signLogin } from './support/device-proof.js';
 import {
   completeRestore,
   createBackup,
@@ -72,6 +73,7 @@ async function login(h: Harness, account: SyntheticAccount, password = SYNTHETIC
   const done = await h.post('/api/v1/auth/login/finish', {
     loginId: parsed.loginId,
     finishLoginRequest: finished.finishLoginRequest,
+    deviceProof: signLogin(account, parsed, finished.finishLoginRequest),
   });
   return done.status === 200 ? sessionCookie(done) : undefined;
 }
@@ -119,6 +121,14 @@ async function reopen(
     material,
     unwrapReopenMaterial(account, material, {}),
     NEW_PASSWORD,
+    via === 'recovery'
+      ? {
+          device: {
+            key: account.crypto.generateDeviceKey(),
+            id: reopenStartResponseSchema.parse(res.body).deviceId,
+          },
+        }
+      : {},
   );
   const done = await h.post('/api/v1/reopen/complete', body, cookie);
   if (done.status !== 200) throw new Error(`complete failed: ${String(done.status)} ${done.text}`);

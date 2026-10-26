@@ -1,4 +1,10 @@
-import { initRuveeCrypto, uuidToBytes, type Manifest, type RuveeCrypto } from '@ruvee/crypto';
+import {
+  initRuveeCrypto,
+  uuidToBytes,
+  type DeviceKeyPair,
+  type Manifest,
+  type RuveeCrypto,
+} from '@ruvee/crypto';
 import * as opaque from '@serenity-kit/opaque';
 import type { RegisterFinishRequest } from '@ruvee/contracts';
 
@@ -24,6 +30,11 @@ export interface SyntheticAccount {
   readonly recoveryKeyText: string;
   readonly secretKey: Uint8Array;
   readonly accountKey: Uint8Array;
+  readonly accountKeyId: Uint8Array;
+  /** This device's Ed25519 key pair (docs/security/device-proof.md §2). */
+  readonly deviceKey: DeviceKeyPair;
+  /** `AVPK`, the public half of the AK-derived proof key. */
+  readonly akVerifyKey: Uint8Array;
   readonly finish: (registrationRecord: string, bootstrapToken: string) => RegisterFinishRequest;
 }
 
@@ -40,6 +51,8 @@ export async function syntheticAccount(username: string): Promise<SyntheticAccou
   const passwordSalt = crypto.generatePasswordSalt();
   const { recoveryKey, recoveryKeyId } = crypto.generateRecoveryKey();
   const recovery = crypto.deriveRecoveryKeys(recoveryKey);
+  const deviceKey = crypto.generateDeviceKey();
+  const akVerifyKey = crypto.accountProofPublicKey(accountKey);
   const accountIdBytes = uuidToBytes(accountId);
   const auk = crypto.deriveAccountUnlockKey({
     password: SYNTHETIC_PASSWORD,
@@ -97,16 +110,52 @@ export async function syntheticAccount(username: string): Promise<SyntheticAccou
     vaultKeyId,
     secretKey,
     accountKey,
+    accountKeyId,
+    deviceKey,
+    akVerifyKey,
     recoveryKeyText: crypto.formatRecoveryKey(recoveryKey),
-    finish: (registrationRecord, bootstrapToken) => ({
-      bootstrapToken,
-      username,
-      registrationRecord,
-      accountId,
-      device: { id: deviceId, platform: 'web' },
-      keys,
-      vault: { id: vaultId, vkId: b64(vaultKeyId) },
-    }),
+    finish: (registrationRecord, bootstrapToken) => {
+      // Op 3, as the web app signs it: bound to the setup token, zeros as the nonce (§4).
+      const base = {
+        operation: 'register' as const,
+        accountId: accountIdBytes,
+        binding: crypto.setupBinding(Buffer.from(bootstrapToken, 'base64url')),
+        nonce: new Uint8Array(32),
+        payload: crypto.proofPayload('register', [
+          Buffer.from(registrationRecord, 'base64url'),
+          deviceKey.publicKey,
+          akVerifyKey,
+          Buffer.from(keys.wrappedAkPassword, 'base64url'),
+          Buffer.from(keys.wrappedAkRecovery, 'base64url'),
+          Buffer.from(keys.recoveryVerifier, 'base64url'),
+          Buffer.from(keys.keyset, 'base64url'),
+          uuidToBytes(vaultId),
+        ]),
+      };
+      return {
+        bootstrapToken,
+        username,
+        registrationRecord,
+        accountId,
+        device: { id: deviceId, platform: 'web' },
+        keys,
+        vault: { id: vaultId, vkId: b64(vaultKeyId) },
+        devicePublicKey: b64(deviceKey.publicKey),
+        akVerifyKey: b64(akVerifyKey),
+        proof: {
+          device: b64(
+            crypto.signDeviceProof({
+              ...base,
+              deviceId: uuidToBytes(deviceId),
+              secretKey: deviceKey.secretKey,
+            }),
+          ),
+          accountKey: b64(
+            crypto.signAccountProof({ ...base, accountKeyId, accountKeyEpoch: 1, accountKey }),
+          ),
+        },
+      };
+    },
   };
 }
 

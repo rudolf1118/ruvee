@@ -385,7 +385,7 @@
             }
           },
           "401": {
-            "description": "The setup token is not valid.",
+            "description": "The device proof was not valid. / The setup token is not valid.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -397,7 +397,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorBootstrapFailed"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorBootstrapFailed"
+                    }
+                  ]
                 }
               }
             }
@@ -775,7 +782,7 @@
             }
           },
           "401": {
-            "description": "Login failed. / This device has been revoked.",
+            "description": "The device proof was not valid. / Login failed. / This device has been revoked.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -788,6 +795,9 @@
               "application/json": {
                 "schema": {
                   "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
+                    },
                     {
                       "$ref": "#/components/schemas/ErrorLoginFailed"
                     },
@@ -1176,7 +1186,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed.",
+            "description": "The request origin is not allowed. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1188,7 +1198,432 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/proof-nonce": {
+      "post": {
+        "operationId": "proofNonce",
+        "summary": "A single-use 2-minute nonce for one operation, bound to this session (device-proof.md §6). A pre-proof session may ask only for session_proof.",
+        "x-ruvee-access": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofNonceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The nonce.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProofNonceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device must prove its key before it can do this.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/auth/session-proof": {
+      "post": {
+        "operationId": "sessionProof",
+        "summary": "A pre-proof session proves the device key (op 2): it becomes proven and the device's other sessions end. A failed proof ends it.",
+        "x-ruvee-access": "session",
+        "security": [
+          {
+            "sessionCookie": []
+          },
+          {
+            "bearerToken": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionProofRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "Proven.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed. / This device must prove its key before it can do this.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
                 }
               }
             }
@@ -1335,7 +1770,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1353,6 +1788,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -1558,7 +1996,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1576,6 +2014,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -1743,7 +2184,7 @@
             }
           },
           "403": {
-            "description": "This device is not enrolled yet.",
+            "description": "This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1755,7 +2196,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -1890,7 +2338,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1908,6 +2356,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -2051,7 +2502,7 @@
             }
           },
           "401": {
-            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2072,6 +2523,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
                     }
                   ]
                 }
@@ -2079,7 +2533,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue. / This request is not allowed.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this. / Confirm your password to continue. / This request is not allowed.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2097,6 +2551,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorStepUpRequired"
@@ -2305,7 +2762,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this. / Confirm your password to continue.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2323,6 +2780,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorStepUpRequired"
@@ -2475,7 +2935,7 @@
             }
           },
           "401": {
-            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2496,6 +2956,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
                     }
                   ]
                 }
@@ -2503,7 +2966,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this. / Confirm your password to continue.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2523,6 +2986,9 @@
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
                     },
                     {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    },
+                    {
                       "$ref": "#/components/schemas/ErrorStepUpRequired"
                     }
                   ]
@@ -2531,7 +2997,7 @@
             }
           },
           "409": {
-            "description": "The account keys have changed; refetch them.",
+            "description": "The account verification key does not match this account. / The account keys have changed; refetch them.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2543,7 +3009,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceKeyMismatch"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                    }
+                  ]
                 }
               }
             }
@@ -2702,7 +3175,7 @@
             }
           },
           "403": {
-            "description": "This device is not enrolled yet.",
+            "description": "This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2714,7 +3187,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -2826,7 +3306,7 @@
             }
           },
           "401": {
-            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2847,6 +3327,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
                     }
                   ]
                 }
@@ -2854,7 +3337,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this. / Confirm your password to continue.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2874,6 +3357,9 @@
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
                     },
                     {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    },
+                    {
                       "$ref": "#/components/schemas/ErrorStepUpRequired"
                     }
                   ]
@@ -2882,7 +3368,7 @@
             }
           },
           "409": {
-            "description": "The account keys have changed; refetch them.",
+            "description": "The account verification key does not match this account. / The account keys have changed; refetch them.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2894,7 +3380,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceKeyMismatch"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                    }
+                  ]
                 }
               }
             }
@@ -3042,7 +3535,7 @@
             }
           },
           "401": {
-            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3063,6 +3556,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
                     }
                   ]
                 }
@@ -3070,7 +3566,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet. / Confirm your password to continue.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this. / Confirm your password to continue.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3090,6 +3586,9 @@
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
                     },
                     {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    },
+                    {
                       "$ref": "#/components/schemas/ErrorStepUpRequired"
                     }
                   ]
@@ -3098,7 +3597,7 @@
             }
           },
           "409": {
-            "description": "The account keys have changed; refetch them.",
+            "description": "The account verification key does not match this account. / The account keys have changed; refetch them.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3110,7 +3609,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceKeyMismatch"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                    }
+                  ]
                 }
               }
             }
@@ -3257,6 +3763,24 @@
               }
             }
           },
+          "403": {
+            "description": "This device must prove its key before it can do this.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                }
+              }
+            }
+          },
           "500": {
             "description": "An internal error occurred.",
             "headers": {
@@ -3364,7 +3888,7 @@
             }
           },
           "403": {
-            "description": "This device is not enrolled yet.",
+            "description": "This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3376,7 +3900,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -3448,7 +3979,7 @@
     "/api/v1/devices/current": {
       "get": {
         "operationId": "getCurrentDevice",
-        "summary": "The calling device, also while it is pending.",
+        "summary": "The calling device, also while it is pending, and whether this session proved the device key.",
         "x-ruvee-access": "session",
         "security": [
           {
@@ -3472,7 +4003,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/Device"
+                  "$ref": "#/components/schemas/CurrentDeviceResponse"
                 }
               }
             }
@@ -3501,6 +4032,24 @@
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
                     }
                   ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "This device must prove its key before it can do this.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                 }
               }
             }
@@ -3612,7 +4161,7 @@
             }
           },
           "403": {
-            "description": "This device is not enrolled yet.",
+            "description": "This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3624,7 +4173,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -3736,7 +4292,7 @@
             }
           },
           "403": {
-            "description": "This device is not enrolled yet.",
+            "description": "This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3748,7 +4304,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -3916,7 +4479,7 @@
             }
           },
           "403": {
-            "description": "This device is not enrolled yet.",
+            "description": "This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3928,7 +4491,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -4093,7 +4663,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4111,6 +4681,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -4738,10 +5311,10 @@
         }
       }
     },
-    "/api/v1/recovery/complete": {
+    "/api/v1/recovery/proof-nonce": {
       "post": {
-        "operationId": "recoveryComplete",
-        "summary": "Replaces the OPAQUE record, password wrap and rotated recovery wrap; ends every other session.",
+        "operationId": "recoveryProofNonce",
+        "summary": "A single-use nonce for recovery_complete, bound to this recovery session.",
         "x-ruvee-access": "recovery",
         "security": [
           {
@@ -4753,14 +5326,14 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/RecoveryCompleteRequest"
+                "$ref": "#/components/schemas/ProofNonceRequest"
               }
             }
           }
         },
         "responses": {
           "200": {
-            "description": "A normal session in Set-Cookie.",
+            "description": "The nonce.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4772,7 +5345,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionResponse"
+                  "$ref": "#/components/schemas/ProofNonceResponse"
                 }
               }
             }
@@ -4848,8 +5421,8 @@
               }
             }
           },
-          "409": {
-            "description": "The account keys have changed; refetch them.",
+          "413": {
+            "description": "The request body is too large.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4861,7 +5434,227 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/recovery/complete": {
+      "post": {
+        "operationId": "recoveryComplete",
+        "summary": "Replaces the OPAQUE record, password wrap and rotated recovery wrap; ends every other session.",
+        "x-ruvee-access": "recovery",
+        "security": [
+          {
+            "recoveryCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCompleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A normal session in Set-Cookie.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account verification key does not match this account. / The account keys have changed; refetch them.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceKeyMismatch"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                    }
+                  ]
                 }
               }
             }
@@ -5196,7 +5989,7 @@
             }
           },
           "401": {
-            "description": "Reopening failed. / This device has been revoked.",
+            "description": "The device proof was not valid. / Reopening failed. / This device has been revoked.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5209,6 +6002,9 @@
               "application/json": {
                 "schema": {
                   "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
+                    },
                     {
                       "$ref": "#/components/schemas/ErrorReopenFailed"
                     },
@@ -5794,6 +6590,206 @@
         }
       }
     },
+    "/api/v1/reopen/proof-nonce": {
+      "post": {
+        "operationId": "reopenProofNonce",
+        "summary": "A single-use nonce for reopen_complete, bound to this reopen session.",
+        "x-ruvee-access": "reopen",
+        "security": [
+          {
+            "reopenCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProofNonceRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The nonce.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProofNonceResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMaintenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/reopen/complete": {
       "post": {
         "operationId": "reopenComplete",
@@ -5859,7 +6855,7 @@
             }
           },
           "401": {
-            "description": "Authentication is required. / The session has expired. / Reopening failed.",
+            "description": "Authentication is required. / The session has expired. / The device proof was not valid. / Reopening failed.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5877,6 +6873,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorReopenFailed"
@@ -5905,7 +6904,7 @@
             }
           },
           "409": {
-            "description": "The account keys have changed; refetch them.",
+            "description": "The account verification key does not match this account. / The account keys have changed; refetch them.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5917,7 +6916,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceKeyMismatch"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                    }
+                  ]
                 }
               }
             }
@@ -6093,7 +7099,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -6111,6 +7117,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -6325,6 +7334,24 @@
               }
             }
           },
+          "403": {
+            "description": "This device must prove its key before it can do this.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                }
+              }
+            }
+          },
           "404": {
             "description": "The requested resource does not exist.",
             "headers": {
@@ -6488,7 +7515,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed.",
+            "description": "The request origin is not allowed. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -6500,7 +7527,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
+                    }
+                  ]
                 }
               }
             }
@@ -6706,7 +7740,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This request is not allowed.",
+            "description": "The request origin is not allowed. / This device must prove its key before it can do this. / This request is not allowed.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -6721,6 +7755,9 @@
                   "oneOf": [
                     {
                       "$ref": "#/components/schemas/ErrorCsrfRejected"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     },
                     {
                       "$ref": "#/components/schemas/ErrorForbidden"
@@ -6921,7 +7958,7 @@
             }
           },
           "401": {
-            "description": "Authentication is required. / The session has expired. / This device has been revoked.",
+            "description": "Authentication is required. / The session has expired. / This device has been revoked. / The device proof was not valid.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -6942,6 +7979,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofFailed"
                     }
                   ]
                 }
@@ -6949,7 +7989,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -6967,6 +8007,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -7157,7 +8200,7 @@
             }
           },
           "403": {
-            "description": "The request origin is not allowed. / This device is not enrolled yet.",
+            "description": "The request origin is not allowed. / This device is not enrolled yet. / This device must prove its key before it can do this.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -7175,6 +8218,9 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceNotEnrolled"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceProofRequired"
                     }
                   ]
                 }
@@ -7488,6 +8534,44 @@
               "vkId"
             ],
             "additionalProperties": false
+          },
+          "devicePublicKey": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "akVerifyKey": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "accountKey": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device",
+              "accountKey"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -7497,7 +8581,10 @@
           "accountId",
           "device",
           "keys",
-          "vault"
+          "vault",
+          "devicePublicKey",
+          "akVerifyKey",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -7552,11 +8639,19 @@
             "maxLength": 427,
             "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
             "contentEncoding": "base64url"
+          },
+          "challenge": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
           }
         },
         "required": [
           "loginId",
-          "loginResponse"
+          "loginResponse",
+          "challenge"
         ],
         "additionalProperties": false
       },
@@ -7571,6 +8666,13 @@
             "contentEncoding": "base64url"
           },
           "finishLoginRequest": {
+            "type": "string",
+            "minLength": 86,
+            "maxLength": 86,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "deviceProof": {
             "type": "string",
             "minLength": 86,
             "maxLength": 86,
@@ -7613,6 +8715,9 @@
             ],
             "additionalProperties": false
           },
+          "proven": {
+            "type": "boolean"
+          },
           "tokens": {
             "type": "object",
             "properties": {
@@ -7640,7 +8745,8 @@
         },
         "required": [
           "accountId",
-          "device"
+          "device",
+          "proven"
         ],
         "additionalProperties": false
       },
@@ -7921,6 +9027,207 @@
           "enrolledAt",
           "lastSeenAt",
           "revokedAt"
+        ],
+        "additionalProperties": false
+      },
+      "CurrentDeviceResponse": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "platform": {
+            "type": "string",
+            "enum": [
+              "web",
+              "extension",
+              "ios",
+              "android"
+            ]
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "active",
+              "revoked"
+            ]
+          },
+          "enrolledVia": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "bootstrap",
+                  "pairing",
+                  "recovery"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "label": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 82,
+                "maxLength": 252,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "createdAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          },
+          "enrolledAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lastSeenAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "revokedAt": {
+            "anyOf": [
+              {
+                "type": "string",
+                "format": "date-time",
+                "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "sessionProven": {
+            "type": "boolean"
+          },
+          "hasDeviceKey": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "platform",
+          "status",
+          "enrolledVia",
+          "label",
+          "createdAt",
+          "enrolledAt",
+          "lastSeenAt",
+          "revokedAt",
+          "sessionProven",
+          "hasDeviceKey"
+        ],
+        "additionalProperties": false
+      },
+      "ProofNonceRequest": {
+        "type": "object",
+        "properties": {
+          "operation": {
+            "type": "string",
+            "enum": [
+              "session_proof",
+              "password_change",
+              "secret_key_rotate",
+              "recovery_key_rotate",
+              "device_revoke",
+              "pairing_approve",
+              "recovery_complete",
+              "reopen_complete"
+            ]
+          }
+        },
+        "required": [
+          "operation"
+        ],
+        "additionalProperties": false
+      },
+      "ProofNonceResponse": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "sessionRef": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "nonce",
+          "sessionRef",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "SessionProofRequest": {
+        "type": "object",
+        "properties": {
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -8388,10 +9695,35 @@
               "retired",
               "lost"
             ]
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
-          "reason"
+          "reason",
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -8427,6 +9759,37 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "accountKey": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device",
+              "accountKey"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -8434,7 +9797,9 @@
           "kdfProfile",
           "saltPw",
           "wrappedAkPassword",
-          "expectedRowVersion"
+          "expectedRowVersion",
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -8475,6 +9840,37 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "accountKey": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device",
+              "accountKey"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -8483,7 +9879,9 @@
           "kdfProfile",
           "saltPw",
           "wrappedAkPassword",
-          "expectedRowVersion"
+          "expectedRowVersion",
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -8515,13 +9913,46 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "accountKey": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device",
+              "accountKey"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "recoveryKeyId",
           "wrappedAkRecovery",
           "recoveryVerifier",
-          "expectedRowVersion"
+          "expectedRowVersion",
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -8859,6 +10290,51 @@
             "type": "integer",
             "minimum": 1,
             "maximum": 9007199254740991
+          },
+          "devicePublicKey": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "akVerifyKey": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "accountKey": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device",
+              "accountKey"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -8869,7 +10345,11 @@
           "recoveryKeyId",
           "wrappedAkRecovery",
           "recoveryVerifier",
-          "expectedRowVersion"
+          "expectedRowVersion",
+          "devicePublicKey",
+          "akVerifyKey",
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -9150,6 +10630,13 @@
                 "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
                 "contentEncoding": "base64url"
               },
+              "devicePublicKey": {
+                "type": "string",
+                "minLength": 43,
+                "maxLength": 43,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
               "mac": {
                 "type": "string",
                 "minLength": 43,
@@ -9167,6 +10654,7 @@
               "requesterDeviceId",
               "platform",
               "epk",
+              "devicePublicKey",
               "mac",
               "requestedAt"
             ],
@@ -9222,6 +10710,13 @@
               "extension"
             ]
           },
+          "devicePublicKey": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
           "mac": {
             "type": "string",
             "minLength": 43,
@@ -9233,6 +10728,7 @@
         "required": [
           "epk",
           "platform",
+          "devicePublicKey",
           "mac"
         ],
         "additionalProperties": false
@@ -9260,11 +10756,36 @@
             "maxLength": 252,
             "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
             "contentEncoding": "base64url"
+          },
+          "nonce": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "proof": {
+            "type": "object",
+            "properties": {
+              "device": {
+                "type": "string",
+                "minLength": 86,
+                "maxLength": 86,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "device"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
           "ciphertext",
-          "mac"
+          "mac",
+          "nonce",
+          "proof"
         ],
         "additionalProperties": false
       },
@@ -9753,6 +11274,90 @@
               "message": {
                 "type": "string",
                 "const": "The request origin is not allowed."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 403
+              },
+              "error": {
+                "type": "string",
+                "const": "device_proof_required"
+              },
+              "message": {
+                "type": "string",
+                "const": "This device must prove its key before it can do this."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 401
+              },
+              "error": {
+                "type": "string",
+                "const": "device_proof_failed"
+              },
+              "message": {
+                "type": "string",
+                "const": "The device proof was not valid."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 409
+              },
+              "error": {
+                "type": "string",
+                "const": "device_key_mismatch"
+              },
+              "message": {
+                "type": "string",
+                "const": "The account verification key does not match this account."
               },
               "requestId": {
                 "type": "string",
@@ -10567,6 +12172,90 @@
           "message": {
             "type": "string",
             "const": "The request origin is not allowed."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorDeviceProofRequired": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 403
+          },
+          "error": {
+            "type": "string",
+            "const": "device_proof_required"
+          },
+          "message": {
+            "type": "string",
+            "const": "This device must prove its key before it can do this."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorDeviceProofFailed": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 401
+          },
+          "error": {
+            "type": "string",
+            "const": "device_proof_failed"
+          },
+          "message": {
+            "type": "string",
+            "const": "The device proof was not valid."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorDeviceKeyMismatch": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 409
+          },
+          "error": {
+            "type": "string",
+            "const": "device_key_mismatch"
+          },
+          "message": {
+            "type": "string",
+            "const": "The account verification key does not match this account."
           },
           "requestId": {
             "type": "string",

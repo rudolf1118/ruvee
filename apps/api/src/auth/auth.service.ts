@@ -5,18 +5,22 @@ import {
   type LoginFinishRequest,
   type LoginStartRequest,
   type LoginStartResponse,
+  type ProofNonceOperation,
   type ReauthStartRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
+  type SessionProofRequest,
   type SessionResponse,
   type RefreshRequest,
   type TokenPair,
 } from '@ruvee/contracts';
 import { ApiException } from '../common/api-exception.js';
-import { envelopeHeaderOk, fromBase64url, sha256 } from '../common/secrets.js';
+import { uuidToBytes } from '@ruvee/crypto';
+import { envelopeHeaderOk, fromBase64url, sha256, toBase64url } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
 import { Prisma } from '../generated/prisma/client.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
+import { ProofService, SETUP_NONCE } from '../sessions/proof.service.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { LoginStateStore } from './login-state.store.js';
 import { OpaqueServerService } from './opaque-server.service.js';
@@ -49,6 +53,7 @@ export class AuthService {
     private readonly loginStates: LoginStateStore,
     private readonly throttle: ThrottleService,
     private readonly events: SecurityEventsService,
+    private readonly proofs: ProofService,
   ) {}
 
   private async assertRegistrationOpen(): Promise<void> {
@@ -103,6 +108,35 @@ export class AuthService {
       (label !== null && !envelopeHeaderOk(label, 0x08, { min: 61, max: 189 }))
     )
       throw new ApiException('invalid_request');
+    // device-proof.md §8, first setup: the client chose both key pairs; the server stores public
+    // keys only, and checks that the client holds DSK and AK (op 3, bound to the setup token).
+    const devicePublicKey = fromBase64url(body.devicePublicKey);
+    const akVerifyKey = fromBase64url(body.akVerifyKey);
+    const proven = this.proofs.valid({
+      operation: 'register',
+      accountId: body.accountId,
+      deviceId: body.device.id,
+      binding: this.proofs.setupBinding(fromBase64url(body.bootstrapToken)),
+      nonce: SETUP_NONCE,
+      payload: this.proofs.payload('register', [
+        fromBase64url(body.registrationRecord),
+        devicePublicKey,
+        akVerifyKey,
+        wrappedAkPassword,
+        wrappedAkRecovery,
+        fromBase64url(keys.recoveryVerifier),
+        keyset,
+        uuidToBytes(body.vault.id),
+      ]),
+      device: { publicKey: devicePublicKey, signature: fromBase64url(body.proof.device) },
+      accountKey: {
+        akId,
+        akEpoch: keys.akEpoch,
+        publicKey: akVerifyKey,
+        signature: fromBase64url(body.proof.accountKey),
+      },
+    });
+    if (!proven) throw new ApiException('device_proof_failed');
 
     const now = new Date();
     try {
@@ -143,6 +177,7 @@ export class AuthService {
             recoveryVerifier: fromBase64url(keys.recoveryVerifier),
             keysetVersion: BigInt(keys.keysetVersion),
             keyset,
+            akVerifyKey,
             updatedAt: now,
           },
         });
@@ -154,6 +189,7 @@ export class AuthService {
             status: 'active',
             enrolledVia: 'bootstrap',
             label,
+            publicKey: devicePublicKey,
             createdAt: now,
             enrolledAt: now,
             lastSeenAt: now,
@@ -168,7 +204,7 @@ export class AuthService {
             updatedAt: now,
           },
         });
-        const session = await this.sessions.create(body.accountId, body.device.id, tx, now);
+        const session = await this.sessions.create(body.accountId, body.device.id, tx, now, true);
         await this.events.record(
           'bootstrap_used',
           { accountId: body.accountId, deviceId: body.device.id, ...client },
@@ -187,7 +223,11 @@ export class AuthService {
         return session;
       });
       return {
-        body: { accountId: body.accountId, device: { id: body.device.id, status: 'active' } },
+        body: {
+          accountId: body.accountId,
+          device: { id: body.device.id, status: 'active' },
+          proven: true,
+        },
         ...token,
       };
     } catch (error) {
@@ -214,14 +254,14 @@ export class AuthService {
     } catch {
       throw new ApiException('invalid_request');
     }
-    const loginId = this.loginStates.put({
+    const { loginId, challenge } = this.loginStates.put({
       serverLoginState: started.serverLoginState,
       username: body.username,
       accountId: account?.opaqueCredential ? account.id : null,
       deviceId: body.deviceId,
       platform: body.platform,
     });
-    return { loginId, loginResponse: started.loginResponse };
+    return { loginId, loginResponse: started.loginResponse, challenge: toBase64url(challenge) };
   }
 
   async loginFinish(body: LoginFinishRequest, client: ClientContext): Promise<NewSession> {
@@ -251,6 +291,32 @@ export class AuthService {
     }
     // A device id belongs to one platform; a web device cannot log in as an extension.
     if (known && known.platform !== pending.platform) throw new ApiException('invalid_request');
+    // device-proof.md §5: an active device's session is proven only by its key. Without a proof
+    // the password gives a pre-proof session and changes nothing else of the device (R2).
+    let proven = false;
+    if (known?.status === 'active' && body.deviceProof !== undefined) {
+      const ok =
+        known.publicKey !== null &&
+        this.proofs.valid({
+          operation: 'login',
+          accountId,
+          deviceId: known.id,
+          binding: this.proofs.loginBinding(fromBase64url(body.loginId)),
+          nonce: pending.challenge,
+          payload: this.proofs.payload('login', [fromBase64url(body.finishLoginRequest)]),
+          device: { publicKey: known.publicKey, signature: fromBase64url(body.deviceProof) },
+        });
+      if (!ok) {
+        await this.events.record('device_proof_failed', {
+          accountId,
+          deviceId: known.id,
+          ...client,
+          details: { operation: 'login' },
+        });
+        throw new ApiException('device_proof_failed');
+      }
+      proven = true;
+    }
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       // An unknown device becomes a pending record that can do nothing but enroll (§4 step 4).
@@ -268,27 +334,38 @@ export class AuthService {
         }));
       // One client installation is one device: a new login ends that device's older sessions,
       // so a client that signs in again leaves nothing usable behind, and neither does anyone
-      // who copied an older cookie or token from it. Recovery sessions are separate.
-      if (known)
+      // who copied an older cookie or token from it. Recovery sessions are separate. An active
+      // device's unproven login ends nothing (device-proof.md §5): the password alone cannot sign
+      // the genuine device out. A pending device has no key to prove.
+      if (known && (known.status !== 'active' || proven))
         await tx.session.updateMany({
           where: { deviceId: known.id, kind: { in: ['cookie', 'token'] }, revokedAt: null },
           data: { revokedAt: now, revokeReason: 'superseded' },
         });
       const cookie =
         pending.platform === 'web'
-          ? await this.sessions.create(accountId, device.id, tx, now)
+          ? await this.sessions.create(accountId, device.id, tx, now, proven)
           : undefined;
       const tokens = cookie
         ? undefined
-        : await this.sessions.createToken(accountId, device.id, tx, now);
+        : await this.sessions.createToken(accountId, device.id, tx, now, proven);
       await this.events.record(
         'login_succeeded',
-        { accountId, deviceId: device.id, ...client, details: { newDevice: known === null } },
+        {
+          accountId,
+          deviceId: device.id,
+          ...client,
+          details: { newDevice: known === null, proven },
+        },
         tx,
       );
       return { device, cookie, tokens };
     });
-    const response = { accountId, device: { id: result.device.id, status: result.device.status } };
+    const response = {
+      accountId,
+      device: { id: result.device.id, status: result.device.status },
+      proven,
+    };
     if (result.cookie) return { body: response, ...result.cookie };
     if (!result.tokens) throw new ApiException('internal_error');
     return { body: { ...response, tokens: result.tokens } };
@@ -321,7 +398,7 @@ export class AuthService {
     } catch {
       throw new ApiException('invalid_request');
     }
-    const loginId = this.loginStates.put({
+    const { loginId, challenge } = this.loginStates.put({
       serverLoginState: started.serverLoginState,
       username: account.usernameNormalized,
       accountId: session.accountId,
@@ -329,7 +406,8 @@ export class AuthService {
       platform: 'web',
       sessionId: session.sessionId,
     });
-    return { loginId, loginResponse: started.loginResponse };
+    // Step-up needs no device proof (the session is already proven); the field is unused.
+    return { loginId, loginResponse: started.loginResponse, challenge: toBase64url(challenge) };
   }
 
   async reauthFinish(
@@ -353,6 +431,74 @@ export class AuthService {
     const authAt = new Date();
     await this.prisma.session.update({ where: { id: session.sessionId }, data: { authAt } });
     return { authAt: authAt.toISOString() };
+  }
+
+  /**
+   * device-proof.md §5 step 3: a pre-proof session of an active device proves its key (op 2).
+   * It becomes proven and the device's other sessions end, as at a proven login. One failure
+   * ends this session: the client logs in again.
+   */
+  async sessionProof(
+    session: AuthenticatedSession,
+    body: SessionProofRequest,
+    client: ClientContext,
+  ): Promise<void> {
+    if (session.deviceStatus !== 'active' || session.proven) throw new ApiException('forbidden');
+    const device = await this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } });
+    const nonce = fromBase64url(body.nonce);
+    const ok =
+      device.publicKey !== null &&
+      this.proofs.valid({
+        operation: 'session_proof',
+        accountId: session.accountId,
+        deviceId: session.deviceId,
+        binding: this.proofs.sessionRef(session.sessionId),
+        nonce,
+        payload: this.proofs.payload('session_proof', []),
+        device: { publicKey: device.publicKey, signature: fromBase64url(body.proof.device) },
+      });
+    const now = new Date();
+    if (!ok) {
+      await this.sessions.revoke(session.sessionId, 'proof_failed', now);
+      await this.events.record('device_proof_failed', {
+        accountId: session.accountId,
+        deviceId: session.deviceId,
+        ...client,
+        details: { operation: 'session_proof' },
+      });
+      throw new ApiException('device_proof_failed');
+    }
+    await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'session_proof', nonce);
+      const marked = await tx.session.updateMany({
+        where: { id: session.sessionId, revokedAt: null, provenAt: null },
+        data: { provenAt: now },
+      });
+      if (marked.count !== 1) throw new ApiException('device_proof_failed');
+      await tx.session.updateMany({
+        where: {
+          deviceId: session.deviceId,
+          kind: { in: ['cookie', 'token'] },
+          revokedAt: null,
+          id: { not: session.sessionId },
+        },
+        data: { revokedAt: now, revokeReason: 'superseded' },
+      });
+    });
+  }
+
+  /**
+   * A nonce for one operation (device-proof.md §6). A pre-proof session may ask only for its own
+   * session proof; recovery and reopening use their own endpoints.
+   */
+  async proofNonce(session: AuthenticatedSession, operation: ProofNonceOperation) {
+    if (operation === 'recovery_complete' || operation === 'reopen_complete')
+      throw new ApiException('forbidden');
+    if (!session.proven && operation !== 'session_proof')
+      throw new ApiException('device_proof_required');
+    if (session.proven && operation === 'session_proof') throw new ApiException('forbidden');
+    if (session.deviceStatus !== 'active') throw new ApiException('device_not_enrolled');
+    return this.proofs.issue(session, operation);
   }
 
   async logout(sessionId: string, accountId: string, deviceId: string, client: ClientContext) {

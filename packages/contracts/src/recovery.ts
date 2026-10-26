@@ -3,7 +3,10 @@ import {
   OPAQUE_BYTES,
   U32_MAX,
   deviceLabelSchema,
+  devicePublicKeySchema,
   kdfProfileSchema,
+  keyProofSchema,
+  proofNonceSchema,
   webPlatformSchema,
   uuidSchema,
   usernameSchema,
@@ -67,5 +70,13 @@ export const recoveryCompleteRequestSchema = z.strictObject({
   recoveryVerifier: base64urlBytes({ length: 32 }),
   label: deviceLabelSchema.optional(),
   expectedRowVersion: z.int().min(1),
+  /**
+   * The recovering device's new `DPK` and the account's `AVPK`, with the `DSK` proof (made with
+   * the new key) and the `AVSK` proof (op 9, or 11 for a reopening; device-proof.md §8).
+   */
+  devicePublicKey: devicePublicKeySchema,
+  akVerifyKey: devicePublicKeySchema,
+  nonce: proofNonceSchema,
+  proof: keyProofSchema,
 });
 export type RecoveryCompleteRequest = z.infer<typeof recoveryCompleteRequestSchema>;

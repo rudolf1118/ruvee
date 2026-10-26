@@ -82,7 +82,7 @@ export class AccountSecurityController {
     @Body(new ContractValidationPipe(revokeDeviceRequestSchema)) body: RevokeDeviceRequest,
     @Req() req: Request,
   ): Promise<void> {
-    await this.security.revokeDevice(session, deviceId, body.reason, this.client(req));
+    await this.security.revokeDevice(session, deviceId, body, this.client(req));
   }
 
   @Post('account/password/start')

@@ -5,7 +5,9 @@ import {
   errorResponseSchema,
   loginStartResponseSchema,
   recoveryMaterialResponseSchema,
+  recoveryStartResponseSchema,
   registerStartResponseSchema,
+  sessionResponseSchema,
 } from '@ruvee/contracts';
 import type request from 'supertest';
 import { ThrottleService } from '../src/auth/throttle.service.js';
@@ -19,6 +21,7 @@ import {
   syntheticAccount,
   type SyntheticAccount,
 } from './support/synthetic-client.js';
+import { signCompletion } from './support/device-proof.js';
 import { query } from './support/temp-database.js';
 
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
@@ -186,11 +189,20 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
       recoveryVerifier: b64(crypto.recoveryVerifier(rotatedKeys.recoveryAuthKey)),
       expectedRowVersion: material.rowVersion,
     };
+    // The recovering device enrolls a new device key, proved with itself and with AK (§8).
+    const deviceId = recoveryStartResponseSchema.parse(started.body).deviceId;
+    const deviceKey = crypto.generateDeviceKey();
+    const complete = (b: typeof body, accountKey?: Uint8Array) =>
+      signCompletion(h, account, cookie, 'recovery_complete', b, {
+        deviceKey,
+        deviceId,
+        ...(accountKey ? { accountKey } : {}),
+      });
     // Rotation is mandatory: the old recovery key id is refused.
     expectError(
       await h.post(
         '/api/v1/recovery/complete',
-        { ...body, recoveryKeyId: material.recoveryKeyId },
+        await complete({ ...body, recoveryKeyId: material.recoveryKeyId }),
         cookie,
       ),
       'invalid_request',
@@ -198,12 +210,29 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
     expectError(
       await h.post(
         '/api/v1/recovery/complete',
-        { ...body, expectedRowVersion: material.rowVersion + 5 },
+        await complete({ ...body, expectedRowVersion: material.rowVersion + 5 }),
         cookie,
       ),
       'row_version_conflict',
     );
-    const done = await h.post('/api/v1/recovery/complete', body, cookie);
+    // R-08: someone who learned only RAK has no AK. Any other key gives another AVPK...
+    const notAk = crypto.generateKey();
+    expectError(
+      await h.post('/api/v1/recovery/complete', await complete(body, notAk), cookie),
+      'device_key_mismatch',
+    );
+    // ...and a signature that is not made with AK's key does not verify against the account's.
+    const forged = await complete(body, notAk);
+    expectError(
+      await h.post(
+        '/api/v1/recovery/complete',
+        { ...forged, akVerifyKey: b64(account.akVerifyKey) },
+        cookie,
+      ),
+      'device_proof_failed',
+    );
+    const signed = await complete(body);
+    const done = await h.post('/api/v1/recovery/complete', signed, cookie);
     expect(done.status, done.text).toBe(200);
     expect(String(done.headers['set-cookie'])).toContain('__Host-ruvee_recovery=; Path=/');
 
@@ -211,7 +240,15 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
     expectError(await h.get('/api/v1/account', oldCookie), 'unauthenticated');
     expectError(await h.get('/api/v1/recovery/material', cookie), 'unauthenticated');
     // Completion is single use (INV-23): the same recovery session cannot complete again.
-    expectError(await h.post('/api/v1/recovery/complete', body, cookie), 'unauthenticated');
+    expectError(await h.post('/api/v1/recovery/complete', signed, cookie), 'unauthenticated');
+    // The device now holds the new key, and the new session was proven by it.
+    const [enrolled] = await query<{ public_key: Buffer }>(
+      h.db.url,
+      'SELECT public_key FROM devices WHERE id = $1',
+      [deviceId],
+    );
+    expect(b64(enrolled?.public_key ?? new Uint8Array())).toBe(b64(deviceKey.publicKey));
+    expect(sessionResponseSchema.parse(done.body).proven).toBe(true);
     expect(await login(SYNTHETIC_PASSWORD)).toBeUndefined();
     expect(await login(NEW_PASSWORD)).toBeDefined();
     // The old kit no longer works against this server.

@@ -19,6 +19,15 @@ export const ACCESS_METADATA = 'ruvee:access';
 
 export const Access = (level: AccessLevel) => SetMetadata(ACCESS_METADATA, level);
 
+export const BEFORE_PROOF_METADATA = 'ruvee:before-proof';
+
+/**
+ * The pre-proof allowlist (docs/security/device-proof.md §5): a session of an active device that
+ * has not proved its key reaches only handlers marked with this. Every other `session`, `active`
+ * and `step-up` handler answers `403 device_proof_required` to it.
+ */
+export const AllowBeforeProof = () => SetMetadata(BEFORE_PROOF_METADATA, true);
+
 export interface RequestWithSession extends Request {
   ruveeSession?: AuthenticatedSession;
 }

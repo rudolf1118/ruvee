@@ -4,6 +4,7 @@ import {
   OPAQUE_CONFIG_ID,
   type LoginFinishRequest,
   type LoginStartResponse,
+  type ProofNonceOperation,
   type RecoveryCompleteRequest,
   type ReopenLoginStartRequest,
   type ReopenMaterialResponse,
@@ -16,11 +17,19 @@ import { LoginStateStore } from '../auth/login-state.store.js';
 import { OpaqueServerService } from '../auth/opaque-server.service.js';
 import { ThrottleService } from '../auth/throttle.service.js';
 import { ApiException } from '../common/api-exception.js';
-import { envelopeHeaderOk, fromBase64url, sha256, toBase64url } from '../common/secrets.js';
+import {
+  constantTimeEqual,
+  envelopeHeaderOk,
+  fromBase64url,
+  sha256,
+  toBase64url,
+} from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { Prisma } from '../generated/prisma/client.js';
 import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
+import { proveCompletion } from '../sessions/completion-proof.js';
+import { ProofService } from '../sessions/proof.service.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { REOPEN_MAX_FAILURES, reopenCodeHash } from './reopen-codes.js';
 
@@ -58,7 +67,14 @@ export class ReopenService {
     private readonly throttle: ThrottleService,
     private readonly events: SecurityEventsService,
     private readonly maintenance: MaintenanceService,
+    private readonly proofs: ProofService,
   ) {}
+
+  /** A nonce for `reopen_complete`, bound to this reopen session (device-proof.md §6). */
+  proofNonce(session: AuthenticatedSession, operation: ProofNonceOperation) {
+    if (operation !== 'reopen_complete') throw new ApiException('forbidden');
+    return this.proofs.issue(session, operation);
+  }
 
   /** The usable code with this value, while reopening; or undefined. Never consumes it. */
   private async usableCode(reopenCode: string): Promise<CodeRow | undefined> {
@@ -165,7 +181,7 @@ export class ReopenService {
     } catch {
       throw new ApiException('invalid_request');
     }
-    const loginId = this.loginStates.put({
+    const { loginId, challenge } = this.loginStates.put({
       serverLoginState: started.serverLoginState,
       username: body.username,
       accountId: account.id,
@@ -173,7 +189,7 @@ export class ReopenService {
       platform: 'web',
       reopenCodeId: code.id,
     });
-    return { loginId, loginResponse: started.loginResponse };
+    return { loginId, loginResponse: started.loginResponse, challenge: toBase64url(challenge) };
   }
 
   /**
@@ -196,6 +212,21 @@ export class ReopenService {
       where: { id: pending.deviceId, accountId },
     });
     if (device?.status !== 'active') return this.fail(client, pending.reopenCodeId, accountId);
+    // device-proof.md §8 (R12): the device active in the snapshot proves its restored key (op
+    // 10). A snapshot from before D-31 has no key: only the Recovery Kit path reopens it.
+    const proven =
+      device.publicKey !== null &&
+      body.deviceProof !== undefined &&
+      this.proofs.valid({
+        operation: 'reopen_login',
+        accountId,
+        deviceId: device.id,
+        binding: this.proofs.loginBinding(fromBase64url(body.loginId)),
+        nonce: pending.challenge,
+        payload: this.proofs.payload('reopen_login', [fromBase64url(body.finishLoginRequest)]),
+        device: { publicKey: device.publicKey, signature: fromBase64url(body.deviceProof) },
+      });
+    if (!proven) return this.fail(client, pending.reopenCodeId, accountId);
     const code = { id: pending.reopenCodeId, account_id: accountId };
     const [row] = await this.prisma.$queryRaw<{ restore_id: string }[]>`
       SELECT restore_id FROM ruvee_control.reopen_codes WHERE id = ${code.id}::uuid`;
@@ -328,8 +359,23 @@ export class ReopenService {
     )
       throw new ApiException('invalid_request');
     const via = session.via ?? 'password';
+    // device-proof.md §8 (R12): the password path keeps and proves the restored device key; the
+    // Recovery Kit path enrolls a new one, like a recovery. Both prove AK.
+    const device = await this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } });
+    const presented = fromBase64url(body.devicePublicKey);
+    if (via === 'password' && !(device.publicKey && constantTimeEqual(device.publicKey, presented)))
+      throw new ApiException('device_proof_failed');
+    const proof = await proveCompletion(
+      this.proofs,
+      'reopen_complete',
+      session,
+      body,
+      keys,
+      presented,
+    );
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
+      await this.proofs.consume(tx, session.sessionId, 'reopen_complete', proof.nonce);
       // The guard row first: `ruvee-admin restore-reopen-code` locks it too, so a host revocation
       // either commits before this check (and is seen here) or waits for this transaction (R13).
       const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
@@ -355,6 +401,7 @@ export class ReopenService {
           recoveryKeyId,
           wrappedAkRecovery,
           recoveryVerifier: fromBase64url(body.recoveryVerifier),
+          akVerifyKey: proof.akVerifyKey,
           rowVersion: { increment: 1 },
           updatedAt: now,
         },
@@ -385,11 +432,18 @@ export class ReopenService {
                 enrolledVia: 'recovery',
                 enrolledAt: now,
                 lastSeenAt: now,
+                publicKey: proof.devicePublicKey,
                 ...(label === null ? {} : { label }),
               }
             : { lastSeenAt: now, ...(label === null ? {} : { label }) },
       });
-      const created = await this.sessions.create(session.accountId, session.deviceId, tx, now);
+      const created = await this.sessions.create(
+        session.accountId,
+        session.deviceId,
+        tx,
+        now,
+        true,
+      );
       const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
       await this.events.record(
         'restore_reopened',
@@ -414,6 +468,7 @@ export class ReopenService {
     return {
       accountId: session.accountId,
       device: { id: session.deviceId, status: 'active' },
+      proven: true,
       ...result,
     };
   }

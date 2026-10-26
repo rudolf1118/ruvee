@@ -72,6 +72,10 @@ export const TABLE_INVENTORY: Record<string, { holds: string; secretMaterial: bo
   bootstrap_tokens: { holds: 'SHA-256 of setup tokens, expiry, use', secretMaterial: true },
   security_events: { holds: 'allow-listed event history (INV-12)', secretMaterial: false },
   pairings: { holds: 'open pairings: ephemeral key, MACs, sealed reply', secretMaterial: true },
+  proof_nonces: {
+    holds: 'SHA-256 of single-use proof nonces, their session and expiry; deleted on restore',
+    secretMaterial: true,
+  },
   vaults: { holds: 'vault id, VK id, current seq', secretMaterial: false },
   vault_items: { holds: 'item records (ciphertext) and tombstones', secretMaterial: true },
   vault_commits: { holds: 'commit ids and manifest envelopes (ciphertext)', secretMaterial: true },

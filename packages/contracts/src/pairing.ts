@@ -1,5 +1,13 @@
 import { z } from 'zod';
-import { deviceLabelSchema, devicePlatformSchema, platformSchema, uuidSchema } from './auth.js';
+import {
+  deviceLabelSchema,
+  devicePlatformSchema,
+  devicePublicKeySchema,
+  deviceProofSchema,
+  platformSchema,
+  proofNonceSchema,
+  uuidSchema,
+} from './auth.js';
 import { base64urlBytes } from './bytes.js';
 
 /**
@@ -23,6 +31,8 @@ export type CreatePairingRequest = z.infer<typeof createPairingRequestSchema>;
 export const pairingJoinRequestSchema = z.strictObject({
   epk: base64urlBytes({ length: 32 }),
   platform: platformSchema,
+  /** B's `DPK`; `mac` covers it (`pair-req-2`, device-proof.md §8). */
+  devicePublicKey: devicePublicKeySchema,
   mac: base64urlBytes({ length: 32 }),
 });
 export type PairingJoinRequest = z.infer<typeof pairingJoinRequestSchema>;
@@ -31,6 +41,9 @@ export const pairingApproveRequestSchema = z.strictObject({
   ciphertext: base64urlBytes({ min: 49, max: PAIRING_CIPHERTEXT_MAX_BYTES }),
   mac: base64urlBytes({ length: 32 }),
   label: deviceLabelSchema.optional(),
+  /** A's `DSK` proof (op 8) over B's id and `DPK`, the reply and the label. */
+  nonce: proofNonceSchema,
+  proof: deviceProofSchema,
 });
 export type PairingApproveRequest = z.infer<typeof pairingApproveRequestSchema>;
 
@@ -53,6 +66,7 @@ export const pairingStateResponseSchema = z.strictObject({
       requesterDeviceId: uuidSchema,
       platform: devicePlatformSchema,
       epk: base64urlBytes({ length: 32 }),
+      devicePublicKey: devicePublicKeySchema,
       mac: base64urlBytes({ length: 32 }),
       requestedAt: timestamp,
     })

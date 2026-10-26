@@ -20,6 +20,7 @@ import {
   syntheticAccount,
   type SyntheticAccount,
 } from './support/synthetic-client.js';
+import { proofNonce, signOperation } from './support/device-proof.js';
 import { query } from './support/temp-database.js';
 
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
@@ -45,8 +46,11 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     await h.close();
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
     h.app.get(ThrottleService).clearIpWindows();
+    // Each test starts with no open pairings and a fresh hourly pairing window.
+    await query(h.db.url, 'DELETE FROM pairings');
+    await query(h.db.url, `DELETE FROM auth_throttle WHERE scope = 'pairing'`);
   });
 
   /** A new browser logs in and becomes a pending device. */
@@ -84,13 +88,21 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     expect((await h.post('/api/v1/pairings', { pairingId }, cookieA)).status).toBe(201);
 
     const typed = crypto.parsePairingCode(code);
+    // B's device key exists before B holds AK; req_mac binds it (device-proof.md §8).
+    const keyB = crypto.generateDeviceKey();
     const req = crypto.createPairingRequest({
       secret: typed,
       accountId: uuidToBytes(account.accountId),
       deviceId: uuidToBytes(b.deviceId),
       platform: 'web',
+      devicePublicKey: keyB.publicKey,
     });
-    const join = { epk: b64(req.ephemeralPublicKey), platform: 'web', mac: b64(req.mac) };
+    const join = {
+      epk: b64(req.ephemeralPublicKey),
+      platform: 'web',
+      devicePublicKey: b64(keyB.publicKey),
+      mac: b64(req.mac),
+    };
     expect((await h.post(`/api/v1/pairings/${pairingId}/request`, join, b.cookie)).status).toBe(
       204,
     );
@@ -112,10 +124,12 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
       deviceId: uuidToBytes(b.deviceId),
       ephemeralPublicKey: unb64(seen.request?.epk ?? ''),
     };
+    expect(seen.request?.devicePublicKey).toBe(b64(keyB.publicKey));
     expect(
       crypto.verifyPairingRequest({
         ...transcript,
         platform: 'web',
+        devicePublicKey: unb64(seen.request?.devicePublicKey ?? ''),
         mac: unb64(seen.request?.mac ?? ''),
       }),
     ).toBe(true);
@@ -141,11 +155,50 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
         },
       },
     });
-    const approve = { ciphertext: b64(reply.ciphertext), mac: b64(reply.mac) };
+    // A signs exactly what it verified: B's id and key, the reply, no label (op 8).
+    const approval = signOperation(
+      account,
+      'pairing_approve',
+      await proofNonce(h, cookieA, 'pairing_approve'),
+      [
+        unb64(pairingId),
+        uuidToBytes(b.deviceId),
+        keyB.publicKey,
+        reply.ciphertext,
+        reply.mac,
+        null,
+      ],
+    );
+    const approve = { ciphertext: b64(reply.ciphertext), mac: b64(reply.mac), ...approval };
     expect((await h.post(`/api/v1/pairings/${pairingId}/approve`, approve, cookieA)).status).toBe(
       204,
     );
+    // The approval's nonce is single-use.
+    expectError(
+      await h.post(`/api/v1/pairings/${pairingId}/approve`, approve, cookieA),
+      'pairing_state',
+    );
+    const [enrolled] = await query<{ public_key: Buffer }>(
+      h.db.url,
+      'SELECT public_key FROM devices WHERE id = $1',
+      [b.deviceId],
+    );
+    expect(b64(enrolled?.public_key ?? new Uint8Array())).toBe(b64(keyB.publicKey));
 
+    // B is active now, but its session is a pre-proof one: it proves the key it already holds
+    // in memory before it reads anything else (device-proof.md §8).
+    expectError(await h.get(`/api/v1/pairings/${pairingId}`, b.cookie), 'device_proof_required');
+    const proofB = signOperation(
+      account,
+      'session_proof',
+      await proofNonce(h, b.cookie, 'session_proof'),
+      [],
+      {
+        deviceKey: keyB,
+        deviceId: b.deviceId,
+      },
+    );
+    expect((await h.post('/api/v1/auth/session-proof', proofB, b.cookie)).status).toBe(204);
     const after = pairingStateResponseSchema.parse(
       (await h.get(`/api/v1/pairings/${pairingId}`, b.cookie)).body,
     );
@@ -156,7 +209,7 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
       mac: unb64(after.response?.mac ?? ''),
     });
     expect(b64(payload.secretKey)).toBe(b64(account.secretKey));
-    // B is enrolled now and can fetch the key material it unlocks with.
+    // B is enrolled and proven: it fetches the key material it unlocks with, then completes.
     await h.get('/api/v1/account/keys', b.cookie).expect(200);
     expect((await h.post(`/api/v1/pairings/${pairingId}/complete`, {}, b.cookie)).status).toBe(204);
     expectError(await h.get(`/api/v1/pairings/${pairingId}`, cookieA), 'not_found');
@@ -175,16 +228,23 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     const secret = crypto.generatePairingSecret();
     const pairingId = b64(crypto.pairingId(secret));
     await h.post('/api/v1/pairings', { pairingId }, cookieA).expect(201);
+    const keyB = crypto.generateDeviceKey();
     const req = crypto.createPairingRequest({
       secret,
       accountId: uuidToBytes(account.accountId),
       deviceId: uuidToBytes(b.deviceId),
       platform: 'web',
+      devicePublicKey: keyB.publicKey,
     });
     await h
       .post(
         `/api/v1/pairings/${pairingId}/request`,
-        { epk: b64(req.ephemeralPublicKey), platform: 'web', mac: b64(req.mac) },
+        {
+          epk: b64(req.ephemeralPublicKey),
+          platform: 'web',
+          devicePublicKey: b64(keyB.publicKey),
+          mac: b64(req.mac),
+        },
         b.cookie,
       )
       .expect(204);
@@ -201,6 +261,7 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
         deviceId: uuidToBytes(seen.request?.requesterDeviceId ?? ''),
         ephemeralPublicKey: unb64(seen.request?.epk ?? ''),
         platform: 'web',
+        devicePublicKey: unb64(seen.request?.devicePublicKey ?? ''),
         mac: unb64(seen.request?.mac ?? ''),
       }),
     ).toBe(false);
@@ -227,6 +288,7 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     const join = {
       epk: b64(new Uint8Array(32).fill(1)),
       platform: 'web',
+      devicePublicKey: b64(new Uint8Array(32).fill(3)),
       mac: b64(new Uint8Array(32).fill(2)),
     };
     expectError(await h.post(`/api/v1/pairings/${pairingId}/request`, join, cookieA), 'forbidden');
@@ -253,5 +315,65 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     expectError(await h.post('/api/v1/pairings', { pairingId }, b.cookie), 'device_not_enrolled');
     expectError(await h.get(`/api/v1/pairings/${'A'.repeat(22)}`, cookieA), 'not_found');
     expectError(await h.get('/api/v1/pairings/not-an-id', cookieA), 'invalid_request');
+  });
+
+  it('enrolls only the device key A verified: a key swapped after A read the request fails', async () => {
+    const { crypto } = account;
+    const b = await pendingDevice();
+    const secret = crypto.generatePairingSecret();
+    const pairingId = b64(crypto.pairingId(secret));
+    await h.post('/api/v1/pairings', { pairingId }, cookieA).expect(201);
+    const keyB = crypto.generateDeviceKey();
+    const req = crypto.createPairingRequest({
+      secret,
+      accountId: uuidToBytes(account.accountId),
+      deviceId: uuidToBytes(b.deviceId),
+      platform: 'web',
+      devicePublicKey: keyB.publicKey,
+    });
+    await h
+      .post(
+        `/api/v1/pairings/${pairingId}/request`,
+        {
+          epk: b64(req.ephemeralPublicKey),
+          platform: 'web',
+          devicePublicKey: b64(keyB.publicKey),
+          mac: b64(req.mac),
+        },
+        b.cookie,
+      )
+      .expect(204);
+    // A verified B's key and signs its approval over it; then the stored key is replaced.
+    const approval = signOperation(
+      account,
+      'pairing_approve',
+      await proofNonce(h, cookieA, 'pairing_approve'),
+      [
+        unb64(pairingId),
+        uuidToBytes(b.deviceId),
+        keyB.publicKey,
+        new Uint8Array(49),
+        new Uint8Array(32),
+        null,
+      ],
+    );
+    const attackerKey = crypto.generateDeviceKey();
+    await query(h.db.url, 'UPDATE pairings SET request_device_public_key = $1', [
+      Buffer.from(attackerKey.publicKey),
+    ]);
+    expectError(
+      await h.post(
+        `/api/v1/pairings/${pairingId}/approve`,
+        { ciphertext: b64(new Uint8Array(49)), mac: b64(new Uint8Array(32)), ...approval },
+        cookieA,
+      ),
+      'device_proof_failed',
+    );
+    const [device] = await query<{ status: string; public_key: Buffer | null }>(
+      h.db.url,
+      'SELECT status, public_key FROM devices WHERE id = $1',
+      [b.deviceId],
+    );
+    expect(device).toEqual({ status: 'pending', public_key: null });
   });
 });

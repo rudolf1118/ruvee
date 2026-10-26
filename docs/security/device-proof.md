@@ -19,7 +19,7 @@ needs to unlock, and nothing else.
 
 | Name           | What                                                                                               | Where                                                                                                                                                                        | Lifetime                                                                                                               |
 | -------------- | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `DSK`, `DPK`   | Ed25519 key pair of one device, from `crypto_sign_keypair`                                         | `DPK` on the server (`devices.public_key`). `DSK` on the device, as the `LOCAL_RECORD` named `device_key` sealed under `K_local`; in the worker's memory only while unlocked | Created when the device is set up, pairs or recovers; replaced only by a recovery on that device; gone with the device |
+| `DSK`, `DPK`   | Ed25519 key pair of one device, from `crypto_sign_keypair`                                         | `DPK` on the server (`devices.public_key`). `DSK` on the device, as the `LOCAL_RECORD` named `device-key` sealed under `K_local`; in the worker's memory only while unlocked | Created when the device is set up, pairs or recovers; replaced only by a recovery on that device; gone with the device |
 | `AVSK`, `AVPK` | Ed25519 key pair derived from `AK`: `seed = KDF(AK, "rvakver1")`, `crypto_sign_seed_keypair(seed)` | `AVPK` on the server (`account_keys.ak_verify_key`). `AVSK` is never stored: derived when needed while unlocked, wiped after the signature                                   | Changes only when `AK` changes (full rotation, Phase 4, not built)                                                     |
 
 - `KDF` and `H` are as in [cryptographic-design.md §2](cryptographic-design.md#2-notation-and-encodings).
@@ -102,7 +102,7 @@ genuine device out (R2).
 **Unlock on an enrolled device** (all local first, so there is no circular dependency):
 
 1. Derive `AUK` from the typed password and the local `SK`, and open the **local** password wrap:
-   `AK`, then `K_local`, then the `device_key` record: `DSK`.
+   `AK`, then `K_local`, then the `device-key` record: `DSK`.
 2. If that worked: restore the server session; if it is missing or not proven, log in with
    `deviceProof`. The session is proven at once.
 3. If the local wrap did not open (the password changed on another device): log in **without**
@@ -113,7 +113,7 @@ genuine device out (R2).
 4. If the server's keyset is newer than the local one (`SK` rotated elsewhere) and the password
    also changed, the client asks for the previous password (`previous_password_required`, as
    today): the old local wrap gives `AK`, hence `DSK`, and step 2 applies.
-5. A device with no `device_key` record (enrolled before D-31) cannot prove anything: it stays
+5. A device with no `device-key` record (enrolled before D-31) cannot prove anything: it stays
    usable offline, with all its local data, and is told to re-enroll (§9).
 
 **Pre-proof session.** A cookie or token session of an `active` device with `proven_at` null.
@@ -123,7 +123,7 @@ genuine device out (R2).
   `403 device_proof_required`.
 - Expires 10 minutes after creation if still unproven (`session_expired`).
 - One failed `session-proof` revokes it (`proof_failed`); the client logs in again.
-- Rate limits: the per-session limit (300/minute) and at most 5 open nonces per session.
+- Rate limits: the per-session limit (300/minute); one open nonce per operation (§6).
 - What it exposes: the account key material (`AK` wraps, salt and profile, keyset envelope).
   These are useless without `SK` and are in every database copy already; the threat model
   records it (T-14).
@@ -140,7 +140,9 @@ row, so every refresh keeps it, and revocation, reuse detection and expiry are u
   `POST /api/v1/reopen/proof-nonce` return `{ nonce, sessionRef, expiresAt }` for one named
   operation, bound to the calling session, its account and device.
 - Stored in `proof_nonces` as `SHA-256(nonce)` with the session, operation and an expiry of
-  **2 minutes**; at most 5 unconsumed per session.
+  **2 minutes**. Issuing a nonce replaces the session's open nonce for the same operation, so a
+  session has at most one open nonce per operation and retries never pile up; of two concurrent
+  requests of one kind in one session, the one holding the replaced nonce fails safely.
 - The operation first verifies the signatures (no state change), then, **in the same
   transaction as its own effect**, consumes the nonce with one conditional
   `UPDATE … WHERE nonce_hash = $1 AND session_id = $2 AND operation = $3 AND consumed_at IS NULL
@@ -206,7 +208,7 @@ reason: it costs a re-login, nothing more. `account/password/start`, `reauth/*` 
 - The migration adds `devices.public_key`, `account_keys.ak_verify_key`, `sessions.proven_at`
   and `proof_nonces`; it changes no existing row. Every existing session is therefore unproven
   and older than 10 minutes, so none keeps any privilege.
-- An existing device has no `device_key` record. It keeps working offline with its local data
+- An existing device has no `device-key` record. It keeps working offline with its local data
   and pending edits. To enroll a key, use **Use your Recovery Kit** on that device: recovery keeps
   this browser's vault (R6), registers its `DPK`, and the first one also the account's `AVPK`.
   Each recovery issues a new Recovery Kit; finish one device before starting the next.

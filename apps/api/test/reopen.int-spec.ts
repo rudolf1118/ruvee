@@ -7,6 +7,7 @@ import {
   errorResponseSchema,
   loginStartResponseSchema,
   recoveryCompleteRequestSchema,
+  reopenStartResponseSchema,
   syncChangesResponseSchema,
 } from '@ruvee/contracts';
 import type request from 'supertest';
@@ -59,6 +60,7 @@ const config = {
   extensionOrigins: '',
 };
 const SERVER_URL = process.env.DATABASE_URL ?? '';
+const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
 const NEW_PASSWORD = 'synthetic reopened passphrase 3c7a';
 
 function expectError(res: request.Response | undefined, code: keyof typeof API_ERRORS) {
@@ -352,13 +354,10 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         material,
         unwrapped,
         NEW_PASSWORD,
+        { rowVersion: material.rowVersion + 3 },
       );
       expectError(
-        await r.h.post(
-          '/api/v1/reopen/complete',
-          { ...stale.body, expectedRowVersion: material.rowVersion + 3 },
-          cookie,
-        ),
+        await r.h.post('/api/v1/reopen/complete', stale.body, cookie),
         'row_version_conflict',
       );
       expect(await guardState(r.db.url)).toBe('reopening');
@@ -477,6 +476,8 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       const material = await reopenMaterial(r.h, cookie);
       expect(material.via).toBe('recovery');
       expect(material.password).toBeUndefined();
+      // A new browser: it enrolls a new device key with the completion (device-proof.md §8).
+      const deviceKey = account.crypto.generateDeviceKey();
       const { body, newKitText } = await reopenCompleteBody(
         r.h,
         account,
@@ -484,6 +485,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         material,
         unwrapReopenMaterial(account, material, {}),
         NEW_PASSWORD,
+        { device: { key: deviceKey, id: deviceId } },
       );
       const done = await r.h.post('/api/v1/reopen/complete', body, cookie);
       expect(done.status, done.text).toBe(200);
@@ -598,6 +600,12 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         material,
         unwrapReopenMaterial(account, material, {}),
         NEW_PASSWORD,
+        {
+          device: {
+            key: account.crypto.generateDeviceKey(),
+            id: reopenStartResponseSchema.parse(started.body).deviceId,
+          },
+        },
       );
       const { SessionService } = await import('../src/sessions/session.service.js');
       const { ReopenService } = await import('../src/reopen/reopen.service.js');
@@ -637,6 +645,85 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         expect(issued.status).toBe('fulfilled');
         expect(state).toBe('reopening');
       }
+    });
+  });
+
+  describe('REVIEW R12 (regression): reopening needs the device key and AK, not the password alone', () => {
+    let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
+
+    beforeAll(async () => {
+      r = await restoredAndReviewed();
+    }, 120_000);
+    afterAll(async () => {
+      await (r as typeof r | undefined)?.h.close();
+    });
+    beforeEach(() => {
+      r.clearThrottle();
+    });
+
+    it('refuses the code and the snapshot-time password without the device proof', async () => {
+      const attempt = await reopenWithPassword(r.h, account, r.code, { prove: false });
+      expectError(attempt.finish, 'reopen_failed');
+      // With another key: the same.
+      const other = await reopenWithPassword(r.h, account, r.code, {
+        deviceKey: account.crypto.generateDeviceKey(),
+      });
+      expectError(other.finish, 'reopen_failed');
+      expect(await codes(r.db.url)).toEqual([
+        { failed_attempts: 2, revoked: false, consumed: false },
+      ]);
+      expect(await guardState(r.db.url)).toBe('reopening');
+    });
+
+    it('refuses a junk password wrap without a valid AK proof, and changes nothing', async () => {
+      const started = await reopenWithPassword(r.h, account, r.code);
+      expect(started.finish?.status, started.finish?.text).toBe(200);
+      const cookie = reopenCookie(started.finish as request.Response);
+      const material = await reopenMaterial(r.h, cookie);
+      const unwrapped = unwrapReopenMaterial(account, material, {});
+      const { body } = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        unwrapped,
+        NEW_PASSWORD,
+      );
+      // R12: the header-only check accepted any bytes; now the wrap is bound to AK's proof.
+      const junk = Buffer.from(body.wrappedAkPassword, 'base64url');
+      junk.fill(0x41, 40);
+      expectError(
+        await r.h.post(
+          '/api/v1/reopen/complete',
+          { ...body, wrappedAkPassword: junk.toString('base64url') },
+          cookie,
+        ),
+        'device_proof_failed',
+      );
+      // A proof by any key but AK's: refused as a mismatched account key.
+      const forged = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        {
+          ...unwrapped,
+          accountKey: account.crypto.generateKey(),
+        },
+        NEW_PASSWORD,
+      );
+      expectError(
+        await r.h.post('/api/v1/reopen/complete', forged.body, cookie),
+        'device_key_mismatch',
+      );
+      expect(await guardState(r.db.url)).toBe('reopening');
+      const [keys] = await query<{ wrapped_ak_password: Buffer }>(
+        r.db.url,
+        'SELECT wrapped_ak_password FROM account_keys',
+      );
+      expect(b64(keys?.wrapped_ak_password ?? new Uint8Array())).toBe(
+        material.password?.wrappedAkPassword,
+      );
     });
   });
 });
