@@ -814,7 +814,12 @@ describe('clients after a server restore (revised D-28, backup-restore.md §3.6 
 
     const startOver = (p: Partial<Parameters<VaultEngine['startOver']>[0]>) =>
       code(
-        a.engine.startOver({ confirm: 'erase-this-device', pendingSeen: 0, conflictsSeen: 0, ...p }),
+        a.engine.startOver({
+          confirm: 'erase-this-device',
+          pendingSeen: 0,
+          conflictsSeen: 0,
+          ...p,
+        }),
       );
     expect(await startOver({})).toBe('export_first');
     expect(await startOver({ withoutExport: true, pendingSeen: 3 })).toBe('unsynced_changes');

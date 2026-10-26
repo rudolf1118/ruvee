@@ -57,6 +57,10 @@ export class FakeServer {
   loseNextCommitResponse = false;
   /** Recovery material carries a keyset envelope with one flipped byte (a corrupt server). */
   corruptKeyset = false;
+  /** Rewrites the pairing request the initiator reads (a malicious server). */
+  tamperPairingRequest: ((r: Record<string, string>) => Record<string, string>) | undefined;
+  /** Every pairing cancel, with its reason. */
+  pairingCancels: { pairingId: string; reason: string }[] = [];
   sessionValid = true;
   /** Every request body the server received, for capture checks. */
   received: string[] = [];
@@ -781,17 +785,21 @@ export class FakeServer {
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         };
         if (base.role === 'initiator' && p.requester && p.epk && p.devicePublicKey && p.mac)
+        {
+          const request = {
+            requesterDeviceId: p.requester,
+            platform: 'web',
+            epk: p.epk,
+            devicePublicKey: p.devicePublicKey,
+            mac: p.mac,
+            requestedAt: new Date().toISOString(),
+          };
           return Promise.resolve({
             ...base,
-            request: {
-              requesterDeviceId: p.requester,
-              platform: 'web',
-              epk: p.epk,
-              devicePublicKey: p.devicePublicKey,
-              mac: p.mac,
-              requestedAt: new Date().toISOString(),
-            },
+            request: (this.tamperPairingRequest?.(request) ??
+              request) as unknown as NonNullable<PairingStateResponse['request']>,
           });
+        }
         if (base.role === 'requester' && p.ciphertext && p.responseMac)
           return Promise.resolve({
             ...base,
@@ -837,8 +845,9 @@ export class FakeServer {
         this.pairings.delete(pairingId);
         return Promise.resolve(undefined);
       },
-      pairingCancel: (pairingId) => {
+      pairingCancel: (pairingId, reason) => {
         this.check({});
+        this.pairingCancels.push({ pairingId, reason });
         this.pairings.delete(pairingId);
         return Promise.resolve(undefined);
       },

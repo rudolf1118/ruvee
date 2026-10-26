@@ -346,3 +346,42 @@ describe('REVIEW R23 (regression): keys are zeroed on lock and on failed unlocks
     expect(unwrapped.every(zero)).toBe(true);
   });
 });
+
+describe('REVIEW R23 (regression): pairing requests the server altered are burned, not trusted', () => {
+  async function requested(tamper?: (r: Record<string, string>) => Record<string, string>) {
+    const { server, a } = await account();
+    const b = await device(server);
+    await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
+    const started = await a.engine.pairingStart();
+    await b.engine.pairingJoin({ code: started.code });
+    server.tamperPairingRequest = tamper;
+    return { server, a, pairingId: started.pairingId };
+  }
+
+  for (const [label, tamper] of [
+    ['an ephemeral key of the wrong size', (r: Record<string, string>) => ({ ...r, epk: 'AAAA' })],
+    ['an unknown platform', (r: Record<string, string>) => ({ ...r, platform: 'toaster' })],
+    [
+      'a device key of the wrong size',
+      (r: Record<string, string>) => ({ ...r, devicePublicKey: 'AAAA' }),
+    ],
+  ] as const)
+    it(`burns the pairing and reports it for ${label}`, async () => {
+      const { server, a, pairingId } = await requested(tamper);
+      // Before: verification threw, the pairing stayed open and nothing was reported.
+      expect(await a.engine.pairingStatus({ pairingId })).toEqual({ state: 'failed' });
+      expect(server.pairingCancels).toEqual([{ pairingId, reason: 'mac_failed' }]);
+      expect(await code(a.engine.pairingApprove({ pairingId }))).not.toBe('ok');
+    });
+
+  it("shows when A received the request, not the server's unverified time", async () => {
+    const { a, pairingId } = await requested((r) => ({
+      ...r,
+      requestedAt: '2001-01-01T00:00:00.000Z',
+    }));
+    const before = Date.now();
+    const status = await a.engine.pairingStatus({ pairingId });
+    if (status.state !== 'request') throw new Error(`expected a request, got ${status.state}`);
+    expect(status.requestedAtMs).toBeGreaterThanOrEqual(before);
+  });
+});

@@ -1856,6 +1856,13 @@ export class VaultEngine {
         platform: host.request.platform,
         requestedAtMs: host.request.requestedAtMs,
       };
+    // The request did not come from the device holding the code, or is not even well formed:
+    // burn the pairing, and say why so the server records it (§3.2 step 6, review R23).
+    const burn = async (): Promise<PairingHostStatus> => {
+      this.dropHosted(params.pairingId);
+      await this.deps.api.pairingCancel(params.pairingId, 'mac_failed').catch(() => undefined);
+      return { state: 'failed' };
+    };
     let state;
     try {
       state = await this.deps.api.pairingState(params.pairingId);
@@ -1864,35 +1871,42 @@ export class VaultEngine {
         this.dropHosted(params.pairingId);
         return { state: 'expired' };
       }
+      // A reply that does not parse (a malformed key, an unknown platform) is the server's.
+      if (error instanceof NetworkError && error.reason === 'unexpected_response') return burn();
       throw vaultErrorFrom(error);
     }
     if (state.state === 'open' || !state.request) return { state: 'waiting' };
     const request = state.request;
-    const epk = fromB64(request.epk);
-    const devicePublicKey = fromB64(request.devicePublicKey);
-    // req_mac covers B's device key too (pair-req-2): A approves exactly this key (§8).
-    const verified = this.deps.crypto.verifyPairingRequest({
-      secret: host.secret,
-      accountId: uuidToBytes(session.device.accountId),
-      pairingId: fromB64(params.pairingId),
-      deviceId: uuidToBytes(request.requesterDeviceId),
-      ephemeralPublicKey: epk,
-      platform: request.platform,
-      devicePublicKey,
-      mac: fromB64(request.mac),
-    });
-    if (!verified) {
-      // The request did not come from the device holding the code: burn the pairing.
-      this.dropHosted(params.pairingId);
-      await this.deps.api.pairingCancel(params.pairingId, 'mac_failed').catch(() => undefined);
-      return { state: 'failed' };
+    let verified: { epk: Uint8Array; devicePublicKey: Uint8Array } | undefined;
+    try {
+      const epk = fromB64(request.epk);
+      const devicePublicKey = fromB64(request.devicePublicKey);
+      // req_mac covers B's device key too (pair-req-2): A approves exactly this key (§8).
+      if (
+        this.deps.crypto.verifyPairingRequest({
+          secret: host.secret,
+          accountId: uuidToBytes(session.device.accountId),
+          pairingId: fromB64(params.pairingId),
+          deviceId: uuidToBytes(request.requesterDeviceId),
+          ephemeralPublicKey: epk,
+          platform: request.platform,
+          devicePublicKey,
+          mac: fromB64(request.mac),
+        })
+      )
+        verified = { epk, devicePublicKey };
+    } catch {
+      // A key of the wrong size or an unknown platform: as unverifiable as a wrong MAC.
     }
+    if (!verified) return burn();
     host.request = {
       deviceId: request.requesterDeviceId,
-      epk,
-      devicePublicKey,
+      epk: verified.epk,
+      devicePublicKey: verified.devicePublicKey,
       platform: request.platform,
-      requestedAtMs: Date.parse(request.requestedAt),
+      // §3.2 step 7 shows when the request arrived. The server's `requestedAt` is outside the
+      // MAC, so A shows when it received the verified request itself (review R23).
+      requestedAtMs: this.deps.now(),
     };
     return {
       state: 'request',
