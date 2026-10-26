@@ -283,6 +283,11 @@ interface PendingRecovery {
   readonly rowVersion: number;
   /** Set for a reopening (backup-restore.md §3.13): which path, and so which endpoints. */
   readonly reopen?: 'password' | 'recovery';
+  /**
+   * This browser already holds this account's vault under the same `AK` (the forgotten-password
+   * case): its records, unsynced edits, conflicts and rollback floors are kept (review R6, R20).
+   */
+  readonly keepLocal: boolean;
   complete?: {
     readonly registrationRecord: string;
     readonly saltPw: Uint8Array;
@@ -1863,6 +1868,8 @@ export class VaultEngine {
     username: string;
     recoveryKey: string;
     reopenCode?: string;
+    /** The user confirmed that this browser's vault of another account may be erased. */
+    replaceLocalData?: boolean;
   }): Promise<true> {
     return this.exclusive(async () => {
       const { crypto, api } = this.deps;
@@ -1882,7 +1889,12 @@ export class VaultEngine {
       // Reopening with the kit starts this browser from nothing, so it is only for a browser
       // with no local data: one that has data reopens with its password (§3.13), and keeps it.
       if (reopening && local) throw new VaultError('local_data_present');
-      const deviceId = local?.username === username ? local.deviceId : crypto.generateUuid();
+      // A vault of another account on this browser is never erased without the user's say-so
+      // (review R6): recovery here would replace it, unsynced edits included.
+      const sameName = local?.username === username;
+      if (local?.enrolled && !sameName && params.replaceLocalData !== true)
+        throw new VaultError('local_data_other_account');
+      const deviceId = sameName ? local.deviceId : crypto.generateUuid();
       try {
         const body = {
           username,
@@ -1924,7 +1936,28 @@ export class VaultEngine {
           throw new VaultError('integrity');
         }
         const vault = keyset.vaults[0];
+        // The forgotten-password case: the same account, device and vault under the same `AK`,
+        // so this browser's own sealed records open and are kept.
+        const keepLocal =
+          !reopening &&
+          sameName &&
+          local.enrolled !== undefined &&
+          local.accountId === started.accountId &&
+          local.deviceId === started.deviceId &&
+          same(local.enrolled.akId, accountKeyId) &&
+          local.enrolled.vaultId === vault.vaultId;
+        if (local?.enrolled && sameName && !keepLocal && params.replaceLocalData !== true) {
+          accountKey.fill(0);
+          throw new VaultError('local_data_other_account');
+        }
+        // R20: the keyset version this browser verified is a floor, as on every unlock (INV-09).
+        // Checked before anything changes on the server.
+        if (keepLocal && material.keysetVersion < local.enrolled.keysetVersion) {
+          accountKey.fill(0);
+          throw new VaultError('integrity');
+        }
         this.recovery = {
+          keepLocal,
           username,
           accountId: started.accountId,
           deviceId: started.deviceId,
@@ -2030,6 +2063,8 @@ export class VaultEngine {
       if (vault.vaultId !== enrolled.vaultId || !same(accountKey, session.accountKey))
         throw new VaultError('integrity');
       this.recovery = {
+        // The password path never replaces local data: it finishes on this device's own session.
+        keepLocal: false,
         username: device.username,
         accountId: device.accountId,
         deviceId: device.deviceId,
@@ -2183,6 +2218,7 @@ export class VaultEngine {
         throw vaultErrorFrom(error);
       }
       if (r.reopen === 'password') return this.finishReopenOnThisDevice(c);
+      if (r.keepLocal) return this.finishRecoveryKeepingLocal(r, c);
       const device: DeviceRecord & { enrolled: EnrolledKeys } = {
         v: 1,
         accountId: r.accountId,
@@ -2228,6 +2264,64 @@ export class VaultEngine {
       const view = this.unlockedView();
       return { ...view, recovered: { lastChange: view.sync.lastChange } };
     });
+  }
+
+  /**
+   * Forgotten password on a browser that holds this account's vault (review R6, R20): only the
+   * keys that recovery replaced change (the password wrap and salt, and the server's current
+   * keyset, never older than this browser's). The synced records, unsynced edits, conflicts,
+   * import state, verified checkpoint and anchor are this browser's own, sealed under the same
+   * `AK`, and are kept. The first sync continues from that checkpoint, so a server behind it is
+   * still refused, and kept edits are rebased or become conflicts as after any pull.
+   */
+  private async finishRecoveryKeepingLocal(
+    r: PendingRecovery,
+    c: NonNullable<PendingRecovery['complete']>,
+  ): Promise<UnlockedVault> {
+    const local = await this.deps.store.device();
+    if (!local?.enrolled || local.deviceId !== r.deviceId || local.accountId !== r.accountId)
+      throw new VaultError('internal');
+    const device: DeviceRecord & { enrolled: EnrolledKeys } = {
+      ...local,
+      status: 'active',
+      enrolled: {
+        ...local.enrolled,
+        secretKey: r.secretKey,
+        kdfProfile: 1,
+        saltPw: c.saltPw,
+        akId: r.accountKeyId,
+        akEpoch: r.accountKeyEpoch,
+        wrappedAkPassword: c.wrappedAkPassword,
+        keysetVersion: r.keysetVersion,
+        keyset: r.keyset,
+      },
+    };
+    const checkpoint = await this.loadCheckpoint(device, r.accountKey, device.enrolled);
+    await this.deps.store.putDevice(device);
+    this.session = this.newSession(device, r.accountKey, r.vaultKey, {
+      ...checkpoint,
+      keysetVersion: Math.max(checkpoint.keysetVersion, r.keysetVersion),
+    });
+    await this.loadLocalState();
+    const session = this.session;
+    this.recovery = undefined;
+    this.pendingPassword = undefined;
+    session.recoveryAcknowledgedMs = this.deps.now();
+    await this.deps.store.apply({
+      local: {
+        notices: this.sealLocal(session, 'notices', {
+          recoveryAcknowledgedMs: session.recoveryAcknowledgedMs,
+        }),
+      },
+    });
+    // What this browser kept, before the first sync uploads or rebases any of it.
+    const keptLocal = {
+      pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
+      conflicts: session.conflicts.size,
+    };
+    await this.syncNow();
+    const view = this.unlockedView();
+    return { ...view, recovered: { lastChange: view.sync.lastChange, keptLocal } };
   }
 
   /**

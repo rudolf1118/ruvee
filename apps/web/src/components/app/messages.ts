@@ -73,6 +73,8 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return "That reopening code, username or credential doesn't work. Check them; after five failures the code stops working and the server's owner must make a new one.";
     case 'reopen_needs_kit':
       return 'This device has a newer Secret Key than the backup, so it cannot reopen with the password. Reopen from a new browser with your Recovery Kit (welcome screen).';
+    case 'local_data_other_account':
+      return 'This browser holds a vault of another account. Recovering here erases that vault from this browser, including any changes it has not uploaded yet; its own server and devices still have what they had. To keep it, export it from that account first or use another browser.';
     case 'local_data_present':
       return 'This browser holds a vault. Reopen from it with your master password instead, or use a browser with no Ruvee data for the Recovery Kit.';
     case 'export_first':

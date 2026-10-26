@@ -49,6 +49,9 @@ export function RecoveryFlow({
   const [typedKey, setTypedKey] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // This browser holds another account's vault (review R6): erased only if the user says so.
+  const [otherVault, setOtherVault] = useState(false);
+  const [replaceConfirmed, setReplaceConfirmed] = useState(false);
   const check = checkMasterPassword(password);
 
   const run = (task: () => Promise<void>) => (event: SubmitEvent) => {
@@ -58,6 +61,10 @@ export function RecoveryFlow({
     setError(null);
     task()
       .catch((e: unknown) => {
+        if (e instanceof VaultClientError && e.code === 'local_data_other_account') {
+          setOtherVault(true);
+          return;
+        }
         setError(
           e instanceof VaultClientError
             ? messageFor(e.code, e.retryAfterSeconds)
@@ -137,7 +144,13 @@ export function RecoveryFlow({
           onSubmit={run(async () => {
             await client.call(
               'recoveryBegin',
-              reopening ? { username, recoveryKey, reopenCode } : { username, recoveryKey },
+              reopening
+                ? { username, recoveryKey, reopenCode }
+                : {
+                    username,
+                    recoveryKey,
+                    ...(otherVault && replaceConfirmed ? { replaceLocalData: true } : {}),
+                  },
             );
             setRecoveryKey('');
             setReopenCode('');
@@ -168,6 +181,25 @@ export function RecoveryFlow({
             Other devices on your account are told that the Recovery Kit was used, and they have to
             log in again with the new password.
           </p>
+          {otherVault ? (
+            <>
+              <Notice tone="caution">{messageFor('local_data_other_account')}</Notice>
+              <label className="flex items-start gap-2.5 rounded-menu border border-line bg-canvas px-3.5 py-3 text-body">
+                <input
+                  type="checkbox"
+                  className="mt-1 size-4 accent-brand"
+                  checked={replaceConfirmed}
+                  onChange={(e) => {
+                    setReplaceConfirmed(e.target.checked);
+                  }}
+                />
+                <span>
+                  Erase the other vault from this browser, including any changes it has not
+                  uploaded, and recover my account here.
+                </span>
+              </label>
+            </>
+          ) : null}
           {error ? <Notice>{error}</Notice> : null}
           <div className="flex justify-between gap-2">
             <Button variant="ghost" onClick={onCancel}>

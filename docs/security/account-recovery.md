@@ -74,10 +74,20 @@ on a new device or on an existing one.
    security event. Other enrolled devices stay enrolled but must log in with the new password.
    On their next login they show a prominent notice that recovery was used, with time and
    platform.
-7. The device stores `SK` and its wrap. It has **no trusted checkpoint**
+7. The device stores `SK` and its wrap. On a new device it has **no trusted checkpoint**
    ([sync-protocol.md §Limits](../architecture/sync-protocol.md#limits)). It shows the vault's
    latest manifest date and the device that wrote it, and asks the user to confirm the vault looks
    current.
+   **On a device that already holds this account's vault** (the forgotten-password case), the
+   same `AK` opens that device's own sealed records, and they are kept (predeployment-review R6,
+   R20, 2026-10-26): its synced records, unsynced edits, conflicts, import state, verified
+   checkpoint and anchor. Only the password wrap and salt, and the server's current keyset, are
+   replaced; a keyset older than the one this device verified is refused before anything changes
+   on the server (INV-09). The first sync continues from the kept checkpoint, so a server behind
+   it is refused, and kept edits are uploaded, rebased or kept as conflicts as after any pull. The
+   device says what it kept. A device that holds **another** account's vault (another username,
+   or the same name on another server) is never erased by recovery unless the user confirms it,
+   with a warning that its unsynced changes are lost from this browser.
 8. If recovery was needed because devices were lost, the client lists the other devices and
    asks the user to revoke the lost ones, then offers `SK` rotation
    ([cryptographic-design.md §6.2](cryptographic-design.md#62-narrow-rotations)). The lost

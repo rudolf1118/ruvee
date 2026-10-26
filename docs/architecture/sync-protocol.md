@@ -92,6 +92,14 @@ queue before the first attempt, and reused for every retry. A timeout or network
 retried with the same body and `commitId`. A `409 seq_conflict` means the commit was not applied:
 the client rebases (section 6) and creates a **new** commit id for the rebased commit.
 
+A reply never lowers the checkpoint (predeployment-review R5, 2026-10-26). The client moves its
+checkpoint on a commit reply only if the commit was built on that checkpoint (`baseSeq` equals
+`checkpoint.seq`) and the reply's `seq` is `checkpoint.seq + 1`; any other reply (an earlier
+commit's idempotent answer, replayed or delayed) is an integrity error, `stale_commit_reply`. A
+pull whose verified chain contains the in-flight commit's manifest hash clears that commit: it
+landed and only its reply was lost, so it is not sent again. The in-flight commit is persisted,
+so the same holds after a restart.
+
 ## 5. Pulling changes and verifying them
 
 ### 5.1 Pull

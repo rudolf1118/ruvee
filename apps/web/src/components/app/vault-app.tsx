@@ -590,6 +590,8 @@ interface VaultNotice {
   readonly text: string;
 }
 
+const plural = (n: number, one: string, many: string) => `${String(n)} ${n === 1 ? one : many}`;
+
 /** What the user must know right after unlocking (account-recovery.md §3, authentication.md §9). */
 function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
   const out: VaultNotice[] = [];
@@ -598,10 +600,25 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
     const where = last
       ? `the last change was ${relativeTime(last.atMs)} on ${last.byThisDevice ? 'this' : 'another'} device.`
       : 'it has no changes yet.';
+    const kept = vault.recovered.keptLocal;
+    const earlier = kept
+      ? `This browser kept its own copy of your vault${
+          kept.pending + kept.conflicts > 0
+            ? `, including ${[
+                kept.pending > 0
+                  ? plural(kept.pending, 'change', 'changes') + ' not yet uploaded'
+                  : '',
+                kept.conflicts > 0 ? plural(kept.conflicts, 'conflict', 'conflicts') : '',
+              ]
+                .filter(Boolean)
+                .join(' and ')}`
+            : ''
+        }; ${where}`
+      : `This device had no earlier record of your vault, so check that it looks current: ${where}`;
     out.push({
       id: 'recovered',
       tone: 'brand',
-      text: `Recovery is complete. This device had no earlier record of your vault, so check that it looks current: ${where} If you lost devices, they still hold a copy of your vault and your Secret Key: remove them as lost under Devices, which also replaces your Secret Key.`,
+      text: `Recovery is complete. ${earlier} If you lost devices, they still hold a copy of your vault and your Secret Key: remove them as lost under Devices, which also replaces your Secret Key.`,
     });
   }
   if (status.recoveryUsedAtMs !== undefined)

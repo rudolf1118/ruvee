@@ -16,6 +16,7 @@ const ITEM_PASSWORD = 'synthetic-e2e-item-secret-3e9';
 const NOTE_TEXT = 'synthetic note body 41f';
 const RECOVERED = 'synthetic recovered lantern 93';
 const CHANGED = 'synthetic changed lantern 27';
+const FORGOTTEN = 'synthetic forgotten lantern 64';
 
 interface Captured {
   readonly urls: string[];
@@ -399,8 +400,71 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   for (const captured of [capturedA, capturedE])
     expect(captured.bodies.join('\n')).not.toContain('ruvee-export');
 
+  // ---- Forgotten password on A, with an edit A never uploaded (review R6, R20) ----
+  await contextA.setOffline(true);
+  await a.getByRole('button', { name: 'Add item' }).click();
+  await a.getByRole('radio', { name: 'Secure note' }).click();
+  await a.getByLabel('Title (required)').fill('Synthetic Offline Note (A)');
+  await a.getByLabel('Note').fill(NOTE_TEXT);
+  await a.getByRole('button', { name: 'Save' }).click();
+  await expect(a.getByRole('status').filter({ hasText: 'Offline' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(a.getByText('4 items in all vaults')).toBeVisible();
+  await a.getByRole('button', { name: 'Lock now' }).click();
+  await expect(a.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible();
+  await contextA.setOffline(false);
+  await a
+    .getByRole('button', { name: /Forgot your master password\? Use your Recovery Kit/ })
+    .click();
+  await a.getByLabel('Username').fill(USERNAME);
+  await a.getByLabel('Recovery Key').fill(rotatedKit);
+  await a.getByRole('button', { name: 'Continue' }).click();
+  // Every browser here shares 127.0.0.1, so this run's own sign-ins can use up the per-address
+  // window (20 a minute); a user would wait the time the message names, and so does the test.
+  const newPassword = a.getByRole('textbox', { name: 'New master password', exact: true });
+  const limited = a.getByText(/Too many attempts/);
+  await expect(newPassword.or(limited)).toBeVisible({ timeout: 30_000 });
+  if (await limited.isVisible()) {
+    await a.waitForTimeout(61_000);
+    await a.getByRole('button', { name: 'Continue' }).click();
+  }
+  await newPassword.fill(FORGOTTEN);
+  await a.getByRole('textbox', { name: 'Type it again', exact: true }).fill(FORGOTTEN);
+  await a.getByRole('button', { name: 'Continue' }).click();
+  await expect(a.getByRole('heading', { name: 'Save your new Recovery Kit' })).toBeVisible({
+    timeout: 30_000,
+  });
+  const finalKit = (await a.getByTestId('recovery-key').innerText()).trim();
+  await a.getByRole('button', { name: "I've saved it" }).click();
+  await a.getByLabel('Recovery Key').fill(finalKit);
+  await a.getByRole('button', { name: 'Finish recovery' }).click();
+  // Kept, said so, and uploaded by the first sync after the recovery.
+  await expect(a.getByText('4 items in all vaults')).toBeVisible({ timeout: 30_000 });
+  await expect(
+    a.getByText(
+      /This browser kept its own copy of your vault, including 1 change not yet uploaded/,
+    ),
+  ).toBeVisible();
+  await expect(a.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
+    timeout: 15_000,
+  });
+  // C, after its sign-in ended with the recovery, sees the note A had never uploaded.
+  await c.getByRole('button', { name: 'Sync now' }).click();
+  await expect(c.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await c.getByRole('textbox', { name: 'Master password', exact: true }).fill(FORGOTTEN);
+  await c.getByRole('button', { name: 'Unlock' }).click();
+  await expect(c.getByText('4 items in all vaults')).toBeVisible({ timeout: 30_000 });
+  await expect(row(c, /Synthetic Offline Note \(A\)/)).toBeVisible();
+  await expectAccessible(a);
+
   // ---- Capture checks: nothing secret on the wire or at rest ----
   const forbidden = [
+    FORGOTTEN,
+    finalKit,
+    finalKit.replace(/-/g, ''),
     CHANGED,
     rotatedKit,
     rotatedKit.replace(/-/g, ''),

@@ -114,8 +114,15 @@ export interface UnlockedVault {
     | 'reopening'
     /** The password works, but the server does not know this device (a restored server). */
     | 'device_unknown';
-  /** Set right after a recovery: this device has no trusted checkpoint (sync-protocol §5). */
-  readonly recovered?: { readonly lastChange: SyncStatus['lastChange'] };
+  /**
+   * Set right after a recovery. With `keptLocal`, this browser kept its own copy of the vault:
+   * its checkpoint, unsynced edits and conflicts (review R6, R20). Without it, this device has
+   * no trusted checkpoint (sync-protocol §5).
+   */
+  readonly recovered?: {
+    readonly lastChange: SyncStatus['lastChange'];
+    readonly keptLocal?: { readonly pending: number; readonly conflicts: number };
+  };
   /** The local password wrap was replaced because the password changed on another device. */
   readonly passwordUpdated?: boolean;
   /** The Secret Key was replaced on another device, and this device now uses the new one. */
@@ -170,6 +177,8 @@ export type VaultErrorCode =
   | 'reopen_failed'
   | 'reopen_needs_kit'
   | 'local_data_present'
+  /** This browser holds another account's vault; recovery here erases it unless confirmed. */
+  | 'local_data_other_account'
   | 'export_first'
   | 'internal';
 
@@ -300,7 +309,12 @@ export interface VaultMethods {
   pairingNeedsPassword(): boolean;
   pairingJoin(params: { code: string; password?: string }): true;
   pairingWait(): PairingJoinStatus;
-  recoveryBegin(params: { username: string; recoveryKey: string; reopenCode?: string }): true;
+  recoveryBegin(params: {
+    username: string;
+    recoveryKey: string;
+    reopenCode?: string;
+    replaceLocalData?: boolean;
+  }): true;
   /** Reopening, password path, on this unlocked device (backup-restore.md §3.13). */
   reopenBegin(params: { reopenCode: string; password: string }): true;
   recoverySetPassword(params: { password: string }): RecoveryKitView;

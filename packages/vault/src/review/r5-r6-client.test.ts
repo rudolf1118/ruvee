@@ -50,12 +50,12 @@ const login = (title: string): ItemDraft => ({
   favorite: false,
 });
 
-async function account() {
+async function account(username = 'Synthetic-User') {
   const server = new FakeServer();
   const a = await device(server);
   const kit = await a.engine.setupBegin({
     bootstrapToken: 'T'.repeat(43),
-    username: 'Synthetic-User',
+    username,
     password: PASSWORD,
   });
   await a.engine.setupVerifyKit({ recoveryKey: kit.recoveryKey });
@@ -192,30 +192,129 @@ describe('REVIEW R5 (regression): no commit reply lowers the checkpoint', () => 
   });
 });
 
-describe('REVIEW R6: recovery on an enrolled device erases its unsynced edits', () => {
-  it('drops a pending edit without a warning (R6, vulnerable)', async () => {
-    const { server, a, kit } = await account();
-    await a.engine.save({ draft: login('Synced') });
-    await a.engine.sync();
-    server.offline = true;
-    await a.engine.save({ draft: login('Pending, never uploaded') });
-    await a.engine.idle();
-    // Locked (the worker is terminated): the pending edit exists only in this browser's store.
-    a.engine.wipeMemory();
-    expect([...server.items.values()].filter((i) => i.record !== null)).toHaveLength(1);
-    // Still offline: an offline unlock shows the pending edit is stored on this device.
-    const before = await device(server, a.factory);
-    expect((await before.engine.unlock({ password: PASSWORD })).sync.pendingCount).toBe(1);
-    before.engine.wipeMemory();
+/** A browser with one synced item and one edit that never reached the server, locked. */
+async function lockedWithPendingEdit() {
+  const { server, a, kit } = await account();
+  await a.engine.save({ draft: login('Synced') });
+  await a.engine.sync();
+  server.offline = true;
+  await a.engine.save({ draft: login('Pending, never uploaded') });
+  await a.engine.idle();
+  a.engine.wipeMemory();
+  server.offline = false;
+  return { server, a, kit };
+}
 
+async function recoverOn(
+  server: FakeServer,
+  factory: IDBFactory,
+  kit: string,
+  options: { username?: string; replaceLocalData?: boolean } = {},
+) {
+  const same = await device(server, factory);
+  await same.engine.recoveryBegin({
+    username: options.username ?? 'synthetic-user',
+    recoveryKey: kit,
+    ...(options.replaceLocalData ? { replaceLocalData: true } : {}),
+  });
+  const newKit = await same.engine.recoverySetPassword({ password: 'synthetic recovered pw 77' });
+  await same.engine.recoveryVerifyKit({ recoveryKey: newKit.recoveryKey });
+  return { done: await same.engine.recoveryFinish(), engine: same.engine };
+}
+
+describe("REVIEW R6 (regression): recovery keeps this browser's unsynced edits", () => {
+  it('keeps the pending edit, says so, and uploads it', async () => {
+    const { server, a, kit } = await lockedWithPendingEdit();
+    expect([...server.items.values()].filter((i) => i.record !== null)).toHaveLength(1);
     // Forgotten-password recovery on the same browser (lock screen → "Use your Recovery Kit").
-    server.offline = false;
-    const same = await device(server, a.factory);
-    await same.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: kit });
-    const newKit = await same.engine.recoverySetPassword({ password: 'synthetic recovered pw 77' });
-    await same.engine.recoveryVerifyKit({ recoveryKey: newKit.recoveryKey });
-    const done = await same.engine.recoveryFinish();
-    expect(done.items.map((i) => i.title)).toEqual(['Synced']);
+    const { done } = await recoverOn(server, a.factory, kit);
+    expect(done.items.map((i) => i.title).sort()).toEqual(['Pending, never uploaded', 'Synced']);
+    expect(done.recovered?.keptLocal).toEqual({ pending: 1, conflicts: 0 });
+    // The first sync after recovery uploaded it.
     expect(done.sync.pendingCount).toBe(0);
+    expect([...server.items.values()].filter((i) => i.record !== null)).toHaveLength(2);
+  });
+
+  it('keeps a pending edit that conflicts with a newer server change as a conflict', async () => {
+    const { server, a, kit } = await account();
+    const b = await paired(server, a);
+    const item = await a.engine.save({ draft: login('v1') });
+    await a.engine.sync();
+    await b.engine.sync();
+    server.offline = true;
+    await a.engine.save({ draft: { ...login('A offline edit'), id: item.id } });
+    await a.engine.idle();
+    a.engine.wipeMemory();
+    server.offline = false;
+    await b.engine.save({ draft: { ...login('B edit'), id: item.id } });
+    await b.engine.sync();
+    const { done, engine } = await recoverOn(server, a.factory, kit);
+    // Nothing is dropped: the server's version is shown, A's edit waits as a conflict.
+    expect(done.items.map((i) => i.title)).toEqual(['B edit']);
+    const conflict = engine.conflict({ id: item.id });
+    expect(conflict.local?.title).toBe('A offline edit');
+  });
+
+  it.each([
+    ['another username', 'Synthetic-Other'],
+    ['the same username on another server (another account)', 'Synthetic-User'],
+  ])(
+    "refuses to erase this browser's vault of %s unless the user confirms",
+    async (_label, otherName) => {
+      const first = await lockedWithPendingEdit();
+      const other = await account(otherName);
+      const attempt = await device(other.server, first.a.factory);
+      await expect(
+        attempt.engine.recoveryBegin({ username: otherName, recoveryKey: other.kit }),
+      ).rejects.toMatchObject({ code: 'local_data_other_account' });
+      // The first account's data is still here, pending edit included.
+      const check = await device(first.server, first.a.factory);
+      first.server.offline = true;
+      expect((await check.engine.unlock({ password: PASSWORD })).sync.pendingCount).toBe(1);
+      check.engine.wipeMemory();
+      // Only an explicit confirmation replaces it.
+      const { done } = await recoverOn(other.server, first.a.factory, other.kit, {
+        username: otherName,
+        replaceLocalData: true,
+      });
+      expect(done.recovered?.keptLocal).toBeUndefined();
+      expect(done.items).toEqual([]);
+    },
+  );
+});
+
+describe('REVIEW R20 (regression): recovery keeps the rollback floors this browser verified', () => {
+  it("refuses a server that rolled the vault back below this browser's checkpoint", async () => {
+    const { server, a, kit } = await account();
+    await a.engine.save({ draft: login('one') });
+    await a.engine.sync();
+    const itemsBefore = structuredClone(server.items);
+    const manifestsBefore = structuredClone(server.manifests);
+    await a.engine.save({ draft: login('two (e.g. a rotated password)') });
+    await a.engine.sync();
+    a.engine.wipeMemory();
+    // The server forgets the last commit, then the owner recovers on this browser.
+    server.items = itemsBefore;
+    server.manifests = manifestsBefore;
+    const { done } = await recoverOn(server, a.factory, kit);
+    expect(done.sync.state).toBe('integrity_error');
+    expect(done.sync.integrity).toBe('server_behind');
+  });
+
+  it('refuses an older keyset before anything changes on the server', async () => {
+    const { server, a, kit } = await account();
+    const olderKeys = structuredClone(server.account?.keys);
+    await a.engine.rotateSecretKey({ password: PASSWORD });
+    a.engine.wipeMemory();
+    const current = server.account;
+    if (!current || !olderKeys) throw new Error('no account');
+    // A server that serves the keyset from before the rotation.
+    server.account = { ...current, keys: { ...current.keys, ...olderKeys } };
+    const passwordBefore = server.passwordTag;
+    const attempt = await device(server, a.factory);
+    await expect(
+      attempt.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: kit }),
+    ).rejects.toMatchObject({ code: 'integrity' });
+    expect(server.passwordTag).toBe(passwordBefore);
   });
 });
