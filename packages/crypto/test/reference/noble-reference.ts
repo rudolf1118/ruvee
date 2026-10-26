@@ -297,8 +297,11 @@ export function refPairing(secret: Uint8Array, accountId: Uint8Array) {
   return {
     pairingId,
     pairKey,
-    requestMac: (deviceId: Uint8Array, platform: number, epk: Uint8Array) =>
-      mac(cat(te.encode('ruvee/v1/pair-req'), pairingId, deviceId, [platform], epk), pairKey),
+    requestMac: (deviceId: Uint8Array, platform: number, epk: Uint8Array, dpk: Uint8Array) =>
+      mac(
+        cat(te.encode('ruvee/v1/pair-req-2'), pairingId, deviceId, [platform], epk, dpk),
+        pairKey,
+      ),
     responseMac: (deviceId: Uint8Array, epk: Uint8Array, ct: Uint8Array) =>
       mac(cat(te.encode('ruvee/v1/pair-resp'), pairingId, deviceId, epk, ct), pairKey),
   };

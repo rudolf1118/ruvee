@@ -67,6 +67,8 @@ export const INPUTS = {
   pairingSecret: pattern(22, 16),
   pairingEphemeralPublicKey: pattern(23, 32),
   pairingEphemeralPrivateKey: pattern(24, 32),
+  /** B's device public key, inside `req_mac` since `pair-req-2` (device-proof.md §8). */
+  pairingDevicePublicKey: pattern(26, 32),
 } as const;
 
 /** Stands in for a sealed box of the right length: the MAC covers whatever bytes the box has. */
@@ -302,6 +304,7 @@ function packagePairing(raw: RawPrimitives): ProvisionalOutputs['pairing'] {
     accountId: INPUTS.accountId,
     deviceId,
     platform: 'web',
+    devicePublicKey: INPUTS.pairingDevicePublicKey,
   });
   const response = crypto.createPairingResponse({
     secret: INPUTS.pairingSecret,
@@ -495,7 +498,14 @@ function referenceVaultOutputs(): Pick<
       return {
         code: refPairingCode(INPUTS.pairingSecret),
         pairingId: hex(ref.pairingId),
-        requestMac: hex(ref.requestMac(deviceId, 1, INPUTS.pairingEphemeralPublicKey)),
+        requestMac: hex(
+          ref.requestMac(
+            deviceId,
+            1,
+            INPUTS.pairingEphemeralPublicKey,
+            INPUTS.pairingDevicePublicKey,
+          ),
+        ),
         payload: hex(payload),
         responseMac: hex(
           ref.responseMac(deviceId, INPUTS.pairingEphemeralPublicKey, fakeBox(payload.length)),

@@ -410,7 +410,14 @@ export const PAIRING_CHECKS: readonly PortableCheck[] = [
       const secret = crypto.generatePairingSecret();
       const accountId = pattern(1, 16);
       const deviceId = pattern(2, 16);
-      const req = crypto.createPairingRequest({ secret, accountId, deviceId, platform: 'web' });
+      const devicePublicKey = crypto.generateDeviceKey().publicKey;
+      const req = crypto.createPairingRequest({
+        secret,
+        accountId,
+        deviceId,
+        platform: 'web',
+        devicePublicKey,
+      });
       assert(same(req.pairingId, crypto.pairingId(secret)), 'request names the pairing');
       const transcript = {
         secret,
@@ -420,7 +427,12 @@ export const PAIRING_CHECKS: readonly PortableCheck[] = [
         ephemeralPublicKey: req.ephemeralPublicKey,
       };
       assert(
-        crypto.verifyPairingRequest({ ...transcript, platform: 'web', mac: req.mac }),
+        crypto.verifyPairingRequest({
+          ...transcript,
+          platform: 'web',
+          devicePublicKey,
+          mac: req.mac,
+        }),
         'A verifies B',
       );
       // A server that swaps the key, the device, the platform or the account is caught (§3.3).
@@ -430,13 +442,25 @@ export const PAIRING_CHECKS: readonly PortableCheck[] = [
         ['other account', { accountId: pattern(4, 16) }],
         ['other pairing id', { pairingId: pattern(5, 16) }],
         ['wrong secret', { secret: crypto.generatePairingSecret() }],
+        ['substituted device key', { devicePublicKey: crypto.generateDeviceKey().publicKey }],
       ] as const)
         assert(
-          !crypto.verifyPairingRequest({ ...transcript, ...over, platform: 'web', mac: req.mac }),
+          !crypto.verifyPairingRequest({
+            ...transcript,
+            devicePublicKey,
+            ...over,
+            platform: 'web',
+            mac: req.mac,
+          }),
           label,
         );
       assert(
-        !crypto.verifyPairingRequest({ ...transcript, platform: 'ios', mac: req.mac }),
+        !crypto.verifyPairingRequest({
+          ...transcript,
+          platform: 'ios',
+          devicePublicKey,
+          mac: req.mac,
+        }),
         'other platform',
       );
 
@@ -456,7 +480,12 @@ export const PAIRING_CHECKS: readonly PortableCheck[] = [
         accountId: uuidToBytes(payload.accountId),
         deviceId: uuidToBytes(payload.deviceId),
       };
-      const req2 = crypto.createPairingRequest({ secret, ...ids, platform: 'web' });
+      const req2 = crypto.createPairingRequest({
+        secret,
+        ...ids,
+        platform: 'web',
+        devicePublicKey,
+      });
       const t2 = {
         secret,
         ...ids,
@@ -512,7 +541,14 @@ export const PAIRING_CHECKS: readonly PortableCheck[] = [
         'other device',
       );
       expectCode(
-        () => crypto.createPairingRequest({ secret, accountId, deviceId, platform: 'tv' as 'web' }),
+        () =>
+          crypto.createPairingRequest({
+            secret,
+            accountId,
+            deviceId,
+            platform: 'tv' as 'web',
+            devicePublicKey,
+          }),
         'invalid_argument',
         'unknown platform',
       );

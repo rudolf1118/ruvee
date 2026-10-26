@@ -18,6 +18,10 @@ const REQUIRED_FUNCTIONS = [
   'crypto_box_keypair',
   'crypto_box_seal',
   'crypto_box_seal_open',
+  'crypto_sign_keypair',
+  'crypto_sign_seed_keypair',
+  'crypto_sign_detached',
+  'crypto_sign_verify_detached',
   'memcmp',
   'crypto_kdf_derive_from_key',
   'crypto_aead_xchacha20poly1305_ietf_encrypt',
@@ -40,6 +44,17 @@ export function libsodiumPrimitives(sodium: Libsodium): RawPrimitives {
         return sodium.crypto_box_seal_open(ciphertext, publicKey, privateKey);
       } catch {
         return null;
+      }
+    },
+    signKeypair: () => sodium.crypto_sign_keypair(),
+    signSeedKeypair: (seed) => sodium.crypto_sign_seed_keypair(seed),
+    signDetached: (message, privateKey) => sodium.crypto_sign_detached(message, privateKey),
+    signVerifyDetached: (signature, message, publicKey) => {
+      // A malformed signature raises in some builds; it is simply not valid.
+      try {
+        return sodium.crypto_sign_verify_detached(signature, message, publicKey);
+      } catch {
+        return false;
       }
     },
     memcmp: (a, b) => sodium.memcmp(a, b),

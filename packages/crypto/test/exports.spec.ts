@@ -35,6 +35,7 @@ describe('public surface (INV-02)', () => {
       'PAIRING_SECRET_BYTES',
       'PASSWORD_MAX_BYTES',
       'PLATFORM_CODES',
+      'PROOF_OPERATIONS',
       'RECOVERY_KEY_BYTES',
       'RuveeCryptoError',
       'UUID_BYTES',

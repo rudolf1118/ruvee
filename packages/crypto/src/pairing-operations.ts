@@ -12,7 +12,13 @@ import {
 import { crockfordDecodeExact, crockfordEncode, crockfordNormalize } from './crockford.js';
 import { RuveeCryptoError } from './errors.js';
 import { UUID_BYTES, UUID_TEXT } from './ids.js';
-import { HASH_BYTES, KEY_BYTES, MAC_BYTES, type Primitives } from './primitives.js';
+import {
+  HASH_BYTES,
+  KEY_BYTES,
+  MAC_BYTES,
+  SIGN_PUBLIC_KEY_BYTES,
+  type Primitives,
+} from './primitives.js';
 import { utf8DecodeStrict, utf8Encode } from './utf8.js';
 
 /**
@@ -32,7 +38,8 @@ const DOMAINS = {
   check: ascii('ruvee/v1/pc-check'),
   id: ascii('ruvee/v1/pairing-id'),
   mac: ascii('ruvee/v1/pairing-mac'),
-  request: ascii('ruvee/v1/pair-req'),
+  /** Version 2 also covers B's device public key `dpk_B` (device-proof.md §8). */
+  request: ascii('ruvee/v1/pair-req-2'),
   response: ascii('ruvee/v1/pair-resp'),
 } as const;
 
@@ -74,12 +81,16 @@ export interface PairingOperations {
   parsePairingCode(text: string): Uint8Array;
   /** `pairing_id = MAC(S, "ruvee/v1/pairing-id")[0..16]`, the only value the server learns. */
   pairingId(secret: Uint8Array): Uint8Array;
-  /** Device B: an ephemeral key pair and `req_mac` over its id, platform and public key. */
+  /**
+   * Device B: an ephemeral key pair and `req_mac` over its id, platform, ephemeral public key
+   * and device public key `dpk_B`, so A approves exactly that device key.
+   */
   createPairingRequest(input: {
     secret: Uint8Array;
     accountId: Uint8Array;
     deviceId: Uint8Array;
     platform: PairingPlatform;
+    devicePublicKey: Uint8Array;
   }): {
     pairingId: Uint8Array;
     ephemeralPublicKey: Uint8Array;
@@ -87,7 +98,9 @@ export interface PairingOperations {
     mac: Uint8Array;
   };
   /** Device A: constant-time check of `req_mac` (§3.2 step 6). */
-  verifyPairingRequest(input: Transcript & { platform: PairingPlatform; mac: Uint8Array }): boolean;
+  verifyPairingRequest(
+    input: Transcript & { platform: PairingPlatform; devicePublicKey: Uint8Array; mac: Uint8Array },
+  ): boolean;
   /** Device A: seals the payload to B's ephemeral key and MACs the reply. */
   createPairingResponse(input: Transcript & { payload: PairingPayload }): {
     ciphertext: Uint8Array;
@@ -239,11 +252,22 @@ export function buildPairingOperations(p: Primitives): PairingOperations {
     }
   };
 
-  const requestMac = (t: ReturnType<typeof transcript>, platform: number) =>
+  const requestMac = (
+    t: ReturnType<typeof transcript>,
+    platform: number,
+    devicePublicKey: Uint8Array,
+  ) =>
     withPairKey(t.secret, t.accountId, (key) =>
       p.mac(
         MAC_BYTES,
-        concat(DOMAINS.request, t.pairingId, t.deviceId, u8(platform), t.ephemeralPublicKey),
+        concat(
+          DOMAINS.request,
+          t.pairingId,
+          t.deviceId,
+          u8(platform),
+          t.ephemeralPublicKey,
+          requireBytes(devicePublicKey, 'devicePublicKey', SIGN_PUBLIC_KEY_BYTES),
+        ),
         key,
       ),
     );
@@ -307,7 +331,7 @@ export function buildPairingOperations(p: Primitives): PairingOperations {
         pairingId,
         ephemeralPublicKey: pair.publicKey,
         ephemeralPrivateKey: pair.privateKey,
-        mac: requestMac(t, platform),
+        mac: requestMac(t, platform, i.devicePublicKey as Uint8Array),
       };
     },
 
@@ -318,7 +342,7 @@ export function buildPairingOperations(p: Primitives): PairingOperations {
       const mac = requireBytes(i.mac, 'mac', MAC_BYTES);
       // pairing_id is public; only the MAC comparison needs to be constant-time.
       const idOk = publicBytesEqual(derivedId(t.secret), t.pairingId);
-      return p.macEqual(requestMac(t, platform), mac) && idOk;
+      return p.macEqual(requestMac(t, platform, i.devicePublicKey as Uint8Array), mac) && idOk;
     },
 
     createPairingResponse(value) {

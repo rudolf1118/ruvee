@@ -50,6 +50,15 @@ export {
   type SealManifestInput,
   type VaultOperations,
 } from './vault-operations.js';
+export {
+  PROOF_OPERATIONS,
+  type AccountProofInput,
+  type DeviceKeyPair,
+  type DeviceProofInput,
+  type DeviceProofOperations,
+  type ProofField,
+  type ProofOperation,
+} from './device-proof.js';
 export { KEYSET_FORMAT_VERSION, type Keyset, type KeysetVault } from './keyset.js';
 export type {
   AccountUnlockKeyInput,

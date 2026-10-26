@@ -39,6 +39,14 @@ export interface RawPrimitives {
     publicKey: Uint8Array,
     privateKey: Uint8Array,
   ): Uint8Array | null;
+  /** `crypto_sign_keypair`: a random Ed25519 key pair (device-proof.md §2). */
+  signKeypair(): { publicKey: Uint8Array; privateKey: Uint8Array };
+  /** `crypto_sign_seed_keypair`: the Ed25519 key pair of a 32-byte seed. */
+  signSeedKeypair(seed: Uint8Array): { publicKey: Uint8Array; privateKey: Uint8Array };
+  /** `crypto_sign_detached`. */
+  signDetached(message: Uint8Array, privateKey: Uint8Array): Uint8Array;
+  /** `crypto_sign_verify_detached`; false for any invalid signature. */
+  signVerifyDetached(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean;
   /** `sodium_memcmp`: constant-time equality of two equal-length buffers. */
   memcmp(a: Uint8Array, b: Uint8Array): boolean;
   /** `crypto_aead_xchacha20poly1305_ietf_encrypt` in combined mode. */
@@ -80,6 +88,8 @@ export const KDF_CONTEXTS = {
   keyset: 'rvkeyst1',
   local: 'rvlocal1',
   manifest: 'rvmanif1',
+  /** The seed of `AVSK`, the `AK`-derived signing key (device-proof.md §2). */
+  accountProof: 'rvakver1',
 } as const;
 const ALLOWED_KDF_CONTEXTS: ReadonlySet<string> = new Set(Object.values(KDF_CONTEXTS));
 
@@ -89,6 +99,13 @@ const ALLOWED_KDF_CONTEXTS: ReadonlySet<string> = new Set(Object.values(KDF_CONT
  */
 export const MAC_MESSAGE_MAX_BYTES = 8192;
 export const BOX_PUBLIC_KEY_BYTES = 32;
+export const SIGN_PUBLIC_KEY_BYTES = 32;
+/** libsodium's Ed25519 secret key: the 32-byte seed followed by the public key. */
+export const SIGN_SECRET_KEY_BYTES = 64;
+export const SIGN_SEED_BYTES = 32;
+export const SIGNATURE_BYTES = 64;
+/** The signed inputs of device-proof.md §4 are 151 bytes each; nothing larger is signed. */
+export const SIGN_MESSAGE_MAX_BYTES = 256;
 export const BOX_SEAL_OVERHEAD_BYTES = 48;
 /** Largest sealed-box plaintext: the pairing payload (device-enrollment §3.2 step 8). */
 export const BOX_PLAINTEXT_MAX_BYTES = 4096 - BOX_SEAL_OVERHEAD_BYTES;
@@ -127,6 +144,10 @@ export interface Primitives {
   ): Uint8Array | null;
   /** Constant-time comparison of two 32-byte MACs. */
   macEqual(a: Uint8Array, b: Uint8Array): boolean;
+  signKeypair(): { publicKey: Uint8Array; privateKey: Uint8Array };
+  signSeedKeypair(seed: Uint8Array): { publicKey: Uint8Array; privateKey: Uint8Array };
+  sign(message: Uint8Array, privateKey: Uint8Array): Uint8Array;
+  verify(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean;
   kdf(subkeyLength: number, subkeyId: number, context: string, key: Uint8Array): Uint8Array;
   aeadEncrypt(
     plaintext: Uint8Array,
@@ -258,6 +279,39 @@ export function guardPrimitives(raw: RawPrimitives): Primitives {
       return plaintext === null
         ? null
         : expectLength(plaintext, ciphertext.length - BOX_SEAL_OVERHEAD_BYTES);
+    },
+
+    signKeypair() {
+      const pair = call(() => raw.signKeypair());
+      return {
+        publicKey: expectLength(pair.publicKey, SIGN_PUBLIC_KEY_BYTES),
+        privateKey: expectLength(pair.privateKey, SIGN_SECRET_KEY_BYTES),
+      };
+    },
+
+    signSeedKeypair(seed: Uint8Array) {
+      exactBytes(seed, 'seed', SIGN_SEED_BYTES);
+      const pair = call(() => raw.signSeedKeypair(seed));
+      return {
+        publicKey: expectLength(pair.publicKey, SIGN_PUBLIC_KEY_BYTES),
+        privateKey: expectLength(pair.privateKey, SIGN_SECRET_KEY_BYTES),
+      };
+    },
+
+    sign(message: Uint8Array, privateKey: Uint8Array): Uint8Array {
+      boundedBytes(message, 'message', 1, SIGN_MESSAGE_MAX_BYTES);
+      exactBytes(privateKey, 'privateKey', SIGN_SECRET_KEY_BYTES);
+      return expectLength(
+        call(() => raw.signDetached(message, privateKey)),
+        SIGNATURE_BYTES,
+      );
+    },
+
+    verify(signature: Uint8Array, message: Uint8Array, publicKey: Uint8Array): boolean {
+      exactBytes(signature, 'signature', SIGNATURE_BYTES);
+      boundedBytes(message, 'message', 1, SIGN_MESSAGE_MAX_BYTES);
+      exactBytes(publicKey, 'publicKey', SIGN_PUBLIC_KEY_BYTES);
+      return call(() => raw.signVerifyDetached(signature, message, publicKey));
     },
 
     macEqual(a: Uint8Array, b: Uint8Array): boolean {
