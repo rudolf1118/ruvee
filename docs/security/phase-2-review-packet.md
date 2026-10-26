@@ -11,16 +11,16 @@ evidence for the specific behaviour it exercises, not proof that an invariant ho
 
 ## 1. How to reproduce
 
-| Suite                              | Command                                                                                         | Result on 2026-10-26                                            |
-| ---------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
-| Format, lint, types                | `pnpm format:check && pnpm lint && pnpm typecheck`                                              | Pass                                                            |
-| Unit                               | `pnpm test`                                                                                     | contracts 34, API 68, web 33, vault 41, extension 27, crypto 60 |
-| Integration (real PostgreSQL)      | `DATABASE_URL=… pnpm test:integration`                                                          | 52 passed, 3 todo (D-28 placeholders)                           |
-| Crypto in browsers                 | `pnpm --filter @ruvee/crypto test:browsers`                                                     | 24 checks × 6 contexts                                          |
-| Headers, CSP, OPAQUE, local fonts  | `pnpm --filter @ruvee/web test:headers`                                                         | 33, three engines                                               |
-| Design preview                     | `pnpm --filter @ruvee/web test:e2e`                                                             | 8 (no network needed since the fonts are local)                 |
-| Web vault, three devices, real API | `RUVEE_E2E_ADMIN_DATABASE_URL=… RUVEE_E2E_BROWSER=<engine> pnpm --filter @ruvee/web test:vault` | Pass in Chromium, Firefox, WebKit                               |
-| Extension, real API and web app    | `RUVEE_E2E_ADMIN_DATABASE_URL=… pnpm --filter @ruvee/extension test:extension`                  | 9, Chromium (unpacked test build)                               |
+| Suite                                            | Command                                                                                         | Result on 2026-10-26                                            |
+| ------------------------------------------------ | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Format, lint, types                              | `pnpm format:check && pnpm lint && pnpm typecheck`                                              | Pass                                                            |
+| Unit                                             | `pnpm test`                                                                                     | contracts 34, API 68, web 33, vault 44, extension 27, crypto 60 |
+| Integration (real PostgreSQL)                    | `DATABASE_URL=… pnpm test:integration`                                                          | 52 passed, 3 todo (D-28 placeholders)                           |
+| Crypto in browsers                               | `pnpm --filter @ruvee/crypto test:browsers`                                                     | 24 checks × 6 contexts                                          |
+| Headers, CSP, OPAQUE, local fonts                | `pnpm --filter @ruvee/web test:headers`                                                         | 33, three engines                                               |
+| Design preview                                   | `pnpm --filter @ruvee/web test:e2e`                                                             | 8 (no network needed since the fonts are local)                 |
+| Web vault, three devices and an export, real API | `RUVEE_E2E_ADMIN_DATABASE_URL=… RUVEE_E2E_BROWSER=<engine> pnpm --filter @ruvee/web test:vault` | Pass in Chromium, Firefox, WebKit                               |
+| Extension, real API and web app                  | `RUVEE_E2E_ADMIN_DATABASE_URL=… pnpm --filter @ruvee/extension test:extension`                  | 9, Chromium (unpacked test build)                               |
 
 The integration, vault and extension suites create and drop their own `ruvee_it_*` and
 `ruvee_e2e_*` databases on the server they are given.
@@ -71,6 +71,7 @@ Closed (each is a test in `apps/extension/e2e/extension.spec.ts` unless noted):
 | Refresh-token reuse         | A copied refresh token presented after the extension rotated it is refused, the session family is revoked, the extension locks, and a `refresh_reuse` event exists.                                                                                                                              |
 | `storage.session` access    | Refused to a content script; absent from the page's main world.                                                                                                                                                                                                                                  |
 | Logout                      | Removes `AK` and both tokens and ends the server session. Writing this test found orphaned server sessions after a second sign-in from the same device; a new login now supersedes that device's older sessions (`tokens`/`account-security` integration tests).                                 |
+| Encrypted export            | `vault-engine.test.ts`: round trip onto a device with no account, wrong or mistyped kit, wrong password, and 18 tamperings each refused; web vault e2e: export from Security, opened in a fresh browser context, wrong kit refused, file and request bodies scanned, nothing stored.             |
 | Fonts                       | The web app no longer fetches Google fonts at build or run time; `security-headers.spec.ts` checks that every font request is to the app's own origin. The export is pixel-identical (compared during the change).                                                                               |
 
 Remaining, and why:
@@ -113,14 +114,18 @@ Choices made while building that a reviewer should confirm. None weakens an inva
 9. **Activity** re-filters event details through the allowlist on the way out as well as on write.
 10. **The web client adopts a newer keyset only under the current `AK` and the same vault id**;
     anything else stops sync with an integrity error (unchanged from the web-vault milestone).
-11. **A login for a known device supersedes that device's older cookie and token sessions**
+11. **The encrypted export (D-13 A)** carries its own `recoveryKeyId`, freshly generated: devices
+    do not learn the server kit's id. The verifier passes every expectation from the file's fields
+    and lets the AEADs and `items_digest` reject any difference; it never reads a key id from an
+    envelope header.
+12. **A login for a known device supersedes that device's older cookie and token sessions**
     (revoke reason `superseded`). Recovery sessions are not affected.
-12. **Bearer tokens:** the extension fetches with `credentials: 'omit'`; unauthenticated writes from
+13. **Bearer tokens:** the extension fetches with `credentials: 'omit'`; unauthenticated writes from
     an extension origin pass the CSRF check only if listed in `EXTENSION_ORIGINS` and cookie-less;
     registration and recovery stay web-only.
-13. **D-27:** only `AK` (not `VK`) is kept in `chrome.storage.session`; sync-protocol §12 names
+14. **D-27:** only `AK` (not `VK`) is kept in `chrome.storage.session`; sync-protocol §12 names
     both. Idleness is checked before every message as well as by the alarm.
-14. **The extension's popup can only call an allow-listed subset of engine methods**, without
+15. **The extension's popup can only call an allow-listed subset of engine methods**, without
     `secret`; fills happen in the worker.
 
 ## 4. Changes to the threat model and risk register
@@ -177,9 +182,13 @@ has been reviewed by anyone other than its authors.
    userinfo, IDN/trailing dot), `fill.ts` (top frame, visible fields, in-page origin re-check),
    and the worker's re-read of the tab URL before injection.
 8. **Sync verification:** `packages/vault/src/sync-logic.ts` and the engine's pull, rebase, push.
-9. **OPAQUE integration:** `apps/api/src/auth/` and both clients' D-02 configuration.
-10. **Web delivery:** CSP and headers, `deploy/Caddyfile`, local fonts, and the trust model of a
+9. **Encrypted export format** (D-13 A, approved for development only):
+   `packages/vault/src/export-file.ts` and the engine's `exportVault`/`exportOpen` against
+   backup-restore.md §4: that every field is bound by an existing envelope or `items_digest`, the
+   fail-closed order, key wiping, and that the file never leaves the client.
+10. **OPAQUE integration:** `apps/api/src/auth/` and both clients' D-02 configuration.
+11. **Web delivery:** CSP and headers, `deploy/Caddyfile`, local fonts, and the trust model of a
     server-served client (D-07, R-01).
 
-Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), backups (designs proposed in
-[backup-restore.md](../architecture/backup-restore.md), not built).
+Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), server backups (designed in
+[backup-restore.md](../architecture/backup-restore.md), blocked on D-28).

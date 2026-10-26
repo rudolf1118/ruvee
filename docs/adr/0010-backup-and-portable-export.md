@@ -1,6 +1,6 @@
 # ADR-0010: Server backups for disaster recovery; portable exports as envelope containers
 
-- Status: Proposed (owner decisions D-13 and D-28 pending)
+- Status: Proposed. D-13 option A approved by the owner for development (2026-10-26); D-28 pending
 - Date: 2026-10-26
 - Specification: [backup-restore.md](../architecture/backup-restore.md)
 

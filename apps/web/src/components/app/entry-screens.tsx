@@ -17,10 +17,12 @@ export function WelcomeScreen({
   onCreate,
   onLogin,
   onRecover,
+  onOpenExport,
 }: {
   onCreate: () => void;
   onLogin: () => void;
   onRecover: () => void;
+  onOpenExport: () => void;
 }) {
   return (
     <AuthCard title="Keep every password in one calm, safe place.">
@@ -39,6 +41,9 @@ export function WelcomeScreen({
       </div>
       <Button variant="link" className="-ml-2 self-start" onClick={onRecover}>
         Lost your password or devices? Use your Recovery Kit
+      </Button>
+      <Button variant="link" className="-ml-2 self-start" onClick={onOpenExport}>
+        Open an encrypted export
       </Button>
       {showPreviewLink ? (
         <Link

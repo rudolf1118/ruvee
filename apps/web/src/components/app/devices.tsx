@@ -10,6 +10,7 @@ import { DevelopmentNotice } from './auth-layout';
 import { Notice, PasswordField, TextField } from './fields';
 import { messageFor } from './messages';
 import { PLATFORM_NAMES } from './pairing';
+import { ExportSection } from './export';
 import { RecoveryKitPanel } from './recovery-kit';
 import { relativeTime } from './view-model';
 
@@ -360,6 +361,8 @@ export function SecurityPanel({ client, onClose }: { client: VaultClient; onClos
       <SecretKeySection client={client} />
       <hr className="border-line" />
       <RecoveryKitSection client={client} />
+      <hr className="border-line" />
+      <ExportSection client={client} />
     </Panel>
   );
 }

@@ -49,6 +49,10 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   kitRotateVerify: (e, p: Parameters<VaultEngine['kitRotateVerify']>[0]) => e.kitRotateVerify(p),
   kitRotateFinish: (e, p: Parameters<VaultEngine['kitRotateFinish']>[0]) => e.kitRotateFinish(p),
   kitRotateCancel: (e) => e.kitRotateCancel(),
+  exportVault: (e, p: Parameters<VaultEngine['exportVault']>[0]) => e.exportVault(p),
+  exportOpen: (e, p: Parameters<VaultEngine['exportOpen']>[0]) => e.exportOpen(p),
+  exportSecret: (e, p: Parameters<VaultEngine['exportSecret']>[0]) => e.exportSecret(p),
+  exportClose: (e) => e.exportClose(),
   logout: (e) => e.logout(),
   wipe: (e) => {
     e.wipeMemory();

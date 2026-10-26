@@ -23,6 +23,7 @@ import type {
   ActivityPage,
   ConflictView,
   DeviceView,
+  ExportView,
   DevicePhase,
   PairingCode,
   PairingHostStatus,
@@ -33,12 +34,15 @@ import type {
   RecoveryKitView,
   SyncStatus,
   UnlockedVault,
-  VaultErrorCode,
   VaultEvent,
 } from './protocol.js';
 import { ApiError, NetworkError, type Api } from './api.js';
 import { fromB64, fromUtf8, toB64, utf8 } from './bytes.js';
 import type { DeviceRecord, DeviceStore, EnrolledKeys } from './store.js';
+import { buildExport, openExport, type OpenedExport } from './export-file.js';
+import { VaultError } from './vault-error.js';
+
+export { VaultError } from './vault-error.js';
 import {
   buildCommit,
   rebase,
@@ -51,16 +55,6 @@ import {
   type SyncedItem,
   type VaultKeys,
 } from './sync-logic.js';
-
-export class VaultError extends Error {
-  constructor(
-    readonly code: VaultErrorCode,
-    readonly retryAfterSeconds?: number,
-  ) {
-    super(code);
-    this.name = 'VaultError';
-  }
-}
 
 /** The OPAQUE client calls the engine needs, with the D-02 configuration fixed by the caller. */
 export interface OpaqueClient {
@@ -291,6 +285,8 @@ export class VaultEngine {
         verified: boolean;
       }
     | undefined;
+  /** An export opened read-only (backup-restore.md §4.4): its bodies, in memory only. */
+  private opened: OpenedExport | undefined;
   /** An unfinished recovery: what `RK` unlocked, then the new password and Recovery Key. */
   private recovery: PendingRecovery | undefined;
   /** Serializes every state change, so a save never interleaves with a sync. */
@@ -2478,6 +2474,85 @@ export class VaultEngine {
     return true;
   }
 
+  // ---- Portable encrypted export (backup-restore.md §4, D-13 option A) ----
+
+  /**
+   * Makes the export from this device's verified state, after step-up and a sync, with nothing
+   * pending or in conflict, so the file is exactly the manifest it carries. The result is
+   * ciphertext only; the UI hands it to the browser as a download and it is never uploaded.
+   */
+  exportVault(params: {
+    password: string;
+    recoveryKey: string;
+  }): Promise<{ fileName: string; text: string }> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      // Checked first, so a typo costs no step-up.
+      try {
+        this.deps.crypto.parseRecoveryKey(params.recoveryKey).fill(0);
+      } catch {
+        throw new VaultError('invalid_recovery_key');
+      }
+      try {
+        await this.stepUp(params.password);
+      } catch (error) {
+        return this.onlineFailure(error);
+      }
+      await this.syncNow();
+      if (session.state === 'offline') throw new VaultError('offline');
+      if (session.state === 'integrity_error') throw new VaultError('read_only');
+      // The file must be exactly the verified state its manifest describes.
+      if (
+        session.state !== 'synced' ||
+        session.pending.length > 0 ||
+        session.inflight ||
+        session.conflicts.size > 0
+      )
+        throw new VaultError('unsynced_changes');
+      const manifest = await this.deps.store.manifest();
+      if (manifest?.seq !== session.checkpoint.seq) throw new VaultError('internal');
+      const enrolled = session.device.enrolled;
+      const text = buildExport({
+        crypto: this.deps.crypto,
+        accountId: session.device.accountId,
+        vaultId: session.vault.vaultId,
+        accountKey: session.accountKey,
+        accountKeyId: enrolled.akId,
+        accountKeyEpoch: enrolled.akEpoch,
+        recoveryKeyText: params.recoveryKey,
+        keyset: { version: enrolled.keysetVersion, envelope: enrolled.keyset },
+        manifest,
+        items: session.synced,
+      });
+      const day = new Date(this.deps.now()).toISOString().slice(0, 10);
+      return { fileName: `ruvee-export-${day}.ruvee`, text };
+    });
+  }
+
+  /** Opens an export read-only, with no account and no network (§4.3, §4.4). */
+  exportOpen(params: { text: string; recoveryKey: string }): ExportView {
+    this.opened = undefined;
+    const opened = openExport(this.deps.crypto, params.text, params.recoveryKey);
+    this.opened = opened;
+    return {
+      asOfMs: opened.asOfMs,
+      authorDeviceId: opened.authorDeviceId,
+      items: [...opened.items].map(([id, item]) => detailOf(id, item.body, false, null)),
+    };
+  }
+
+  /** A password from the opened export, on an explicit reveal by the user. */
+  exportSecret(params: { id: string }): string {
+    const body = this.opened?.items.get(params.id)?.body;
+    if (!body) throw new VaultError('not_found');
+    return body.type === 'login' ? body.login.password : '';
+  }
+
+  exportClose(): true {
+    this.opened = undefined;
+    return true;
+  }
+
   /** A failed online call: a revoked device wipes itself (INV-15); anything else is reported. */
   private async onlineFailure(error: unknown): Promise<never> {
     const e = vaultErrorFrom(error);
@@ -2786,6 +2861,7 @@ export class VaultEngine {
     for (const id of [...this.hosting.keys()]) this.dropHosted(id);
     this.dropJoining();
     this.pendingPassword = undefined;
+    this.opened = undefined;
   }
 }
 

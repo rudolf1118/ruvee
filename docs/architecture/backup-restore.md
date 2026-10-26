@@ -1,8 +1,8 @@
 # Backup and restore
 
-Status: **Proposed (2026-10-26), for owner decision.** Nothing in this document is approved. The
-portable export format (§4) is blocked on **D-13**; the restore rules for server backups (§3.4)
-are blocked on **D-28**. ADR: [ADR-0010](../adr/0010-backup-and-portable-export.md). Not
+Status: **Proposed (2026-10-26).** **D-13 option A was approved by the owner for development on
+2026-10-26**, and the export (§4) is implemented to that design; the restore rules for server
+backups (§3.4) are still blocked on **D-28**. ADR: [ADR-0010](../adr/0010-backup-and-portable-export.md). Not
 independently reviewed (D-19).
 
 ## 1. What the repository already requires
@@ -168,7 +168,7 @@ restore, repeats all of the above.
   keep reading offline and, once re-seeding exists, rebuild the server. With no such device the
   vault is permanently lost. No operator action can help (INV-18).
 
-## 4. Portable encrypted export (milestone M2, blocked on D-13)
+## 4. Portable encrypted export (milestone M2)
 
 ### 4.1 Recommendation: a container of existing envelopes, opened only by the Recovery Kit
 
@@ -182,7 +182,8 @@ existing one. It adds **no new cipher, KDF, MAC or purpose**:
 | Manifest  | `MANIFEST` (`0x06`) at the newest `seq` the exporting device verified                                                              | AEAD under `K_manifest` from `VK`; contains `items_digest`, counts, author device and time |
 | Items     | Item records (`ITEM_KEY` `0x04` + `ITEM_BODY` `0x05`) exactly as synced, and tombstones                                            | `items_digest` in the manifest, and each envelope's own context                            |
 
-The `AK` wrap is made **at export time from the Recovery Key the user types** (the client already
+The `AK` wrap is made **at export time from the Recovery Key the user types**, with a fresh
+16-byte `recoveryKeyId` as its key id (the client already
 does this when it creates a kit, `wrapAccountKeyForRecovery`). This proves the user holds a key
 that opens the export before the file exists, and keeps the export independent of later kit
 rotations: it opens with the kit typed, nothing else.
@@ -193,7 +194,7 @@ truncation, reordering, a missing item or an extra item are all caught by `items
 
 Alternatives (D-13 options B and C) are in §7.
 
-### 4.2 Proposed schema (not final until D-13)
+### 4.2 Schema (version 1, as implemented in `packages/vault/src/export-file.ts`)
 
 One UTF-8 JSON document, `application/vnd.ruvee.export+json`, extension `.ruvee`. All byte
 values are unpadded base64url of the exact bytes (cryptographic-design §2). Unknown fields are
@@ -207,6 +208,7 @@ refused.
   "vaultId": "<uuid>",
   "akId": "<16 B>",
   "akEpoch": 1,
+  "recoveryKeyId": "<16 B, this wrap's key id>",
   "recoveryWrap": "<AK_WRAP_RECOVERY envelope, exactly 93 B>",
   "keyset": { "version": 2, "envelope": "<KEYSET envelope, 61..16445 B>" },
   "manifest": { "seq": 1234, "envelope": "<MANIFEST envelope, exactly 198 B>" },
@@ -222,9 +224,10 @@ device are **not** header fields: they are read from the authenticated manifest.
 
 1. Parse strictly against the schema; any unknown field, duplicate item, bad bound or bad
    base64url fails.
-2. Parse the typed Recovery Key (checksum); derive `RWK`. Open `recoveryWrap` with key id equal to
-   the envelope's `recovery_key_id` and context `accountId ‖ akId ‖ akEpoch` → `AK`. Failure:
-   "This Recovery Kit doesn't open this export."
+2. Parse the typed Recovery Key (checksum); derive `RWK`. Open `recoveryWrap` with the expected
+   key id `recoveryKeyId` and context `accountId ‖ akId ‖ akEpoch` → `AK`; the expectations come
+   from the file's fields and the AEAD rejects any that differ from what it authenticates (INV-03).
+   Failure: "This Recovery Key doesn't open this export."
 3. Open `keyset.envelope` with `accountId` and `keyset.version` → `SK`, vault keys. The keyset's
    only vault must have id `vaultId`.
 4. Open `manifest.envelope` under `K_manifest` with `vaultId` and `manifest.seq`; its plaintext
@@ -264,8 +267,9 @@ with one new device and no history.
 ### 4.6 If the Recovery Kit is lost
 
 The export can never be opened. Nothing on the server or in any other file helps. The export
-screen says this before creating the file, and the file name carries the kit id
-(`recoveryKeyIdShort`), so the user can tell which kit it needs.
+screen says this before creating the file. Devices do not learn the server kit's id, so
+`recoveryKeyId` is generated for each export and does not name a kit; the file name carries only
+the date. The user must remember which kit they typed.
 
 ### 4.7 Never on the server
 
@@ -339,7 +343,12 @@ Each test creates its own `ruvee_it_*` / `ruvee_e2e_*` database and synthetic ac
 4. Tests R1 to R12, building on `test/support/backup-snapshot.ts` and real `pg_dump` (CI installs the PostgreSQL 18 client). Depends on 1 to 3.
 5. Operator guide: where to keep dumps and the setup file, restore steps, what users will see. Depends on 1 to 3.
 
-**M2 (after D-13 and a review of §4)**
+**M2 (D-13 approved for development; independent review of §4 still required)**
+
+Status 2026-10-26: steps 1 to 3 and the E1 to E4, E6 tests are implemented (`export-file.ts`,
+`exportVault`/`exportOpen` in the engine, Security → Encrypted export, "Open an encrypted export"
+on the welcome screen, `vault-engine.test.ts` and the web vault e2e). Step 4 (import into a fresh
+installation), E5 and E7 (fixed vectors) are not done.
 
 1. Export builder and verifier in `packages/vault` (pure, over `@ruvee/crypto`), with fixed synthetic vectors (E7). Depends on D-13.
 2. Web: Security → "Export an encrypted copy": step-up, sync, Recovery Key entry, download. Depends on 1.

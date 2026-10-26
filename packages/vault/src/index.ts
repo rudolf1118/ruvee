@@ -5,6 +5,7 @@
  */
 export * from './api.js';
 export * from './dispatch.js';
+export * from './export-file.js';
 export * from './item-schema.js';
 export * from './password-policy.js';
 export * from './protocol.js';

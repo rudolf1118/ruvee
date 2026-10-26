@@ -128,6 +128,8 @@ export type VaultErrorCode =
   | 'cannot_revoke_current'
   | 'changed_elsewhere'
   | 'previous_password_required'
+  | 'invalid_export'
+  | 'unsynced_changes'
   | 'integrity'
   | 'internal';
 
@@ -182,6 +184,14 @@ export interface ActivityEvent {
 export interface ActivityPage {
   readonly events: readonly ActivityEvent[];
   readonly nextCursor: string | null;
+}
+
+/** An encrypted export opened read-only; passwords stay in the worker until revealed. */
+export interface ExportView {
+  /** Authenticated by the export's manifest. */
+  readonly asOfMs: number;
+  readonly authorDeviceId: string;
+  readonly items: readonly ItemDetail[];
 }
 
 export interface SessionView {
@@ -240,6 +250,13 @@ export interface VaultMethods {
   kitRotateVerify(params: { recoveryKey: string }): true;
   kitRotateFinish(params: { password: string }): true;
   kitRotateCancel(): true;
+  exportVault(params: { password: string; recoveryKey: string }): {
+    fileName: string;
+    text: string;
+  };
+  exportOpen(params: { text: string; recoveryKey: string }): ExportView;
+  exportSecret(params: { id: string }): string;
+  exportClose(): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

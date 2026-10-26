@@ -667,3 +667,137 @@ describe('vault engine', () => {
     expect(a.events).toContainEqual({ event: 'ended', reason: 'session_expired' });
   });
 });
+
+describe('portable encrypted export (backup-restore.md §4, D-13 option A)', () => {
+  async function exported() {
+    const server = new FakeServer();
+    const { a, kit } = await createAccount(server);
+    await a.engine.save({ draft: login('Exported Mail', 'synthetic-export-pw-1') });
+    const gone = await a.engine.save({ draft: login('Deleted before export') });
+    await a.engine.trash({ id: gone.id });
+    await a.engine.purge({ id: gone.id });
+    await a.engine.sync();
+    const file = await a.engine.exportVault({ password: PASSWORD, recoveryKey: kit });
+    return { server, a, kit, file };
+  }
+
+  it('opens on a device with no account, with the kit typed at export time', async () => {
+    const { server, a, kit, file } = await exported();
+    expect(file.fileName).toMatch(/^ruvee-export-\d{4}-\d{2}-\d{2}\.ruvee$/);
+    // Nothing of the export went to the server.
+    expect(server.received.join('\n')).not.toContain('ruvee-export');
+    const clean = await device(new FakeServer());
+    const view = clean.engine.exportOpen({ text: file.text, recoveryKey: kit });
+    expect(view.items.map((i) => i.title)).toEqual(['Exported Mail']);
+    expect(view.authorDeviceId).toBe(((await a.engine.phase()) as { deviceId: string }).deviceId);
+    expect(view.asOfMs).toBeGreaterThan(0);
+    const id = view.items[0]?.id ?? '';
+    expect(clean.engine.exportSecret({ id })).toBe('synthetic-export-pw-1');
+    // Read-only and in memory: nothing was stored on the clean device.
+    expect(await clean.store.device()).toBeUndefined();
+    clean.engine.exportClose();
+    expect(await code(Promise.resolve().then(() => clean.engine.exportSecret({ id })))).toBe(
+      'not_found',
+    );
+  });
+
+  it('refuses another kit, a mistyped kit and a wrong password, before making anything', async () => {
+    const { a, kit, file } = await exported();
+    const other = crypto.formatRecoveryKey(crypto.generateRecoveryKey().recoveryKey);
+    const clean = await device(new FakeServer());
+    const open = (recoveryKey: string, text = file.text) =>
+      code(Promise.resolve().then(() => clean.engine.exportOpen({ text, recoveryKey })));
+    expect(await open(other)).toBe('kit_mismatch');
+    expect(await open('RK1-00000')).toBe('invalid_recovery_key');
+    expect(await code(a.engine.exportVault({ password: PASSWORD, recoveryKey: 'RK1-0' }))).toBe(
+      'invalid_recovery_key',
+    );
+    expect(
+      await code(a.engine.exportVault({ password: 'synthetic wrong guess', recoveryKey: kit })),
+    ).toBe('wrong_password');
+  });
+
+  it('fails closed on any change to any part of the file', async () => {
+    const { kit, file } = await exported();
+    const clean = await device(new FakeServer());
+    const flip = (text: string, at = 12) =>
+      `${text.slice(0, at)}${text[at] === 'A' ? 'B' : 'A'}${text.slice(at + 1)}`;
+    type File = Record<string, unknown> & {
+      items: { itemId: string; revision: number; record: string | null }[];
+      keyset: { version: number; envelope: string };
+      manifest: { seq: number; envelope: string };
+    };
+    const base = JSON.parse(file.text) as File;
+    const variant = (change: (f: File) => void) => {
+      const f = JSON.parse(file.text) as File;
+      change(f);
+      return JSON.stringify(f);
+    };
+    const firstLive = base.items.findIndex((i) => i.record !== null);
+    const cases: [string, string, string][] = [
+      ['AK wrap', variant((f) => (f.recoveryWrap = flip(String(f.recoveryWrap)))), 'kit_mismatch'],
+      [
+        'wrap id',
+        variant((f) => (f.recoveryKeyId = flip(String(f.recoveryKeyId), 3))),
+        'kit_mismatch',
+      ],
+      ['account id', variant((f) => (f.accountId = crypto.generateUuid())), 'kit_mismatch'],
+      ['keyset', variant((f) => (f.keyset.envelope = flip(f.keyset.envelope, 40))), 'integrity'],
+      ['keyset version', variant((f) => (f.keyset.version += 1)), 'integrity'],
+      ['vault id', variant((f) => (f.vaultId = crypto.generateUuid())), 'integrity'],
+      [
+        'manifest',
+        variant((f) => (f.manifest.envelope = flip(f.manifest.envelope, 60))),
+        'integrity',
+      ],
+      ['manifest seq', variant((f) => (f.manifest.seq += 1)), 'integrity'],
+      [
+        'a record',
+        variant((f) => {
+          const item = f.items[firstLive];
+          if (item?.record) item.record = flip(item.record, 80);
+        }),
+        'integrity',
+      ],
+      [
+        'a revision',
+        variant((f) => {
+          const item = f.items[firstLive];
+          if (item) item.revision += 1;
+        }),
+        'integrity',
+      ],
+      ['a dropped item', variant((f) => f.items.splice(firstLive, 1)), 'integrity'],
+      [
+        'a tombstone made live',
+        variant((f) => {
+          const dead = f.items.find((i) => i.record === null);
+          const live = f.items[firstLive];
+          if (dead && live) dead.record = live.record;
+        }),
+        'integrity',
+      ],
+      [
+        'a duplicated item',
+        variant((f) => {
+          const first = f.items[0];
+          if (first) f.items.push(first);
+        }),
+        'invalid_export',
+      ],
+      ['reordered items', variant((f) => f.items.reverse()), 'invalid_export'],
+      ['another version', variant((f) => (f.version = 2)), 'invalid_export'],
+      ['an unknown field', variant((f) => (f.note = 'x')), 'invalid_export'],
+      ['a truncated file', file.text.slice(0, -40), 'invalid_export'],
+      ['not JSON', 'ruvee', 'invalid_export'],
+    ];
+    expect(base.items.length).toBe(2);
+    for (const [what, text, expected] of cases)
+      expect(
+        await code(
+          Promise.resolve().then(() => clean.engine.exportOpen({ text, recoveryKey: kit })),
+        ),
+        what,
+      ).toBe(expected);
+  });
+});

@@ -83,7 +83,7 @@ async function expectAccessible(page: Page) {
 
 test.describe.configure({ mode: 'serial' });
 
-test('devices: setup, items, pairing, sync, conflict, lock, recovery, password change, removal, SK and kit rotation', async ({
+test('devices: setup, items, pairing, sync, conflict, lock, recovery, password change, removal, SK and kit rotation, encrypted export', async ({
   browser,
 }) => {
   test.setTimeout(300_000);
@@ -360,6 +360,45 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   await expect(a.getByText('The Recovery Kit was used to start a recovery').first()).toBeVisible();
   await expectAccessible(a);
 
+  // ---- Encrypted export (backup-restore.md §4, D-13 A): made on A, opened with no account ----
+  await a.getByRole('button', { name: 'Security', exact: true }).click();
+  const exportSection = a.getByRole('region', { name: 'Encrypted export' });
+  await exportSection.getByLabel('Recovery Key for this export').fill(rotatedKit);
+  await exportSection.getByRole('textbox', { name: 'Master password', exact: true }).fill(CHANGED);
+  const downloading = a.waitForEvent('download');
+  await exportSection.getByRole('button', { name: 'Download encrypted export' }).click();
+  const exportFile = await downloading;
+  expect(exportFile.suggestedFilename()).toMatch(/^ruvee-export-\d{4}-\d{2}-\d{2}\.ruvee$/);
+  const exportPath = await exportFile.path();
+  const exportText = readFileSync(exportPath, 'utf8');
+  for (const secret of [CHANGED, ITEM_PASSWORD, rotatedKit, 'Synthetic Mail'])
+    expect(exportText, `in the export file: ${secret}`).not.toContain(secret);
+
+  const contextE = await browser.newContext();
+  const capturedE = capture(contextE);
+  const e = await contextE.newPage();
+  await e.goto('/');
+  await e.getByRole('button', { name: 'Open an encrypted export' }).click();
+  await e.getByLabel('Export file').setInputFiles(exportPath);
+  await e.getByLabel('Recovery Key').fill(newKit);
+  await e.getByRole('button', { name: /^Open / }).click();
+  await expect(e.getByText(/doesn't open this export/)).toBeVisible({ timeout: 30_000 });
+  await e.getByLabel('Recovery Key').fill(rotatedKit);
+  await e.getByRole('button', { name: /^Open / }).click();
+  await expect(e.getByRole('heading', { name: 'Encrypted export' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(e.getByText(/This is your vault as of/)).toBeVisible();
+  const exportedMail = e.getByRole('listitem', { name: 'Synthetic Mail (A)' });
+  await exportedMail.getByRole('button', { name: 'Reveal' }).click();
+  await expect(exportedMail.getByText(ITEM_PASSWORD)).toBeVisible();
+  await expectAccessible(e);
+  await e.getByRole('button', { name: 'Close' }).click();
+  await expect(e.getByRole('button', { name: 'Create an account' })).toBeVisible();
+  // The file never went to the server, from either browser.
+  for (const captured of [capturedA, capturedE])
+    expect(captured.bodies.join('\n')).not.toContain('ruvee-export');
+
   // ---- Capture checks: nothing secret on the wire or at rest ----
   const forbidden = [
     CHANGED,
@@ -376,11 +415,11 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
     'Synthetic Mail',
     'owner@mail.example',
   ];
-  for (const captured of [capturedA, capturedB, capturedC]) {
+  for (const captured of [capturedA, capturedB, capturedC, capturedE]) {
     const wire = [...captured.urls, ...captured.headers, ...captured.bodies].join('\n');
     for (const secret of forbidden) expect(wire, `on the wire: ${secret}`).not.toContain(secret);
   }
-  for (const page of [a, b, c]) {
+  for (const page of [a, b, c, e]) {
     const stored = await indexedDbText(page);
     for (const secret of forbidden) expect(stored, `in IndexedDB: ${secret}`).not.toContain(secret);
     for (const key of ['localStorage', 'sessionStorage'] as const)
@@ -391,4 +430,5 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   await contextA.close();
   await contextB.close();
   await contextC.close();
+  await contextE.close();
 });

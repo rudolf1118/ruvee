@@ -53,6 +53,10 @@ A complete single-user web vault across several browsers, against the real API a
   in `chrome.storage.session` across service-worker restarts (D-27); auto-lock after 15
   minutes. The popup never receives a password. The engine is shared with the web app
   (`packages/vault`).
+- **Encrypted export** (D-13 option A): Security → Encrypted export makes a file of the vault's
+  existing ciphertext that only the Recovery Kit typed at export opens; it is never uploaded.
+  "Open an encrypted export" on the welcome screen opens one read-only, with no account, after
+  checking every part of it.
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -113,7 +117,7 @@ self-review.
 
 Approved by the owner **for development only** on 2026-10-25: D-02 (OPAQUE), D-21 (pairing),
 D-22 (`RAK` recovery verifier), D-24 (`SK` rotation on lost removal, offered after recovery), D-27 (extension `AK` in
-`chrome.storage.session`),
+`chrome.storage.session`), D-13 option A (export format, 2026-10-26),
 and the product defaults D-17, D-09, D-06, D-08, D-10, D-23.
 Earlier: D-25, D-01, D-04, D-20. D-16 resolved for development by evidence. Interpretations made
 while building, to confirm in review:
@@ -134,8 +138,8 @@ D-07, D-05, D-11 to D-15, D-18.
   beyond the page's matches, no fill into same-origin frames, no Firefox or Safari, no store
   packaging. A page navigating in the instant between the worker's last check and injection is
   covered only by the in-page origin check and its unit test.
-- **Not built:** server backup and restore, encrypted export (designs proposed in
-  [backup-restore.md](../architecture/backup-restore.md), blocked on D-28 and D-13), the pairing
+- **Not built:** server backup and restore (blocked on D-28), importing an export into a fresh
+  installation, fixed export vectors ([backup-restore.md](../architecture/backup-restore.md)), the pairing
   QR code, device labels (`DEVICE_LABEL` rule undecided), the password generator, cards and
   identities, SSE push, re-seeding, full key rotation, mobile.
 - **Restoring an older database copy today** brings back devices removed after it, with their
@@ -154,9 +158,7 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-Waiting on the owner: **D-28** (what a server restore undoes) unblocks M1, server backup and
-restore; **D-13** (portable export format) unblocks M2. Both are laid out in
-[backup-restore.md §7](../architecture/backup-restore.md#7-decision-table) with recommendations.
-Work that needs no decision: copy-to-clipboard in the extension through an offscreen document,
-the extension-hosted vault page (ADR-0009), and preparing the independent review (D-19), which
-still gates real data. Mobile (Phase 6) waits on D-05.
+**Import an export into a fresh installation** (backup-restore.md §4.4 and M2 step 4: a new
+account with new keys, items re-encrypted through the pending queue) and fixed export vectors
+(E7); neither needs a new decision. **D-28** still blocks M1, server backup and restore. The
+independent review (D-19) still gates real data and now includes the export format.

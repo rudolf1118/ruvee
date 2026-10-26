@@ -11,6 +11,7 @@ import { AuthCard } from './auth-layout';
 import { clearClipboard } from './clipboard';
 import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
 import { ActivityPanel } from './activity';
+import { ExportViewer } from './export';
 import { DevicesPanel, SecurityPanel } from './devices';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
@@ -38,6 +39,7 @@ type Screen =
   | { name: 'pending'; username: string }
   | { name: 'locked'; username: string; notice?: string }
   | { name: 'recovery'; username?: string; back: Screen }
+  | { name: 'export-viewer' }
   | { name: 'unlocked'; vault: UnlockedVault };
 
 function supported(): boolean {
@@ -133,6 +135,18 @@ export function VaultApp() {
           }}
           onRecover={() => {
             setScreen({ name: 'recovery', back: screen });
+          }}
+          onOpenExport={() => {
+            setScreen({ name: 'export-viewer' });
+          }}
+        />
+      );
+    case 'export-viewer':
+      return (
+        <ExportViewer
+          client={client}
+          onClose={() => {
+            setScreen({ name: 'welcome' });
           }}
         />
       );
