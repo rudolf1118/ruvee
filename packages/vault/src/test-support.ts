@@ -784,8 +784,7 @@ export class FakeServer {
           role: p.initiator === id ? 'initiator' : 'requester',
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         };
-        if (base.role === 'initiator' && p.requester && p.epk && p.devicePublicKey && p.mac)
-        {
+        if (base.role === 'initiator' && p.requester && p.epk && p.devicePublicKey && p.mac) {
           const request = {
             requesterDeviceId: p.requester,
             platform: 'web',
@@ -796,8 +795,9 @@ export class FakeServer {
           };
           return Promise.resolve({
             ...base,
-            request: (this.tamperPairingRequest?.(request) ??
-              request) as unknown as NonNullable<PairingStateResponse['request']>,
+            request: (this.tamperPairingRequest?.(request) ?? request) as unknown as NonNullable<
+              PairingStateResponse['request']
+            >,
           });
         }
         if (base.role === 'requester' && p.ciphertext && p.responseMac)
