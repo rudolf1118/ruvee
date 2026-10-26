@@ -253,19 +253,19 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         (await reopenWithPassword(r.h, account, r.code, { username: 'someone-else' })).start,
         'reopen_failed',
       );
-      // Four failures: the wrong code of the previous test counts against the usable code too.
+      // Three failures, all with the usable code. The wrong code of the previous test is not
+      // among them: it proved nothing about this code (review R11).
       expect(await codes(r.db.url)).toEqual([
-        { failed_attempts: 4, revoked: false, consumed: false },
+        { failed_attempts: 3, revoked: false, consumed: false },
       ]);
       expect(await guardState(r.db.url)).toBe('reopening');
     });
 
-    it('revokes a code after five failures, and the host issues a new one', async () => {
+    it('revokes a code after five failed credentials with it, and the host issues a new one', async () => {
       for (let i = 0; i < 2; i++)
-        // The fifth failure revokes the code; the sixth is not counted on a revoked code.
+        // The right code with another username: the fourth and fifth failures on this code.
         expectError(
-          (await reopenWithPassword(r.h, account, `RC1-${randomBytes(32).toString('base64url')}`))
-            .start,
+          (await reopenWithPassword(r.h, account, r.code, { username: 'someone-else' })).start,
           'reopen_failed',
         );
       expect(await codes(r.db.url)).toEqual([
@@ -446,8 +446,9 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         'reopen_failed',
       );
       expectError(await reopenWithKit(r.h, account, `RC1-${'B'.repeat(43)}`), 'reopen_failed');
+      // Only the wrong kit, presented with the right code, counts on it.
       expect(await codes(r.db.url)).toEqual([
-        { failed_attempts: 2, revoked: false, consumed: false },
+        { failed_attempts: 1, revoked: false, consumed: false },
       ]);
     });
 
@@ -503,6 +504,73 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         });
       expectError(await recover(kit(account.recoveryKeyText)), 'recovery_failed');
       expect((await recover(kit(newKitText))).status).toBe(200);
+    });
+  });
+
+  describe('REVIEW R11 (regression): wrong codes cannot keep the installation closed', () => {
+    let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
+
+    beforeAll(async () => {
+      r = await restoredAndReviewed();
+    }, 120_000);
+    afterAll(async () => {
+      await (r as typeof r | undefined)?.h.close();
+    });
+    beforeEach(() => {
+      r.clearThrottle();
+    });
+
+    const wrongCode = () => `RC1-${randomBytes(32).toString('base64url')}`;
+
+    it('never charges the usable code for wrong ones; one address is limited instead', async () => {
+      // Twenty wrong codes from one address, the review's reproduction (anyone who reaches the
+      // API). Twenty stay within the general 20-a-minute window, so every 429 here comes from
+      // the wrong-code limit; under the old code, the fifth one revoked the owner's code.
+      const statuses: number[] = [];
+      for (let i = 0; i < 20; i++)
+        statuses.push((await reopenWithPassword(r.h, account, wrongCode())).start.status);
+      expect(statuses.slice(0, 10)).toEqual(Array(10).fill(401));
+      expect(statuses.slice(10)).toEqual(Array(10).fill(429));
+      expect(await codes(r.db.url)).toEqual([
+        { failed_attempts: 0, revoked: false, consumed: false },
+      ]);
+      // A malformed code is refused by the contract before anything is looked up.
+      expectError((await reopenWithPassword(r.h, account, 'RC1-short')).start, 'invalid_request');
+      // From another address (a restart forgets the windows too), the owner still reopens.
+      r.clearThrottle();
+      const owner = await reopenWithPassword(r.h, account, r.code);
+      expect(owner.finish?.status, owner.finish?.text).toBe(200);
+      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+    });
+
+    it('charges the recovery budget only once the code is right', async () => {
+      // Eight wrong codes on the Recovery Kit path, from as many addresses: more than the
+      // owner's five recovery attempts an hour, and none of them counts.
+      for (let i = 0; i < 8; i++) {
+        r.clearThrottle();
+        expectError(await reopenWithKit(r.h, account, wrongCode()), 'reopen_failed');
+      }
+      r.clearThrottle();
+      const owner = await reopenWithKit(r.h, account, r.code);
+      expect(owner.status, owner.text).toBe(200);
+      expect(await codes(r.db.url)).toContainEqual({
+        failed_attempts: 0,
+        revoked: false,
+        consumed: true,
+      });
+    });
+
+    it('records why each attempt failed, without the code', async () => {
+      const events = await query<{ reason: string | null; n: string }>(
+        r.db.url,
+        `SELECT details->>'reason' AS reason, count(*) AS n FROM security_events
+         WHERE type = 'reopen_failed' GROUP BY 1 ORDER BY 1`,
+      );
+      expect(events.map((e) => e.reason)).toContain('code');
+      const text = JSON.stringify(
+        await query(r.db.url, `SELECT details FROM security_events WHERE type = 'reopen_failed'`),
+      );
+      expect(text).not.toContain('RC1-');
     });
   });
 });

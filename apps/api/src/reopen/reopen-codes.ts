@@ -10,7 +10,7 @@ import { createHash, randomBytes } from 'node:crypto';
 /** In the restore tool's control schema (restore-control.ts), out of reach of restored SQL. */
 export const REOPEN_CODES_TABLE = 'ruvee_control.reopen_codes';
 export const REOPEN_CODE_TTL_MS = 60 * 60_000;
-/** Failed attempts (a wrong code, or the right one with wrong credentials) before revocation. */
+/** Failed credentials presented with the code before it is revoked (wrong codes never count, R11). */
 export const REOPEN_MAX_FAILURES = 5;
 
 const CODE = /^RC1-([A-Za-z0-9_-]{43})$/;

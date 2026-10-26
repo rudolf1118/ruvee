@@ -525,8 +525,13 @@ restore tool and excluded from every backup):
 
 **Code handling.** 32 random bytes, shown as `RC1-` plus 43 base64url characters, printed only by
 `ruvee-admin restore-complete` or `restore-reopen-code` on the host; only its SHA-256 is stored,
-with the `restore_id` and the account it is for. Valid **60 minutes**; **5 failed attempts**
-(a wrong code, or a right code with wrong credentials) revoke it. At most one code is usable at a
+with the `restore_id` and the account it is for. Valid **60 minutes**; **5 failed attempts
+with it** (the right code with wrong credentials, another username or a device without its
+`SK`) revoke it. A wrong, malformed, expired or used code never counts against the usable one
+(predeployment-review R11): it says nothing about any real code, so it is limited only per
+client address (10 per 15 minutes, then `429`), and on the Recovery Kit path the owner's recovery
+budget is charged only once the code is right. Security events record which kind of failure it
+was. At most one code is usable at a
 time: issuing one revokes the others and ends every reopen session. Consumption is one
 conditional `UPDATE … WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()` in
 the transaction that creates the reopen session, so concurrent submissions yield one session and

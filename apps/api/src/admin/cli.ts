@@ -221,7 +221,7 @@ function printReopenCode(reopen: IssuedReopenCode, restoreId: string): void {
       `  ${reopen.code}\n\n` +
       'Give it to the owner in person. In the web app, the owner enters it together with the\n' +
       'master password or the Recovery Kit as of the backup, then must set a new password and a\n' +
-      'new Recovery Kit before anything else works. Five failed attempts revoke the code.\n' +
+      'new Recovery Kit before anything else works. Five failed attempts with it revoke it.\n' +
       `New code (revokes this one and any reopening in progress):\n` +
       `  ruvee-admin restore-reopen-code --restore-id ${restoreId}\n`,
   );

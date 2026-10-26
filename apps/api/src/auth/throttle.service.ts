@@ -17,6 +17,13 @@ const HOUR_MS = 60 * 60_000;
 
 const IP_WINDOW_MS = 60_000;
 const IP_LIMIT = 20;
+/**
+ * Wrong reopening codes per client address (review R11). A code is 256 random bits, so a wrong
+ * one is never a step towards the right one; this bounds the load, and it never touches a real
+ * code's own failure count.
+ */
+const WRONG_CODE_WINDOW_MS = 15 * 60_000;
+const WRONG_CODE_LIMIT = 10;
 /** Bound on remembered addresses, so the limiter cannot itself exhaust memory. */
 const IP_TABLE_MAX = 10_000;
 
@@ -24,9 +31,57 @@ function subject(scope: ThrottleScope, value: string): Bytes {
   return sha256(`${scope}\u0000${value}`);
 }
 
+/** Fixed windows per key, in memory (single process, so each update is atomic). */
+class Windows {
+  private readonly entries = new Map<string, { windowStart: number; count: number }>();
+
+  constructor(
+    private readonly limit: number,
+    private readonly windowMs: number,
+  ) {}
+
+  /** Counts one event; throws `rate_limited` once the limit is passed. */
+  hit(key: string, now: number): void {
+    const entry = this.entries.get(key);
+    if (!entry || now - entry.windowStart >= this.windowMs) {
+      if (this.entries.size >= IP_TABLE_MAX) this.sweep(now);
+      this.entries.set(key, { windowStart: now, count: 1 });
+      return;
+    }
+    entry.count++;
+    if (entry.count > this.limit) this.refuse(entry, now);
+  }
+
+  /** Throws `rate_limited` if the limit is used up, without counting. */
+  check(key: string, now: number): void {
+    const entry = this.entries.get(key);
+    if (entry && now - entry.windowStart < this.windowMs && entry.count >= this.limit)
+      this.refuse(entry, now);
+  }
+
+  clear(): void {
+    this.entries.clear();
+  }
+
+  private refuse(entry: { windowStart: number }, now: number): never {
+    throw new ApiException(
+      'rate_limited',
+      undefined,
+      (entry.windowStart + this.windowMs - now) / 1000,
+    );
+  }
+
+  private sweep(now: number): void {
+    for (const [key, entry] of this.entries)
+      if (now - entry.windowStart >= this.windowMs) this.entries.delete(key);
+    if (this.entries.size >= IP_TABLE_MAX) this.entries.clear();
+  }
+}
+
 @Injectable()
 export class ThrottleService {
-  private readonly perIp = new Map<string, { windowStart: number; count: number }>();
+  private readonly perIp = new Windows(IP_LIMIT, IP_WINDOW_MS);
+  private readonly wrongCodes = new Windows(WRONG_CODE_LIMIT, WRONG_CODE_WINDOW_MS);
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -131,29 +186,28 @@ export class ThrottleService {
   /** In-memory, per client address: 20 unauthenticated auth attempts per minute. */
   assertIpAllowed(ip: string | undefined, now = Date.now()): void {
     if (ip === undefined) return;
-    const entry = this.perIp.get(ip);
-    if (!entry || now - entry.windowStart >= IP_WINDOW_MS) {
-      if (this.perIp.size >= IP_TABLE_MAX) this.sweep(now);
-      this.perIp.set(ip, { windowStart: now, count: 1 });
-      return;
+    this.perIp.hit(ip, now);
+  }
+
+  /** Before a reopening code is looked up: an address that sent too many wrong codes waits. */
+  assertReopenCodeGuessesAllowed(ip: string | undefined, now = Date.now()): void {
+    if (ip === undefined) return;
+    this.wrongCodes.check(ip, now);
+  }
+
+  /** A wrong, malformed, expired or used code from this address (review R11). */
+  recordWrongReopenCode(ip: string | undefined, now = Date.now()): void {
+    if (ip === undefined) return;
+    try {
+      this.wrongCodes.hit(ip, now);
+    } catch {
+      // Already over the limit: the next request is refused by the check above.
     }
-    entry.count++;
-    if (entry.count > IP_LIMIT)
-      throw new ApiException(
-        'rate_limited',
-        undefined,
-        (entry.windowStart + IP_WINDOW_MS - now) / 1000,
-      );
   }
 
   /** Forgets the in-memory windows (a restart does the same). Used by tests between cases. */
   clearIpWindows(): void {
     this.perIp.clear();
-  }
-
-  private sweep(now: number): void {
-    for (const [ip, entry] of this.perIp)
-      if (now - entry.windowStart >= IP_WINDOW_MS) this.perIp.delete(ip);
-    if (this.perIp.size >= IP_TABLE_MAX) this.perIp.clear();
+    this.wrongCodes.clear();
   }
 }

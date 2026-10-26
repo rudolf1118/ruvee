@@ -40,8 +40,13 @@ type NewReopen = ReopenStartResponse & { token: string; absoluteExpiresAt: Date 
  * code authenticates **who may reopen**; the snapshot-time password (from a device that holds
  * `SK`) or Recovery Key authenticates **the account**, and is also what decrypts: the code alone
  * opens nothing. Every failure is `401 reopen_failed`. The code is consumed only in the
- * transaction that creates the one reopen session, after the credentials verified; wrong codes
- * and wrong credentials count towards its revocation instead.
+ * transaction that creates the one reopen session, after the credentials verified.
+ *
+ * Two kinds of failure are kept apart (review R11). A wrong, malformed, expired or used code
+ * proves nothing about any real code: it is limited per client address and never counts against
+ * the usable code, so nobody can use that code up without holding it. Wrong credentials (or
+ * another account or device) presented **with** the usable code count on that code, and five
+ * revoke it. The owner's recovery budget is charged only once the code is right.
  */
 @Injectable()
 export class ReopenService {
@@ -69,23 +74,37 @@ export class ReopenService {
   }
 
   /**
-   * A failed attempt: counted on the given code, or (for a wrong code) on every usable one, and
-   * a code reaching the limit is revoked. The operator then issues a new one on the host.
+   * The usable code, or a refusal for a wrong one. Addresses that sent too many wrong codes are
+   * refused before any lookup; a wrong code is counted against its address only.
    */
-  private async fail(client: ClientContext, codeId?: string, accountId?: string): Promise<never> {
-    if ((await this.maintenance.state()) === 'reopening') {
-      if (codeId)
-        await this.prisma.$executeRaw`
-          UPDATE ruvee_control.reopen_codes SET failed_attempts = failed_attempts + 1,
-            revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
-          WHERE id = ${codeId}::uuid AND revoked_at IS NULL AND consumed_at IS NULL`;
-      else
-        await this.prisma.$executeRaw`
-          UPDATE ruvee_control.reopen_codes SET failed_attempts = failed_attempts + 1,
-            revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
-          WHERE revoked_at IS NULL AND consumed_at IS NULL AND expires_at > now()`;
-      await this.events.record('reopen_failed', { accountId: accountId ?? null, ...client });
-    }
+  private async presentedCode(reopenCode: string, client: ClientContext): Promise<CodeRow> {
+    this.throttle.assertReopenCodeGuessesAllowed(client.ip);
+    const code = await this.usableCode(reopenCode);
+    if (code) return code;
+    this.throttle.recordWrongReopenCode(client.ip);
+    if ((await this.maintenance.state()) === 'reopening')
+      await this.events.record('reopen_failed', {
+        accountId: null,
+        ...client,
+        details: { reason: 'code' },
+      });
+    throw new ApiException('reopen_failed');
+  }
+
+  /**
+   * Failed credentials presented with the usable code: counted on that code, and a code reaching
+   * the limit is revoked. The operator then issues a new one on the host.
+   */
+  private async fail(client: ClientContext, codeId: string, accountId: string): Promise<never> {
+    await this.prisma.$executeRaw`
+      UPDATE ruvee_control.reopen_codes SET failed_attempts = failed_attempts + 1,
+        revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
+      WHERE id = ${codeId}::uuid AND revoked_at IS NULL AND consumed_at IS NULL`;
+    await this.events.record('reopen_failed', {
+      accountId,
+      ...client,
+      details: { reason: 'credentials' },
+    });
     throw new ApiException('reopen_failed');
   }
 
@@ -127,9 +146,8 @@ export class ReopenService {
     client: ClientContext,
   ): Promise<LoginStartResponse> {
     this.throttle.assertIpAllowed(client.ip);
+    const code = await this.presentedCode(body.reopenCode, client);
     await this.throttle.assertLoginAllowed(body.username);
-    const code = await this.usableCode(body.reopenCode);
-    if (!code) return this.fail(client);
     const account = await this.prisma.account.findUnique({
       where: { usernameNormalized: body.username },
       select: { id: true, opaqueCredential: { select: { registrationRecord: true } } },
@@ -203,9 +221,9 @@ export class ReopenService {
    */
   async recoveryStart(body: ReopenRecoveryStartRequest, client: ClientContext): Promise<NewReopen> {
     this.throttle.assertIpAllowed(client.ip);
+    const code = await this.presentedCode(body.reopenCode, client);
+    // Only now, with the right code, does this count against the owner's recovery budget.
     await this.throttle.reserveRecoveryAttempt(body.username);
-    const code = await this.usableCode(body.reopenCode);
-    if (!code) return this.fail(client);
     const account = await this.prisma.account.findUnique({
       where: { usernameNormalized: body.username },
       include: { accountKeys: { select: { recoveryVerifier: true } } },

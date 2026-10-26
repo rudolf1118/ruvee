@@ -30,7 +30,7 @@ const DETAIL_FIELDS: Readonly<Record<SecurityEventType, readonly string[]>> = {
   restore_review_completed: ['restoreId'],
   reopen_code_issued: ['restoreId'],
   reopen_started: ['via'],
-  reopen_failed: [],
+  reopen_failed: ['reason'],
   restore_reopened: ['restoreId', 'via'],
 };
 

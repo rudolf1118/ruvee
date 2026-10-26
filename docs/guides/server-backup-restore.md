@@ -158,7 +158,7 @@ Kit and keys as of the snapshot), and what the server cannot know.
 4. If a device was lost, also replace the Secret Key now (**Security**); the new session is fresh
    enough. None of this revokes copies anyone already made.
 
-**If the reopening is interrupted** (the code expired, five failed attempts used it up, or the
+**If the reopening is interrupted** (the code expired, five failed attempts with it used it up, or the
 tab closed during the reopening): issue a new code on the host. It revokes every earlier code and
 reopening in progress. Nothing reopens on its own.
 
