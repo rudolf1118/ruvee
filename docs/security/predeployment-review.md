@@ -3,6 +3,10 @@
 **This is an AI-assisted code review, not a professional independent security audit. It does
 not complete D-19.** It looks for defects before the synthetic private deployment rehearsal.
 
+> **Remediation (2026-10-26, milestone 1):** R1, R7, R8, R9 and R10 are fixed in local commits
+> and their reproductions are now regression tests (§9). Every other finding, including R2, R3,
+> R5, R6 and R11, is **open**. D-19 is open and real-data use stays blocked.
+
 ## 1. What was reviewed
 
 | Item         | Value                                                                                                                                                                                                                                                                                               |
@@ -44,12 +48,12 @@ Synthetic data only.
 
 | ID  | Severity                                  | Status                                        | Title                                                                                                     |
 | --- | ----------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| R1  | **High** (critical for the restore model) | Confirmed, reproduced                         | A change of case in `/API/` bypasses the maintenance and reopening gate, CSRF checks and bearer parsing   |
+| R1  | **High** (critical for the restore model) | **Fixed** (509b092); §9                       | A change of case in `/API/` bypasses the maintenance and reopening gate, CSRF checks and bearer parsing   |
 | R2  | **High**                                  | Confirmed, reproduced                         | The password plus a known device id gives an active device, and then a lock-out of the owner without `SK` |
-| R8  | **High** (conditional)                    | Confirmed, reproduced                         | SQL in a restored dump can open the guard itself; the restore then reports success                        |
-| R10 | Medium (deployment)                       | Confirmed, reproduced (Caddy 2.11.7)          | An unset `RUVEE_CSP` gives an empty CSP header (fail-open); unknown paths lack `no-store`                 |
-| R7  | Medium                                    | Confirmed, reproduced                         | `?dbname=` in the URL makes `pg_dump` back up a database the synthetic-only check never saw               |
-| R9  | Medium                                    | Confirmed by reading                          | VERIFY reads each backup file again by path, so a storage controller can defeat the trusted digest        |
+| R8  | **High** (conditional)                    | **Fixed** (5bc18cd, 40dc0bc); §9              | SQL in a restored dump can open the guard itself; the restore then reports success                        |
+| R10 | Medium (deployment)                       | **Fixed** (bfb248a), real Caddy; §9           | An unset `RUVEE_CSP` gives an empty CSP header (fail-open); unknown paths lack `no-store`                 |
+| R7  | Medium                                    | **Fixed** (4367db9); §9                       | `?dbname=` in the URL makes `pg_dump` back up a database the synthetic-only check never saw               |
+| R9  | Medium                                    | **Fixed** (e8259da); §9                       | VERIFY reads each backup file again by path, so a storage controller can defeat the trusted digest        |
 | R5  | Medium                                    | Confirmed, reproduced (engine and FakeServer) | A replayed commit reply lowers the client checkpoint, so a later rollback is accepted (INV-07)            |
 | R6  | Medium                                    | Confirmed, reproduced                         | Forgotten-password recovery on an enrolled browser erases its unsynced edits without warning              |
 | R3  | Medium                                    | Confirmed, reproduced                         | The per-username login throttle is checked only at `start`; parallel guesses all count                    |
@@ -95,6 +99,27 @@ Synthetic data only.
   - Base the gate and the CSRF and bearer decisions on the matched handler's metadata (controller and `@Access` level), not on URL text.
   - Reject any `/api` path whose lower-case form differs.
   - Add the upper-case cases to the maintenance, reopening and CSRF tests.
+- **Remediation (509b092):**
+  - Express runs with `case sensitive routing` and `strict routing` (`createHttpAdapter()` in
+    `configure-app.ts`, used by `main.ts` and the test app), so `/API/…`, `/api/V1/…` and
+    `/api/…/` match no handler.
+  - Enforcement no longer reads the URL. Each handler has a route class (`@RouteClassOf`:
+    `api` by default, `recovery`, `reopen`, `health`). The guard runs the maintenance gate for
+    the matched class (default deny: closed states serve only `health`, and `reopening` also
+    `reopen`), then the CSRF checks and the cookie-xor-bearer rule on **every** non-health
+    route. `REOPEN_PREFIX` and the `/api/` prefix tests are gone.
+  - Caddy refuses any other spelling of `/api` with 404 (`@apiSpelling`), as a second layer; the
+    API does not depend on it.
+  - **Regression:** `r1-path-case.int-spec.ts` (reopening state, revoked restored sessions): nine
+    spellings of the keys route (upper and mixed case, `%61pi`, `%41PI`, trailing slash, double
+    slash, `%2F`) get 404 or 503, never 200; `POST /API/…/login/start` and `/finish` create no
+    session; health spellings other than the real one are 404; in the open state a CSRF-less
+    write under any routable spelling is 403 or 404, and cookie plus bearer is 400. Through real
+    Caddy (`check-caddy.mjs`) eleven spellings get 404, the real keys route `503 reopening`, and
+    the reopening route is served.
+  - **Residual:** a new controller without `@RouteClassOf` is gated like any API route (safe
+    default); a new exception must be added deliberately. Unit tests now send the CSRF headers
+    on test-only POSTs.
 
 ### R2. Password plus a known device id gives an active device, then a lock-out without `SK` (High)
 
@@ -136,6 +161,30 @@ Synthetic data only.
   - After LOAD and MIGRATE, re-read the guard and require `state = 'restoring'` with the expected `restore_id`.
   - Require `rowCount === 1` on every guard transition.
   - Keep the non-superuser restore role of §3.2b, and add that the restore role must not own the guard.
+- **Remediation (5bc18cd, 40dc0bc):**
+  - The guard and reopening codes moved to the schema `ruvee_control`, owned by the restore's
+    admin role, with nothing granted to PUBLIC and never included in a backup
+    (`restore-control.ts`). All API queries are schema-qualified.
+  - `pg_restore` connects as a per-restore loader role (`ruvee_loader_<16 hex>`, random
+    password, `NOINHERIT`, no superuser, createdb, createrole, replication or bypassrls) with
+    only `CONNECT` and `USAGE, CREATE` on `public`; PUBLIC loses its database privileges. The
+    dump's SQL therefore cannot read, write or shadow the control schema, whatever it executes.
+  - After LOAD, an allowlist check refuses every object Ruvee does not create (functions,
+    triggers, rules, views, policies, event triggers, extensions, other schemas, other relation
+    kinds and types, collations, operators, text search objects, foreign servers, publications,
+    large objects, row security, unknown or missing tables). The loader's objects are then
+    reassigned and the role dropped, in a `finally`. Guard transitions lock the row and require
+    one changed row.
+  - **Regression:** `r7-r8-backup.int-spec.ts`: the original hostile CHECK constraint now fails
+    LOAD (the loader has no access to `ruvee_control`), and the guard stays `restoring`. Eight
+    planted objects (a function, a trigger on `sessions`, a view, a rule, another schema, a
+    `public.restore_guard` shadow table, a domain, row security) are each refused at LOAD with
+    the guard `restoring` and the loader role dropped.
+  - **Residual:** see backup-restore.md §3.2b, "Still possible with a hostile dump": denial of
+    service during LOAD, anything the loader may do in `public` while loading (examined
+    afterwards), and wrong but well-formed rows. A LOAD killed outright can leave its loader
+    role; its name is in the guard row and the operator guide says how to drop it. The admin
+    role needs `CREATEROLE`.
 
 ### R10. An unset `RUVEE_CSP` gives an empty CSP header; unknown paths lack `no-store` (Medium, deployment)
 
@@ -150,6 +199,26 @@ Synthetic data only.
   - Serve real 404s.
   - Generate the header block from `security-headers.ts`; the Permissions-Policy is a hand copy.
   - Add a Caddy-based header test to the rehearsal checklist.
+- **Remediation (bfb248a):**
+  - The web build writes `apps/web/out-caddy/security-headers.caddy` from the exported HTML
+    (script hashes) and `security-headers.ts` (every other header). It refuses an empty or
+    weakened CSP (`cspProblems`: `default-src 'none'`, a script hash, `frame-ancestors 'none'`,
+    no `'unsafe-inline'`/`'unsafe-eval'`, nothing Caddy cannot quote) and refuses the diagnostic
+    export, so the probe build can never produce production headers.
+  - `deploy/Caddyfile` imports the snippet for normal responses and again in `handle_errors`
+    (Caddy resets headers on errors). A missing snippet is a startup error; `RUVEE_CSP` no
+    longer exists. Unknown paths are real 404s with the export's 404 page; `no-store` replaces
+    (not adds to) the API's own value; only `/_next/static/*` is cacheable.
+  - **Regression:** `apps/api/scripts/check-caddy.mjs` (`test:caddy`), real Caddy 2.11.7 in a
+    task-owned container in front of the built API: Caddy without the snippet refuses to start
+    ("File to import not found"); the generator refuses the diagnostic export and leaves the
+    snippet unchanged; `/`, `/index.html`, an RSC payload, two unknown paths, a hashed chunk and
+    an API response each carry exactly this build's CSP, every static header, no `Server`, and
+    the right single `Cache-Control`; unknown paths are 404. 87 checks. Unit tests cover each
+    `cspProblems` refusal and that the Caddyfile carries no header values or environment
+    fallback.
+  - **Residual:** HSTS must still be added by hand for public HTTPS; `out/` and `out-caddy/`
+    must be deployed from the same build (documented).
 
 ### R7. `?dbname=` bypasses the synthetic-only backup check (Medium)
 
@@ -161,6 +230,23 @@ Synthetic data only.
   - The control that keeps real data out of M1 can be bypassed by accident or on purpose.
   - The same split applies to `RESTORE_DATABASE_URL`: the guard and the data can land in different databases, and then the gate reads `none`, which counts as open.
 - **Fix:** parse once and refuse any query parameter, or an allowlist such as `sslmode`, and pass libpq an explicit `dbname` equal to the checked name. Apply the same to the restore URL. Add tests.
+- **Remediation (4367db9):**
+  - One parser (`db-target.ts`) refuses query parameters, fragments and several hosts in backup
+    and restore URLs. node-pg gets an explicit config (with `options` fixed), the tools get
+    libpq keyword conninfo with an explicit `dbname`, and their environment is stripped of every
+    `PG*` variable; the CLI also clears them at start.
+  - Every connection checks `current_database()` and `current_user` against the parsed target
+    before use. The backup also reads the database name from `pg_dump`'s own archive header and
+    holds back every byte until it matches, so a redirected tool publishes nothing.
+  - **Regression:** `r7-r8-backup.int-spec.ts` with a non-synthetic fixture named
+    `ruvee_production_like_r7` (created and dropped in the task container): five query overrides
+    (`dbname`, `service`, `options`, `host`, `sslmode`), a fragment and a second host are refused
+    before connecting, with nothing written; inherited `PGDATABASE`, `PGOPTIONS`, `PGSERVICE`
+    are ignored and the dump is of the checked database; a `pg_dump` redirected to the other
+    database fails with nothing published; a restore URL with `?dbname=` is refused and the
+    other database is untouched.
+  - **Residual:** the synthetic-only rule is still a name rule (`ruvee_it_*`, `ruvee_e2e_*`) on
+    the database actually reached; it does not prove the contents are synthetic.
 
 ### R9. VERIFY reads each file again by path (Medium)
 
@@ -177,6 +263,24 @@ Synthetic data only.
   - Read the meta into memory and hash and decrypt those same bytes.
   - Hash the dump ciphertext in the same stream that is decrypted, in both passes, and compare it with the manifest.
   - Copy the set into a private staging directory first if needed.
+- **Remediation (e8259da):**
+  - Each source file (manifest, metadata, dump, identity) is opened once with `O_NOFOLLOW`;
+    type and size come from `fstat` of that descriptor. The manifest and metadata are read into
+    memory, and the same bytes are hashed, compared and decrypted.
+  - The encrypted dump is copied once from its descriptor into a private `mkdtemp` directory
+    (0700, `--staging-dir` or the system temporary directory) while its SHA-256 is computed and
+    compared with the manifest. VERIFY and LOAD read only that copy, and each pass hashes the
+    ciphertext again (against the manifest) and the plaintext (against the metadata) in the
+    decryption stream; `pg_restore`'s input is closed only when both match. No plaintext is
+    written; the staging directory is removed in a `finally`.
+  - **Regression:** `r9-verified-bytes.int-spec.ts` (10 tests), with a test hook at each open:
+    a symbolic link in place of the manifest, metadata, dump or identity is refused; a forged
+    metadata or dump renamed into place just before it is read is refused; a dump replaced by a
+    link just before opening is refused; replacing the whole source set in place and by rename
+    after it was read has no effect and the genuine data is restored; changing the staged copy
+    after VERIFY fails LOAD with the guard `restoring`.
+  - **Residual:** a process running as the same OS user can still change the staged copy; that
+    is detected (LOAD fails), not prevented. A failed copy needs space for one ciphertext.
 
 ### R5. A replayed commit reply lowers the client checkpoint (Medium)
 
@@ -277,15 +381,15 @@ Synthetic data only.
 
 ## 4. Coverage gaps (tests that do not enforce what is claimed)
 
-- Every maintenance, reopening and CSRF test uses lower-case paths only (R1).
+- ~~Every maintenance, reopening and CSRF test uses lower-case paths only (R1).~~ Closed (§9).
 - `auth.int-spec.ts` asserts a known device id yields an active device (R2 as intended behaviour). No test asks for proof of possession.
 - The throttle tests are sequential (R3). Reauth and reopening throttling are untested.
 - The lost-reply engine test uses one device (R5). Recovery is tested only on a new device (R6, R20).
-- The LOAD-failure test only flips a byte. It never substitutes a validly encrypted dump, adds padding, or swaps the meta between hash and read (R8, R9).
-- The forged-set test uses a set that stays the same between reads (R9).
+- ~~The LOAD-failure test only flips a byte. It never substitutes a validly encrypted dump, adds padding, or swaps the meta between hash and read (R8, R9).~~ Closed for substitution and swaps (§9); padding is covered by the size check.
+- ~~The forged-set test uses a set that stays the same between reads (R9).~~ Closed (§9).
 - Nothing races `issueReopenCode` against completion (R13), or runs parallel reopen finishes (R3).
-- The synthetic-only test checks the name, not the effective connection target (R7).
-- The header tests run against `serve-export.mjs`, not Caddy (R10).
+- ~~The synthetic-only test checks the name, not the effective connection target (R7).~~ Closed (§9).
+- ~~The header tests run against `serve-export.mjs`, not Caddy (R10).~~ Closed: `test:caddy` (§9).
 - There is no test of the 300/min per-session limit (R16), of `clientIp` behind a proxy, or of extension sender filtering. There are no concurrent pairing request or approve tests, no server-swapped pairing `platform` or device id, and no hidden-ancestor fill.
 - The INV-16 IndexedDB scan runs only in a clean synced state.
 
@@ -298,7 +402,7 @@ Synthetic data only.
   - a real multi-instance deployment. `LoginStateStore` and the in-memory IP windows are single-process by design.
 - **Not reviewed:** library internals (libsodium.js, OPAQUE, `age-encryption`); the PostgreSQL role setup of a deployment, which doesn't exist yet.
 - **Partly verified:**
-  - R9 and R15 are confirmed by reading only. Reproducing R9 needs a file system that changes between reads.
+  - R15 is confirmed by reading only. R9 was confirmed by reading; its regression tests now change the files at each open through a test hook (§9).
   - R13, R19, R20 and R21 are plausible.
   - R5 is reproduced against the in-memory FakeServer, whose idempotent replay follows sync-protocol §4.2, not against the real API.
 
@@ -310,6 +414,8 @@ Synthetic data only.
 - **R6, narrowed.** Not reproducible while the browser stays unlocked online, because the edit uploads first. It reproduces for the realistic case: locked, edit never uploaded, recovery from the lock screen.
 
 ## 7. Prioritized remediation plan
+
+Items 1 to 4 and 6 are done (milestone 1, §9). The rest are open.
 
 **Before the synthetic rehearsal (P0):**
 
@@ -331,8 +437,9 @@ Synthetic data only.
 
 ## 8. Can a synthetic private deployment rehearsal proceed?
 
-**Not yet. It can, after the P0 items (R1, R7, R8, R10) are fixed and their tests pass, under
-these conditions:**
+**Not yet decided.** The P0 items (R1, R7, R8, R10) and R9 are fixed and their tests pass (§9).
+Whether to rehearse is the owner's decision after reviewing that milestone; this report does not
+propose it. If it is approved, these conditions apply:
 
 - synthetic data and synthetic identities only, with `--synthetic-test-only` still enforced;
 - a private network or loopback only, with no internet exposure, so R2, R3 and R11 cannot be reached by outsiders;
@@ -342,3 +449,38 @@ these conditions:**
 - R2, R3, R5, R6, R9 and R11 recorded as known open issues in the rehearsal plan.
 
 Real-data use stays blocked by the P1 items and by D-19.
+
+## 9. Remediation milestone 1 (2026-10-26): R1, R7, R8, R9, R10
+
+Local commits on `vault/web-vault`, none pushed:
+
+| Commit    | Finding  | Change                                                                                    |
+| --------- | -------- | ----------------------------------------------------------------------------------------- |
+| `e1056db` | baseline | This report and the reproduction tests, as reviewed                                       |
+| `509b092` | R1       | Case-sensitive, strict routing; gate, CSRF and bearer rules decided by route class        |
+| `4367db9` | R7       | One URL parser, explicit connection parameters, connected-identity and dump-header checks |
+| `5bc18cd` | R8       | `ruvee_control` schema, per-restore loader role, restored-object allowlist                |
+| `40dc0bc` | R8       | Lint fix in the allowlist (typed catalog map)                                             |
+| `e8259da` | R9       | Single-open sources, private staging of the ciphertext, hashes in both passes             |
+| `bfb248a` | R10      | Build-generated Caddy header snippet, fail-closed import, real-Caddy check                |
+
+The reproductions in `apps/api/test/review/` (R1, R7, R8, R9) were run first against the
+vulnerable code and then rewritten to assert the secure outcome; the evidence for each is in its
+finding's **Remediation** entry. R10 was reproduced with real Caddy during the review and is now
+checked by `apps/api/scripts/check-caddy.mjs`.
+
+**Checks run** (2026-10-26, after the last commit, from a fresh `pnpm build`):
+
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`: pass.
+- `pnpm test`: contracts 37, crypto 60, extension 27, API 72, web 43, vault 64 (+1 skipped
+  fixture regenerator): pass.
+- `pnpm test:integration` against a task-owned PostgreSQL 18 container, with `pg_dump` and
+  `pg_restore` 18 run inside it: 20 files, 129 tests, pass.
+- Browser suites: `test:restore` 2, `test:vault` 1, `test:import` 1, `test:headers` 33,
+  extension `test:extension` 9, `pnpm test:e2e` 8 (+4 skipped as before): pass.
+- `test:caddy` with `caddy:2.11-alpine` (2.11.7): 87 checks, pass.
+
+**Still open:** R2 to R6 and R11 to R23, unchanged by this milestone. R14 in particular still
+applies (`MaintenanceService` caches `none` as open). R2's protocol choice is prepared as a
+proposal, not a decision: [r2-device-proof-decision.md](r2-device-proof-decision.md) (D-31,
+proposed).

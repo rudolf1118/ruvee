@@ -23,7 +23,7 @@ independent audit.
 | `apps/api`                | NestJS API: OPAQUE login, cookie and token sessions, sync, pairing, recovery, devices, key rotations, security events; Prisma/PostgreSQL                                                           |
 | `apps/web`                | Next.js web vault (static export with a hash-based CSP): setup, items, sync, pairing, recovery, devices, security, activity. A separate test-only export (`out-diagnostics/`) holds the CSP probes |
 | `apps/extension`          | Chromium MV3 extension, development build: pairing, unlock and exact-origin manual fill ([README](apps/extension/README.md))                                                                       |
-| `deploy/Caddyfile`        | Production headers for `apps/web/out` and a same-origin `/api` proxy. Caddy is not required for local checks                                                                                       |
+| `deploy/Caddyfile`        | Serves `apps/web/out` with the header snippet the web build generates (`out-caddy/`), and a same-origin `/api` proxy. Caddy is not required for local checks                                       |
 | `packages/contracts`      | Zod schemas for every implemented endpoint, shared by server and clients; `openapi.json` is generated from them                                                                                    |
 | `packages/crypto`         | Ruvee's client-side format over libsodium.js: keys, wraps, envelopes, records, manifests, Recovery Key and pairing. Development only, not reviewed                                                 |
 | `packages/vault`          | The vault engine shared by the web worker and the extension's service worker                                                                                                                       |
@@ -94,6 +94,7 @@ pnpm test:integration     # API against a real PostgreSQL; needs DATABASE_URL (p
 pnpm build
 pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan (`next dev`)
 pnpm --filter @ruvee/web test:headers          # export headers and CSP in three engines (needs a prior web build; builds the diagnostics export)
+pnpm --filter @ruvee/api test:caddy           # real Caddy in front of the API: headers, cache rules, 404s, /api spellings (needs Docker, a prior build, RUVEE_CADDY_IMAGE and RUVEE_E2E_ADMIN_DATABASE_URL)
 pnpm --filter @ruvee/contracts openapi:write   # regenerate openapi.json after changing a contract
 pnpm --filter @ruvee/crypto test:browsers      # crypto checks in Chromium, Firefox and WebKit, page and worker
 pnpm --filter @ruvee/crypto vectors:write      # regenerate the provisional protocol vectors after a format change

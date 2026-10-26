@@ -194,6 +194,32 @@ functions, triggers or other objects, and, if the restoring role were a superuse
 - the restore's structural checks (§3.3) and clients' checkpoints catch an inconsistent or older
   vault history, not hostile SQL.
 
+What the restore tool itself enforces (predeployment-review R8, 2026-10-26):
+
+- The restore's state (the guard and the reopening codes) is in the schema `ruvee_control`,
+  owned by the admin role, with nothing granted to anyone else. Backups never include it.
+- `pg_restore` connects as a **loader role** made for this restore: `LOGIN NOINHERIT`, none of
+  `SUPERUSER`, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`, with only `CONNECT` on the
+  target and `USAGE, CREATE` on `public`; PUBLIC loses its database privileges. A dump's SQL
+  (a CHECK constraint, a default, an index expression) runs with that role's rights and cannot
+  read or change `ruvee_control`. The admin role therefore needs `CREATEROLE`.
+- After loading, before anything can run as the application role, every object in the database
+  must be one Ruvee creates (inventory tables, their indexes, sequences and constraints, enums,
+  table row types); functions, triggers, rules, views, policies, event triggers, extensions,
+  other schemas, other relation kinds or types, collations, operators, text search objects,
+  foreign servers, publications, large objects, row security and unknown or missing tables fail
+  LOAD. Then the objects are handed to the admin role and the loader role is dropped. The guard
+  stays `restoring` on every failure, and each later step checks it under a lock.
+- The input `pg_restore` reads is the private staged copy of the verified ciphertext, checked
+  again while it is decrypted (R9; §3.3).
+
+**Still possible with a hostile dump** (accepted for development, to be revisited before real
+data): denial of service (a huge dump, slow expressions during LOAD, filling the disk); anything
+the loader role can do inside `public` of the new database while loading, all of which the object
+check examines afterwards; and wrong but well-formed rows in Ruvee's own tables, which only the
+structural checks and the clients' checkpoints detect. A user able to act as the restoring OS
+user can still change the staged copy; the second hash check makes that fail LOAD, not succeed.
+
 ### 3.3 Consistent snapshot and integrity
 
 - One `pg_dump` run reads one repeatable-read snapshot: commits, manifests and items are
@@ -203,10 +229,17 @@ functions, triggers or other objects, and, if the restoring role were a superuse
   files' sizes and SHA-256, the identity, the decrypted metadata (schema, same backup id), the
   schema version (not newer than this Ruvee), and then the **whole dump**: it is decrypted once,
   every chunk authenticated, and its plaintext SHA-256 and size compared with the metadata.
-- LOAD decrypts the dump a second time straight into `pg_restore`. Its input is closed only after
-  the last chunk authenticated and the plaintext hash matched; on any failure `pg_restore` is
-  killed first. If the file changed between the two passes, LOAD fails; the guard is still
-  `restoring`, so the database can never be opened (tested by changing the file after VERIFY).
+- Each file is opened once without following symbolic links; the manifest and metadata are read
+  into memory, and the encrypted dump is copied into a private staging directory (0700) while
+  its SHA-256 is computed. VERIFY and LOAD both read **that copy**: renaming, replacing or
+  rewriting the files in backup storage after they were opened has no effect (R9).
+- LOAD decrypts the staged dump a second time straight into `pg_restore`, hashing both the
+  ciphertext (against the manifest) and the plaintext (against the metadata). Its input is closed
+  only after the last chunk authenticated and both hashes matched; on any failure `pg_restore` is
+  killed first. If the staged copy changed between the two passes, LOAD fails; the guard is still
+  `restoring`, so the database can never be opened (tested by changing the staged copy after
+  VERIFY). No plaintext is written to disk, and the staging directory is removed when the command
+  ends.
 - After loading, APPLY POLICY checks what it can without keys: every manifest envelope is the
   documented size, `vaults.current_seq` equals the newest commit's `seq`, and the commits are
   exactly 1 to `current_seq`. It cannot check ciphertext; clients do that on their first sync

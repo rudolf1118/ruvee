@@ -48,6 +48,12 @@ offline copy. If you lose every copy, every backup is unreadable.
 DATABASE_URL=… BACKUP_AGE_RECIPIENT=age1… pnpm --filter @ruvee/api admin backup --out /backups --synthetic-test-only
 ```
 
+- `DATABASE_URL` must be a plain `postgresql://user:password@host:port/database` URL: query
+  parameters (`?dbname=…`, `?options=…`, `?service=…`, `?sslmode=…`), fragments and several hosts
+  are refused, and inherited `PG*` variables (`PGDATABASE`, `PGOPTIONS`, `PGSERVICE`, …) are
+  ignored. The tool checks on its own connection which database and user it reached, and
+  `pg_dump`'s archive header must name the same database before a byte is written; otherwise
+  nothing is published (`backup: pg_dump read another database`).
 - `/backups` must exist. Three files appear, owner-only (0600): `ruvee-<time>.dump.age`,
   `ruvee-<time>.meta.age` and `ruvee-<time>.manifest.json`. The database stays online.
 - The command prints **`Backup digest: <64 hex>`**. Write it down offline (§1). It is the only way
@@ -67,8 +73,12 @@ and Recovery Kit of its own day, for as long as it exists.
 1. **Stop the old server** if it still runs, so no device writes to it. Leave devices as they
    are: a device that is ahead of the backup is never erased by itself and can export its data.
 2. **Prepare the host:** install the same or a newer Ruvee; create a **new, empty** database and a
-   database role that owns only it and is **not** a superuser (a restored dump runs as SQL; see
-   backup-restore.md §3.2b); put the OPAQUE setup file's offline copy at
+   database role that owns only it, is **not** a superuser, and has `CREATEROLE` (a restored dump
+   runs as SQL; see backup-restore.md §3.2b). The restore keeps its own state in a schema,
+   `ruvee_control`, owned by this role, and runs `pg_restore` as a **loader role** it creates for
+   this one restore (`ruvee_loader_<16 hex>`): it may only connect and create objects in `public`,
+   so SQL in the dump cannot reach the restore state. The loader role is dropped when loading ends.
+   `RESTORE_DATABASE_URL` follows the same rule as `DATABASE_URL` above (no query parameters); put the OPAQUE setup file's offline copy at
    `OPAQUE_SERVER_SETUP_FILE`; write `.env` with new host values and the same `PUBLIC_ORIGIN`,
    `SESSION_COOKIE_SECURE` and `EXTENSION_ORIGINS` as before (the restore prints nothing secret;
    these values are in the encrypted metadata and in your old configuration).
@@ -84,7 +94,13 @@ and Recovery Kit of its own day, for as long as it exists.
    ```
 
    Before it creates anything it checks the digest, every file, the identity, and decrypts and
-   hashes the whole dump. It then loads, migrates and ends every session, pairing and unused setup
+   hashes the whole dump. It reads each file once (symbolic links are refused) and copies the
+   encrypted dump into a private directory (mode 0700, under the system temporary directory, or
+   `--staging-dir <dir>`), and loads **that** copy, checking it again while loading; changing the
+   files in backup storage during the restore has no effect. Nothing decrypted is written to disk;
+   the copy is deleted when the command ends. After loading, everything the dump created must be
+   an object Ruvee itself creates (its tables, indexes, sequences, constraints and enums);
+   anything else (a function, trigger, rule, view, policy, another schema, …) fails the restore. It then loads, migrates and ends every session, pairing and unused setup
    token. Note the printed **restore id**. `--no-trusted-digest` exists for when you have no record;
    the restore then says, and the review shows, that provenance was not checked.
 
@@ -162,13 +178,34 @@ cannot use the password path; use the Recovery Kit path on a new browser.
 | `verify: … newer or unknown schema`                                 | The backup is from a newer Ruvee                                                                           | Install the same or a newer Ruvee                                               |
 | `prepare: the target database is not empty`                         | Never restores over data                                                                                   | Create a new, empty database                                                    |
 | `load: …` or `migrate: …`, or the restore was killed                | The new database is half-restored and stays closed (maintenance)                                           | Drop that database; restore again into a new one                                |
+| `load: … objects Ruvee never creates`                               | The dump holds SQL objects Ruvee does not make: the backup is not trustworthy                              | Stop. Drop that database; use another backup and find out who changed this one  |
+| Restore killed during loading                                       | A `ruvee_loader_…` role may remain (its name is in `ruvee_control.restore_guard.loader_role`)              | Drop the database, then `DROP ROLE` that exact name                             |
+| `… query parameters` or `pg_dump read another database`             | The URL or the tools reached something other than the named database                                       | Use a plain URL; check `RUVEE_PG_TOOLS_*`; nothing was written                  |
 | `backup: …` (any)                                                   | Nothing was published                                                                                      | Fix the cause (space, tools, recipient) and run again; delete stray `*.partial` |
 | Web app: "That reopening code, username or credential doesn't work" | A wrong, expired, used or replaced code, or a wrong backup-time credential (five failures revoke the code) | Check them; if needed, `restore-reopen-code` on the host                        |
 | Web app: "newer Secret Key than the backup"                         | That device's `SK` was replaced after the backup                                                           | Reopen with the Recovery Kit path on a browser with no Ruvee data               |
 | Web app: "This browser holds a vault"                               | The Recovery Kit path would replace this browser's data                                                    | Use the password path on it, or another browser                                 |
 | `complete: a reopening code exists only while reopening`            | The server is already open (or not yet reviewed)                                                           | Nothing to do, or finish the review first                                       |
 
-## 7. Rehearsal (do this before you need it)
+## 7. Serving the web app and API (Caddy)
+
+`deploy/Caddyfile` serves the export and proxies `/api/` to the API. Its security headers (the
+CSP, whose script hashes belong to one build, and the cache rules) are **not** in the Caddyfile:
+`pnpm --filter @ruvee/web build` writes them to `apps/web/out-caddy/security-headers.caddy`, and
+the Caddyfile imports that file. Deploy `out/` and `out-caddy/` from the **same** build. Without
+the file Caddy does not start; there is no default policy. The build refuses to write it for an
+empty or weakened CSP or for the diagnostic export.
+
+- Environment: `RUVEE_SITE_ADDRESS` (default `http://127.0.0.1:3101`), `RUVEE_WEB_ROOT` (the
+  directory holding `out/` and `out-caddy/`, default `apps/web`), `RUVEE_API_UPSTREAM` (default
+  `127.0.0.1:4000`). `RUVEE_CSP` is no longer used.
+- Every response except `/_next/static/*` is `no-store`, including errors and the API; unknown
+  paths are real `404`s. Only the exact lower-case `/api/` reaches the API: other spellings
+  (`/API/…`, `/%61pi/…`) get `404` at the proxy, and the API itself also routes exact paths only.
+- For public HTTPS add HSTS (the value is in the Caddyfile).
+- Check a build with real Caddy: `pnpm --filter @ruvee/api test:caddy` (README).
+
+## 8. Rehearsal (do this before you need it)
 
 Rehearse with synthetic data on a separate machine or database server, never on the real one:
 
