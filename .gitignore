@@ -4,6 +4,8 @@ dist/
 # Static export produced by `next build` when `output: 'export'`.
 apps/web/out/
 apps/web/out-diagnostics
+# Caddy header snippet generated from the export by the web build.
+apps/web/out-caddy/
 # The extension's test build (host permission for 127.0.0.1; never distributed).
 apps/extension/dist-test/
 .turbo/

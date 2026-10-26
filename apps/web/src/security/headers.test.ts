@@ -9,6 +9,7 @@ import {
   PERMISSIONS_POLICY,
   STATIC_SECURITY_HEADERS,
   contentSecurityPolicy,
+  cspProblems,
   inlineScriptBodies,
   isHashedStaticPath,
   sha256SourceHash,
@@ -67,22 +68,42 @@ describe('production security headers', () => {
 describe('Caddyfile matches the header module', () => {
   const caddy = readFileSync(join(process.cwd(), '../../deploy/Caddyfile'), 'utf8');
 
-  it('sets every static production header from the shared module', () => {
-    expect(caddy).toContain('Content-Security-Policy {$RUVEE_CSP}');
-    for (const [name, value] of Object.entries(STATIC_SECURITY_HEADERS)) {
-      if (name === 'Permissions-Policy') {
-        expect(caddy).toContain(`Permissions-Policy "${value}"`);
-        continue;
-      }
-      expect(caddy).toContain(`${name} ${value}`);
-    }
-    expect(caddy).toContain('Cache-Control no-store');
-    expect(caddy).toContain(`Cache-Control "${CACHE_HASHED_STATIC}"`);
+  // The values themselves come from the generated snippet; apps/api/scripts/check-caddy.mjs
+  // compares what real Caddy serves with this module and this build's CSP (review R10).
+  it('takes every header from the generated snippet, with no environment fallback', () => {
+    const imports =
+      caddy.match(/^\s*import \S+\/out-caddy\/security-headers\.caddy (\w+)$/gm) ?? [];
+    expect(imports).toHaveLength(2);
+    expect(caddy).toMatch(/handle_errors \{\s*import \S+security-headers\.caddy errors/);
+    expect(caddy).not.toMatch(/RUVEE_CSP|Content-Security-Policy|Cache-Control/);
+    for (const name of Object.keys(STATIC_SECURITY_HEADERS)) expect(caddy).not.toContain(name);
   });
 
   it('does not enable HSTS, unsafe-inline or unsafe-eval', () => {
     expect(caddy).not.toMatch(/^\s*header .*Strict-Transport-Security/m);
     expect(caddy).not.toContain("'unsafe-inline'");
     expect(caddy).not.toContain("'unsafe-eval'");
+  });
+});
+
+describe('the CSP the Caddy snippet may carry (review R10)', () => {
+  const good = contentSecurityPolicy([sha256SourceHash('self.__next_f.push([0])', sha256)]);
+
+  it('accepts the policy built from an export', () => {
+    expect(cspProblems(good)).toEqual([]);
+  });
+
+  it.each([
+    ['empty', ''],
+    ['whitespace', '  '],
+    ['without script hashes', contentSecurityPolicy([])],
+    ['without default-src none', good.replace("default-src 'none'", "default-src 'self'")],
+    ['without frame-ancestors', good.replace("frame-ancestors 'none'", '')],
+    ['with unsafe-inline', good.replace("script-src 'self'", "script-src 'self' 'unsafe-inline'")],
+    ['with unsafe-eval', good.replace("script-src 'self'", "script-src 'self' 'unsafe-eval'")],
+    ['with a quote that would end the Caddy string', `${good}; report-uri "x`],
+    ['with a brace Caddy would parse', `${good}; report-uri {x}`],
+  ])('refuses a policy %s', (_label, csp) => {
+    expect(cspProblems(csp)).not.toEqual([]);
   });
 });

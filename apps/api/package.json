@@ -13,7 +13,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:integration": "vitest run --config vitest.integration.config.ts",
-    "admin": "node dist/admin/cli.js"
+    "admin": "node dist/admin/cli.js",
+    "test:caddy": "node scripts/check-caddy.mjs"
   },
   "dependencies": {
     "@nestjs/common": "12.2.0",

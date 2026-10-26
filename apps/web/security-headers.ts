@@ -144,3 +144,21 @@ export function isHashedStaticPath(pathname: string): boolean {
 }
 
 export const FORBIDDEN_SCRIPT_TOKENS = ["'unsafe-inline'", "'unsafe-eval'"] as const;
+
+/**
+ * Why a CSP must not be served (empty when it may). The Caddy header snippet is written only for
+ * a policy with no problems, so a missing, empty or weakened policy stops the build instead of
+ * reaching a browser (predeployment-review R10).
+ */
+export function cspProblems(csp: string): string[] {
+  const problems: string[] = [];
+  if (!csp.trim()) problems.push('it is empty');
+  if (!/(^|;)\s*default-src 'none'/.test(csp)) problems.push("default-src is not 'none'");
+  if (!/(^|;)\s*script-src [^;]*'sha256-[A-Za-z0-9+/=]{44}'/.test(csp))
+    problems.push('script-src has no script hash');
+  if (!/(^|;)\s*frame-ancestors 'none'/.test(csp)) problems.push("frame-ancestors is not 'none'");
+  for (const token of FORBIDDEN_SCRIPT_TOKENS)
+    if (csp.includes(token)) problems.push(`${token} is in it`);
+  if (/["\n\r{}]/.test(csp)) problems.push('it contains a character the Caddyfile cannot quote');
+  return problems;
+}
