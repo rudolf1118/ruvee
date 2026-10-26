@@ -158,18 +158,22 @@ export async function restoredObjectProblems(c: pg.Client): Promise<string[]> {
   return problems;
 }
 
+const NAMESPACE_COLUMN: Readonly<Record<string, string>> = {
+  pg_collation: 'collnamespace',
+  pg_conversion: 'connamespace',
+  pg_operator: 'oprnamespace',
+  pg_opclass: 'opcnamespace',
+  pg_opfamily: 'opfnamespace',
+  pg_ts_config: 'cfgnamespace',
+  pg_ts_dict: 'dictnamespace',
+  pg_ts_parser: 'prsnamespace',
+  pg_ts_template: 'tmplnamespace',
+};
+
 function namespaceColumn(catalog: string): string {
-  return {
-    pg_collation: 'collnamespace',
-    pg_conversion: 'connamespace',
-    pg_operator: 'oprnamespace',
-    pg_opclass: 'opcnamespace',
-    pg_opfamily: 'opfnamespace',
-    pg_ts_config: 'cfgnamespace',
-    pg_ts_dict: 'dictnamespace',
-    pg_ts_parser: 'prsnamespace',
-    pg_ts_template: 'tmplnamespace',
-  }[catalog]!;
+  const column = NAMESPACE_COLUMN[catalog];
+  if (!column) throw new Error(`no namespace column for ${catalog}`);
+  return column;
 }
 
 /** Hands the loader's objects to the admin role and removes the loader role. */
