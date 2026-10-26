@@ -40,7 +40,9 @@ export type VerifyFailure =
   | 'sequence_gap'
   | 'digest_mismatch'
   | 'record_invalid'
-  | 'wrong_vault';
+  | 'wrong_vault'
+  /** A commit reply that does not extend this device's checkpoint by one (review R5). */
+  | 'stale_commit_reply';
 
 export type VerifyResult =
   | {
@@ -54,6 +56,8 @@ export type VerifyResult =
         readonly manifest: Manifest;
       };
       readonly changed: readonly string[];
+      /** The hash of every manifest verified here, oldest first. */
+      readonly verified: readonly Uint8Array[];
     }
   | { readonly ok: false; readonly reason: VerifyFailure };
 
@@ -65,7 +69,7 @@ export function digestEntries(crypto: RuveeCrypto, state: SyncedState) {
   }));
 }
 
-function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
+export function sameBytes(a: Uint8Array, b: Uint8Array): boolean {
   return a.length === b.length && a.every((v, i) => v === b[i]);
 }
 
@@ -104,13 +108,14 @@ export function verifyPages(
   if (currentSeq === checkpoint.seq) {
     if (manifests.length > 0 || pages.some((p) => p.items.length > 0))
       return { ok: false, reason: 'history_rewritten' };
-    return { ok: true, state: new Map(synced), checkpoint, changed: [] };
+    return { ok: true, state: new Map(synced), checkpoint, changed: [], verified: [] };
   }
 
   // Checks 1 to 3: consecutive seqs from the checkpoint, each decrypting at its position and
   // chaining to the one before it.
   let previous = checkpoint.manifestHash;
   let newest: { seq: number; envelope: Uint8Array; manifest: Manifest } | undefined;
+  const verified: Uint8Array[] = [];
   const vaultIdBytes = uuidToBytes(keys.vaultId);
   for (const [i, entry] of manifests.entries()) {
     if (entry.seq !== checkpoint.seq + i + 1) return { ok: false, reason: 'sequence_gap' };
@@ -130,6 +135,7 @@ export function verifyPages(
     if (!sameBytes(manifest.prevManifestHash, previous))
       return { ok: false, reason: 'history_rewritten' };
     previous = crypto.manifestHash(envelope);
+    verified.push(previous);
     if (anchor?.seq === entry.seq && !sameBytes(previous, anchor.manifestHash))
       return { ok: false, reason: 'history_rewritten' };
     newest = { seq: entry.seq, envelope, manifest };
@@ -165,6 +171,7 @@ export function verifyPages(
       keysetVersion: checkpoint.keysetVersion,
     },
     newest,
+    verified,
     changed,
   };
 }

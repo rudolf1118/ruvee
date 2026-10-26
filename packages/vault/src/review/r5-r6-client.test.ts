@@ -7,8 +7,8 @@ import { FakeServer, fakeOpaque } from '../test-support.js';
 import { VaultEngine } from '../vault-engine.js';
 
 /**
- * Pre-deployment review, findings R5 and R6 (docs/security/predeployment-review.md). These tests
- * describe the CURRENT behaviour and are expected to fail once the findings are fixed.
+ * Pre-deployment review, findings R5 and R6 (docs/security/predeployment-review.md), as
+ * regressions: the reproductions now assert the secure outcome. Synthetic data only.
  */
 
 const PASSWORD = 'synthetic engine passphrase 4c1e';
@@ -17,9 +17,13 @@ beforeAll(async () => {
   crypto = await initRuveeCrypto();
 });
 
-async function device(server: FakeServer, factory = new IDBFactory()) {
+async function device(
+  server: FakeServer,
+  factory = new IDBFactory(),
+  onEvent: (engine: VaultEngine) => void = () => undefined,
+) {
   const store = await DeviceStore.open(factory);
-  const engine = new VaultEngine({
+  const engine: VaultEngine = new VaultEngine({
     crypto,
     api: server.api(),
     store,
@@ -27,7 +31,9 @@ async function device(server: FakeServer, factory = new IDBFactory()) {
     origin: 'http://127.0.0.1:3101',
     platform: 'web',
     now: () => Date.now(),
-    emit: () => undefined,
+    emit: () => {
+      onEvent(engine);
+    },
   });
   return { engine, store, factory };
 }
@@ -72,50 +78,117 @@ async function paired(server: FakeServer, from: Awaited<ReturnType<typeof device
 const checkpointSeq = (e: VaultEngine) =>
   (e as unknown as { session: { checkpoint: { seq: number } } }).session.checkpoint.seq;
 
-describe('REVIEW R5: a replayed commit reply lowers the checkpoint', () => {
-  it('lets a server roll a device back below a seq it already verified (R5, vulnerable)', async () => {
+describe('REVIEW R5 (regression): no commit reply lowers the checkpoint', () => {
+  /** A has one commit applied whose reply was lost; B committed on top of it. */
+  async function lostReplyThenB() {
     const { server, a } = await account();
     const b = await paired(server, a);
     const item = await a.engine.save({ draft: login('v1') });
     await a.engine.sync();
     await b.engine.sync();
-
-    // The server applies A's next commit but drops the reply (a reset connection).
-    const apply = server.applyCommit.bind(server);
-    let drop = true;
-    server.applyCommit = (body) => {
-      const result = apply(body);
-      if (drop) {
-        drop = false;
-        throw new Error('connection reset');
-      }
-      return result;
-    };
+    server.loseNextCommitResponse = true;
     await a.engine.save({ draft: { ...login('A edit'), id: item.id } });
     await a.engine.idle();
     const seqOfA = server.currentSeq;
     const itemsAtA = structuredClone(server.items);
     const manifestsAtA = structuredClone(server.manifests);
-
-    // B commits on top of A's commit.
     await b.engine.sync();
     await b.engine.save({ draft: { ...login('B edit (e.g. a rotated password)'), id: item.id } });
     await b.engine.sync();
     const seqOfB = server.currentSeq;
     expect(seqOfB).toBe(seqOfA + 1);
+    const hideB = () => {
+      server.manifests = manifestsAtA;
+      server.items = itemsAtA;
+    };
+    return { server, a, b, seqOfA, seqOfB, hideB };
+  }
 
-    // A syncs: its pull verifies B's commit, then the retried commit's replayed reply
-    // (`{ seq: seqOfA }`) is taken as the new checkpoint.
-    await a.engine.sync();
-    expect(checkpointSeq(a.engine)).toBe(seqOfA);
-    expect(a.engine.items().map((i) => i.title)).toEqual(['A edit']);
-
-    // The server now hides B's commit. A accepts it: no integrity error.
-    server.manifests = manifestsAtA;
-    server.items = itemsAtA;
+  it('keeps the checkpoint at what the pull verified, and refuses a later rollback', async () => {
+    const { server, a, seqOfB, hideB } = await lostReplyThenB();
     const status = await a.engine.sync();
     expect(status.state).toBe('synced');
-    expect(status.integrity).toBeUndefined();
+    expect(checkpointSeq(a.engine)).toBe(seqOfB);
+    expect(a.engine.items().map((i) => i.title)).toEqual(['B edit (e.g. a rotated password)']);
+    // The commit was recognised as landed, not sent again.
+    expect(server.currentSeq).toBe(seqOfB);
+    // The server now hides B's commit: A notices.
+    hideB();
+    const after = await a.engine.sync();
+    expect(after.state).toBe('integrity_error');
+    expect(after.integrity).toBe('server_behind');
+    expect(checkpointSeq(a.engine)).toBe(seqOfB);
+  });
+
+  it('holds across a restart with the lost commit still persisted as in flight', async () => {
+    const { server, a, seqOfB, hideB } = await lostReplyThenB();
+    // A is locked (the worker ends) and unlocked again: the in-flight commit comes from storage.
+    a.engine.wipeMemory();
+    const again = await device(server, a.factory);
+    await again.engine.unlock({ password: PASSWORD });
+    await again.engine.sync();
+    expect(checkpointSeq(again.engine)).toBe(seqOfB);
+    expect(server.currentSeq).toBe(seqOfB);
+    hideB();
+    expect((await again.engine.sync()).state).toBe('integrity_error');
+  });
+
+  it('refuses a reply for an older seq (replayed or reordered) and keeps its checkpoint', async () => {
+    const { server, a } = await account();
+    await a.engine.save({ draft: login('one') });
+    await a.engine.sync();
+    await a.engine.save({ draft: login('two') });
+    await a.engine.sync();
+    const verified = checkpointSeq(a.engine);
+    // A server that applies the next commit but answers with an earlier commit's reply.
+    const apply = server.applyCommit.bind(server);
+    server.applyCommit = (body) => {
+      apply(body);
+      return { seq: verified - 1 };
+    };
+    await a.engine.save({ draft: login('three') });
+    const status = await a.engine.sync();
+    expect(status.state).toBe('integrity_error');
+    expect(status.integrity).toBe('stale_commit_reply');
+    expect(checkpointSeq(a.engine)).toBe(verified);
+  });
+
+  it('never lets the checkpoint decrease while syncs, saves and a lost reply interleave', async () => {
+    const { server, a: first, b } = await lostReplyThenB();
+    // The same device again, observed on every event it emits, inside each sync too.
+    first.engine.wipeMemory();
+    const seen: number[] = [];
+    const watch = (engine: VaultEngine = a.engine) => {
+      const s = (engine as unknown as { session?: { checkpoint: { seq: number } } }).session;
+      if (s) seen.push(s.checkpoint.seq);
+    };
+    const a = await device(server, first.factory, watch);
+    await a.engine.unlock({ password: PASSWORD });
+    // Concurrent calls on A while B keeps committing; the engine serializes A's own.
+    await Promise.all([
+      a.engine.sync().then(() => {
+        watch();
+      }),
+      a.engine.save({ draft: login('A new item') }).then(() => {
+        watch();
+      }),
+      b.engine.save({ draft: login('B new item') }).then(() => b.engine.sync()),
+      a.engine.sync().then(() => {
+        watch();
+      }),
+    ]);
+    await b.engine.sync();
+    await a.engine.sync();
+    watch();
+    for (let i = 1; i < seen.length; i++)
+      expect(seen[i] ?? 0).toBeGreaterThanOrEqual(seen[i - 1] ?? 0);
+    expect(checkpointSeq(a.engine)).toBe(server.currentSeq);
+    expect(
+      a.engine
+        .items()
+        .map((i) => i.title)
+        .sort(),
+    ).toEqual(['A new item', 'B edit (e.g. a rotated password)', 'B new item'].sort());
   });
 });
 

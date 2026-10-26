@@ -48,6 +48,7 @@ export { VaultError } from './vault-error.js';
 import {
   buildCommit,
   rebase,
+  sameBytes,
   verifyPages,
   ZERO_HASH,
   type Anchor,
@@ -3119,6 +3120,17 @@ export class VaultEngine {
       const item = result.state.get(itemId);
       return { itemId, revision: item?.revision ?? 0, record: item?.record ?? null };
     });
+    // A verified pull never moves the checkpoint back (verifyPages refuses a server behind it).
+    if (result.checkpoint.seq < session.checkpoint.seq) {
+      this.integrity(session, 'server_behind');
+      return;
+    }
+    // The commit in flight is in the verified chain: it was applied and only its reply was lost.
+    // It is done; its changes are in the pulled state. Retrying it would bring back the
+    // server's idempotent reply for its old position (review R5).
+    const landed = session.inflight;
+    if (landed && result.verified.some((h) => sameBytes(h, landed.manifestHash)))
+      session.inflight = null;
     session.synced = result.state;
     session.checkpoint = result.checkpoint;
     for (const id of result.changed) session.bodies.delete(id);
@@ -3138,6 +3150,9 @@ export class VaultEngine {
           manifestHash: toB64(session.checkpoint.manifestHash),
         }),
         anchor: null,
+        ...(landed && !session.inflight
+          ? { pending: this.sealLocal(session, 'pending', this.pendingJson(session)) }
+          : {}),
       },
     });
     await this.rebasePending(session);
@@ -3228,6 +3243,16 @@ export class VaultEngine {
       const inflight = session.inflight;
       try {
         const { seq } = await this.deps.api.commit(inflight.body);
+        // Only a reply for a commit built on this checkpoint, at exactly the next seq, moves it.
+        // Anything else is a replayed or delayed reply (an earlier commit's idempotent answer):
+        // applying it would lower the checkpoint below what this device verified (review R5).
+        if (
+          inflight.body.baseSeq !== session.checkpoint.seq ||
+          seq !== session.checkpoint.seq + 1
+        ) {
+          this.integrity(session, 'stale_commit_reply');
+          return;
+        }
         const state = new Map(session.synced);
         for (const m of inflight.mutations)
           state.set(m.itemId, { revision: m.baseRevision + 1, record: m.record });
