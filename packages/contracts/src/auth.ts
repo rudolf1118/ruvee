@@ -298,6 +298,10 @@ export const SECURITY_EVENT_TYPES = [
   'integrity_warning_reported',
   'server_restored',
   'restore_review_completed',
+  'reopen_code_issued',
+  'reopen_started',
+  'reopen_failed',
+  'restore_reopened',
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
 

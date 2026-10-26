@@ -23,6 +23,12 @@ import {
   type Manifest,
   type OpenOutput,
 } from './backup-files.js';
+import {
+  newReopenCode,
+  REOPEN_CODE_TTL_MS,
+  REOPEN_CODES_DDL,
+  REOPEN_CODES_TABLE,
+} from '../reopen/reopen-codes.js';
 import type { PgTools } from './pg-tools.js';
 
 /**
@@ -158,7 +164,7 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     written.push(path);
     return path;
   };
-  const run = options.tools.dump(options.databaseUrl, [GUARD_TABLE]);
+  const run = options.tools.dump(options.databaseUrl, [GUARD_TABLE, REOPEN_CODES_TABLE]);
   const onAbort = () => {
     run.kill();
   };
@@ -349,14 +355,16 @@ export async function restoreBackup(
       );
     await c.query(`CREATE TABLE ${GUARD_TABLE} (
       id smallint PRIMARY KEY CHECK (id = 1),
-      state text NOT NULL CHECK (state IN ('restoring', 'review', 'open')),
+      state text NOT NULL CHECK (state IN ('restoring', 'review', 'reopening', 'open')),
       restore_id uuid NOT NULL,
       snapshot_at timestamptz NOT NULL,
       backup_digest text NOT NULL,
       provenance text NOT NULL CHECK (provenance IN ('trusted-digest', 'unchecked')),
       started_at timestamptz NOT NULL DEFAULT now(),
-      review_completed_at timestamptz
+      review_completed_at timestamptz,
+      reopened_at timestamptz
     )`);
+    await c.query(REOPEN_CODES_DDL);
     await c.query(
       `INSERT INTO ${GUARD_TABLE} (id, state, restore_id, snapshot_at, backup_digest, provenance)
        VALUES (1, 'restoring', $1, $2, $3, $4)`,
@@ -437,7 +445,7 @@ export async function restoreBackup(
 // ---- Review ----
 
 export interface RestoreReview {
-  readonly state: 'restoring' | 'review' | 'open';
+  readonly state: 'restoring' | 'review' | 'reopening' | 'open';
   readonly restoreId: string;
   readonly snapshotAt: string;
   /** SHA-256 of the backup's manifest: compare it with the operator's own record. */
@@ -467,7 +475,7 @@ async function guard(c: pg.Client) {
   if (!exists.rows[0]?.t)
     throw new RestoreError('review', 'this database was not restored with ruvee-admin restore');
   const row = await c.query<{
-    state: 'restoring' | 'review' | 'open';
+    state: 'restoring' | 'review' | 'reopening' | 'open';
     restore_id: string;
     snapshot_at: Date;
     backup_digest: string;
@@ -568,11 +576,63 @@ export async function revokeDeviceInReview(
   });
 }
 
-/** OPEN: only from `review`, with the printed restore id and both acknowledgements. */
+/** A reopening code as `ruvee-admin` prints it, once (backup-restore.md §3.13). */
+export interface IssuedReopenCode {
+  readonly code: string;
+  readonly expiresAt: string;
+}
+
+/**
+ * Issues the one usable reopening code: every earlier code of this restore is revoked and every
+ * reopen session ended, in the same transaction. Runs inside an open transaction on `c`.
+ */
+async function issueCode(
+  c: pg.Client,
+  restoreId: string,
+  accountId: string,
+): Promise<IssuedReopenCode> {
+  await c.query(
+    `UPDATE ${REOPEN_CODES_TABLE} SET revoked_at = now() WHERE revoked_at IS NULL AND consumed_at IS NULL`,
+  );
+  await c.query(
+    `UPDATE sessions SET revoked_at = now(), revoke_reason = 'reopened' WHERE kind = 'reopen' AND revoked_at IS NULL`,
+  );
+  const { code, hash } = newReopenCode();
+  const expires = await c.query<{ expires_at: Date }>(
+    `INSERT INTO ${REOPEN_CODES_TABLE} (id, restore_id, account_id, code_hash, expires_at)
+     VALUES ($1, $2, $3, $4, now() + make_interval(secs => $5)) RETURNING expires_at`,
+    [randomUUID(), restoreId, accountId, hash, REOPEN_CODE_TTL_MS / 1000],
+  );
+  await c.query(
+    `INSERT INTO security_events (id, account_id, type, details, created_at)
+     VALUES ($1, $2, 'reopen_code_issued', $3, now())`,
+    [randomUUID(), accountId, JSON.stringify({ restoreId })],
+  );
+  return { code, expiresAt: (expires.rows[0]?.expires_at ?? new Date()).toISOString() };
+}
+
+async function transaction<T>(c: pg.Client, run: () => Promise<T>): Promise<T> {
+  await c.query('BEGIN');
+  try {
+    const result = await run();
+    await c.query('COMMIT');
+    return result;
+  } catch (error) {
+    await c.query('ROLLBACK');
+    throw error;
+  }
+}
+
+/**
+ * Ends the review, only from `review`, with the printed restore id and both acknowledgements.
+ * With an account, the installation goes to `reopening` and a reopening code is issued: nothing
+ * opens until the owner completes the reopening (§3.13). Without one (a snapshot taken before the
+ * account existed), it opens: registration still needs a new setup token.
+ */
 export async function completeRestore(
   databaseUrl: string,
   options: { restoreId: string; devicesReviewed: boolean; acceptRestoredCredentials: boolean },
-) {
+): Promise<{ state: 'reopening'; reopen: IssuedReopenCode } | { state: 'open' }> {
   if (!options.devicesReviewed || !options.acceptRestoredCredentials)
     throw new RestoreError(
       'complete',
@@ -583,32 +643,58 @@ export async function completeRestore(
     if (g.state !== 'review')
       throw new RestoreError(
         'complete',
-        g.state === 'open'
-          ? 'already open'
+        g.state === 'open' || g.state === 'reopening'
+          ? 'the review is already complete'
           : 'the restore did not finish; start again into a new database',
       );
     if (g.restore_id !== options.restoreId)
       throw new RestoreError('complete', 'that is not this restore');
-    await c.query('BEGIN');
-    try {
+    return transaction(c, async () => {
       const account = await c.query<{ id: string }>('SELECT id FROM accounts LIMIT 1');
+      const accountId = account.rows[0]?.id ?? null;
       await c.query(
         `INSERT INTO security_events (id, account_id, type, details, created_at)
          VALUES ($1, $2, 'restore_review_completed', $3, now())`,
-        [
-          randomUUID(),
-          account.rows[0]?.id ?? null,
-          JSON.stringify({ restoreId: options.restoreId }),
-        ],
+        [randomUUID(), accountId, JSON.stringify({ restoreId: options.restoreId })],
       );
-      await c.query(
-        `UPDATE ${GUARD_TABLE} SET state = 'open', review_completed_at = now() WHERE id = 1 AND state = 'review'`,
+      const next = accountId === null ? 'open' : 'reopening';
+      const moved = await c.query(
+        `UPDATE ${GUARD_TABLE} SET state = $1, review_completed_at = now(),
+           reopened_at = CASE WHEN $1 = 'open' THEN now() ELSE NULL END
+         WHERE id = 1 AND state = 'review'`,
+        [next],
       );
-      await c.query('COMMIT');
-    } catch (error) {
-      await c.query('ROLLBACK');
-      throw error;
-    }
+      if (moved.rowCount !== 1) throw new RestoreError('complete', 'the review changed meanwhile');
+      if (accountId === null) return { state: 'open' as const };
+      return {
+        state: 'reopening' as const,
+        reopen: await issueCode(c, options.restoreId, accountId),
+      };
+    });
+  });
+}
+
+/**
+ * The host-authorized retry path: a new reopening code when the last one expired, was used up by
+ * failures, or its reopen session was lost. Revokes every earlier code and reopen session. Only
+ * while `reopening`; it never opens anything.
+ */
+export async function issueReopenCode(
+  databaseUrl: string,
+  options: { restoreId: string },
+): Promise<IssuedReopenCode> {
+  return withClient(databaseUrl, async (c) => {
+    const g = await guard(c);
+    if (g.state !== 'reopening')
+      throw new RestoreError('complete', 'a reopening code exists only while reopening');
+    if (g.restore_id !== options.restoreId)
+      throw new RestoreError('complete', 'that is not this restore');
+    return transaction(c, async () => {
+      const account = await c.query<{ id: string }>('SELECT id FROM accounts LIMIT 1');
+      const accountId = account.rows[0]?.id;
+      if (!accountId) throw new RestoreError('complete', 'the restored database has no account');
+      return issueCode(c, options.restoreId, accountId);
+    });
   });
 }
 

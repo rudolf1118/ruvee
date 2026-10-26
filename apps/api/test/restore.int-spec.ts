@@ -37,6 +37,13 @@ import {
   type SyntheticAccount,
 } from './support/synthetic-client.js';
 import { testBackupKey, type TestBackupKey } from './support/backup-keys.js';
+import {
+  reopenCompleteBody,
+  reopenCookie,
+  reopenMaterial,
+  reopenWithPassword,
+  unwrapReopenMaterial,
+} from './support/reopen-client.js';
 import { createTempDatabase, migrate, query, type TempDatabase } from './support/temp-database.js';
 
 /**
@@ -45,6 +52,7 @@ import { createTempDatabase, migrate, query, type TempDatabase } from './support
  * only: the source is this suite's own throwaway database.
  */
 
+const NEW_PASSWORD = 'synthetic reopened passphrase 81d0';
 const EXT = {
   Origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop',
   'X-Ruvee-Request': '1',
@@ -96,11 +104,12 @@ describe('server restore into a maintenance-mode installation (real database, re
   let sourceBefore: string;
   let target: TempDatabase;
   let restoreId: string;
+  let reopenCode: string;
   let restored: Harness;
   let clearRestoredThrottle: () => void;
 
-  async function login(h: Harness, deviceId?: string) {
-    const client = startLogin(SYNTHETIC_PASSWORD);
+  async function login(h: Harness, deviceId?: string, password = SYNTHETIC_PASSWORD) {
+    const client = startLogin(password);
     const start = await h.post('/api/v1/auth/login/start', {
       username: account.username,
       startLoginRequest: client.startLoginRequest,
@@ -109,7 +118,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     });
     if (start.status !== 200) return start;
     const parsed = loginStartResponseSchema.parse(start.body);
-    const finished = finishLogin(client.clientLoginState, parsed.loginResponse);
+    const finished = finishLogin(client.clientLoginState, parsed.loginResponse, password);
     if (!finished) throw new Error('login rejected');
     return h.post('/api/v1/auth/login/finish', {
       loginId: parsed.loginId,
@@ -279,7 +288,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     await restored.http().get('/health/live').expect(200);
   });
 
-  it('reviews the snapshot without secrets, revokes a device again, and opens only when told', async () => {
+  it('reviews the snapshot without secrets, revokes a device again, and ends the review only when told', async () => {
     const review = await reviewRestore(target.url);
     expect(review).toMatchObject({
       state: 'review',
@@ -308,11 +317,14 @@ describe('server restore into a maintenance-mode installation (real database, re
     // Still closed.
     expectError(await restored.get('/api/v1/account/keys', owner), 'maintenance');
 
-    await completeRestore(target.url, {
+    const ended = await completeRestore(target.url, {
       restoreId,
       devicesReviewed: true,
       acceptRestoredCredentials: true,
     });
+    if (ended.state !== 'reopening') throw new Error('expected reopening');
+    expect(ended.reopen.code).toMatch(/^RC1-[A-Za-z0-9_-]{43}$/);
+    reopenCode = ended.reopen.code;
     const events = await query<{ type: string }>(
       target.url,
       `SELECT type FROM security_events WHERE type IN ('server_restored', 'restore_review_completed', 'device_revoked') ORDER BY created_at`,
@@ -324,25 +336,51 @@ describe('server restore into a maintenance-mode installation (real database, re
     ]);
   });
 
-  it('after the review, no restored session, token, recovery session or pairing works', async () => {
-    expectError(await restored.get('/api/v1/account/keys', owner), 'unauthenticated');
-    expectError(
-      await restored
+  it('after the review, nothing restored works until the owner reopens, and nothing old after', async () => {
+    const refresh = () =>
+      restored
         .http()
         .post('/api/v1/auth/refresh')
         .set(EXT)
-        .send({ refreshToken: extensionTokens.refreshToken }),
-      'unauthenticated',
+        .send({ refreshToken: extensionTokens.refreshToken });
+    // Reopening: only /reopen/* answers, whatever the credentials.
+    expectError(await restored.get('/api/v1/account/keys', owner), 'reopening');
+    expectError(await refresh(), 'reopening');
+    expectError(await restored.get('/api/v1/recovery/material', recoveryCookie), 'reopening');
+    expectError(await login(restored, account.deviceId), 'reopening');
+    // The device revoked in the review cannot reopen, even with the code and the password.
+    expectError(
+      (await reopenWithPassword(restored, account, reopenCode, { deviceId: otherDevice.id }))
+        .finish as request.Response,
+      'reopen_failed',
     );
+    // The owner reopens from their own device and replaces the password and the kit.
+    const started = await reopenWithPassword(restored, account, reopenCode);
+    expect(started.finish?.status, started.finish?.text).toBe(200);
+    const reopen = reopenCookie(started.finish as request.Response);
+    const material = await reopenMaterial(restored, reopen);
+    const { body } = await reopenCompleteBody(
+      restored,
+      account,
+      reopen,
+      material,
+      unwrapReopenMaterial(account, material, {}),
+      NEW_PASSWORD,
+    );
+    const done = await restored.post('/api/v1/reopen/complete', body, reopen);
+    expect(done.status, done.text).toBe(200);
+
+    expectError(await restored.get('/api/v1/account/keys', owner), 'unauthenticated');
+    expectError(await refresh(), 'unauthenticated');
     expectError(await restored.get('/api/v1/recovery/material', recoveryCookie), 'unauthenticated');
-    // The device revoked in the review stays out, even with the snapshot-time password.
     expectError(
       await restored.get('/api/v1/devices/current', otherDevice.cookie),
       'device_revoked',
     );
-    expectError(await login(restored, otherDevice.id), 'device_revoked');
-    // The owner signs in again with the password as of the snapshot; the pairing is gone.
-    const fresh = await login(restored, account.deviceId);
+    expectError(await login(restored, otherDevice.id, NEW_PASSWORD), 'device_revoked');
+    // The snapshot-time password no longer works; the new one does. The pairing is gone.
+    await expect(login(restored, account.deviceId)).rejects.toThrow(/login rejected/);
+    const fresh = await login(restored, account.deviceId, NEW_PASSWORD);
     expect(fresh.status, fresh.text).toBe(200);
     const cookie = sessionCookie(fresh);
     expectError(await restored.get(`/api/v1/pairings/${pairingId}`, cookie), 'not_found');

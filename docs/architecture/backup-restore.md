@@ -439,49 +439,80 @@ the web app (`restore-help.tsx`, Security → After a server restore) and the ex
   the pending count the user was shown, and either a local export of the current state or an
   explicit "erase without an export". Nothing calls it automatically.
 
-### 3.13 D-30: legitimate owner control after a restore (open, not implemented)
+### 3.13 Reopening after a restore (D-30 option B, approved for development)
 
-**The problem.** After `restore-complete`, the password and Recovery Kit **as of the snapshot**
-work again. If either was replaced after the snapshot, it was probably replaced for a reason: it
-leaked, or a device holding it was lost. Whoever knows it can log in or recover first.
+**Why a host-issued code.** After a restore, the password and Recovery Kit **as of the snapshot**
+are valid again. If either was replaced after the snapshot, it was probably replaced because it
+leaked or a device holding it was lost, so "whoever logs in first must choose a new password"
+would hand the account to exactly the wrong person. Control after a restore therefore rests on
+host access, the same root of trust that authorizes account creation (setup tokens) and the
+restore itself (D-28): the operator prints a **reopening code** on the host, and the owner must
+present it **together with** the snapshot-time credentials.
 
-**Why "force a new password at first login" is not enough.** A rule that the first login after a
-restore may only set a new password and make a new kit decides nothing about _who_ that login
-is. The attacker who knows the old password is exactly the person the rule must keep out, and
-they would be the one forced to "choose a new password", locking the owner out instead.
+**Authentication is not decryption.** The code and the password only _authenticate_ a reopening.
+Decrypting still needs what it always needs: on the password path, the device's own Secret Key
+(`AK` is wrapped under `AUK(password, SK)`); on the Recovery Kit path, the Recovery Key itself
+(`AK` is wrapped under a key from `RK`). The code is never key material, so the code alone, or the
+code with a password on a browser without `SK`, opens nothing.
 
-**Option B, made precise.** Legitimate control after a restore must rest on something the old
-credentials do not give. In Ruvee's deployment model the owner is the person with shell access
-to the server host: they already authorize account creation with a single-use setup token from
-`ruvee-admin bootstrap-token`, and the restore itself (D-28) already trusts them. B reuses that
-root of trust:
+**State machine** (the guard row of §3.5; codes in `ruvee_reopen_codes`, both created by the
+restore tool and excluded from every backup):
 
-1. `restore-complete` opens the installation in a new state, **reopening**, and prints a
-   single-use **reopen code** (256 bits, only its hash stored, short expiry), like a setup token.
-2. While reopening, ordinary login and recovery are refused. A login or a recovery start is
-   accepted only with the snapshot-time password (or Recovery Kit) **and** the reopen code.
-3. That session is **restricted**: it may only change the password, make a new Recovery Kit, and
-   (on a device that unlocked with the password) replace `SK`; nothing else is served.
-4. When the new password and the new kit are both in place, the state becomes **open**, the
-   restricted session ends, and every other device signs in with the new password.
+```
+ REVIEW ──restore-complete──► REOPENING ──────────────── reopen/complete ──────────► OPEN
+ (no account in the            │  code issued (hash only),        (one transaction: new OPAQUE
+  snapshot: straight to OPEN)  │  bound to restore_id + account;   record, password wrap, new
+                               │  every /api route except          Recovery Kit wrap and verifier;
+                               │  /api/v1/reopen/* → 503;          every session revoked; every
+                               │  restore-reopen-code: revoke      code revoked; guard → open;
+                               │  codes + reopen sessions,         a normal session for this
+                               ▼  issue a new one                  device)
+                      code + credentials verified → code consumed, ONE reopen session
+```
 
-An attacker with the old password but without host access cannot get past step 2; one with host
-access is, in this model, the owner. What B still does not do: it cannot stop anyone who already
-holds an old dump and the old credentials from decrypting that copy offline, and it cannot
-revoke keys or ciphertext already copied.
+| Step | Transition (durable)                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| ---- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R0   | `restore` ends in `review` (§3.5). Everything is closed.                                                                                                                                                                                                                                                                                                                                                                                              |
+| R1   | `restore-complete` (host, with the review flags): guard `review` → `reopening`, and one code is issued and printed once. If the snapshot has no account, `review` → `open` as before (registration needs a new setup token).                                                                                                                                                                                                                          |
+| R2   | The owner starts a reopening: **password path** (`/reopen/login/start` + `finish`: the code, the username, OPAQUE with the snapshot-time password, from a device that is active in the snapshot) or **Recovery Kit path** (`/reopen/recovery/start`: the code, the username, `RAK` of the snapshot-time kit). The code is checked first; it is consumed only in the same transaction that creates the reopen session, after the credentials verified. |
+| R3   | The reopen session (own cookie, 30 minutes, kind `reopen`) may only: read the encrypted material (`/reopen/material`), start the OPAQUE registration of the new password (`/reopen/password/start`), and complete (`/reopen/complete`). The client unwraps `AK`, makes the new password wrap, makes a new Recovery Key, shows it, and checks it typed back before sending anything (as at recovery).                                                  |
+| R4   | `/reopen/complete`, one transaction: the new OPAQUE record, password wrap and salt, the new Recovery Kit wrap, key id and verifier (a different key id is required), every session revoked, every code revoked, the guard `reopening` → `open`, events, and a normal session for this device. On the kit path this device becomes active (`enrolled_via` recovery), as in recovery.                                                                   |
+| —    | Replacing `SK` is optional and uses the existing protocol right after R4 (Security; the new session is within the step-up window). It is not part of the restricted scope.                                                                                                                                                                                                                                                                            |
 
-**Minimum changes for B:** a migration (guard state `reopening`, reopen-token hash and expiry, a
-`restricted` session kind); `restore-complete` issuing the code; login, recovery start and
-session creation checking the state and the code; the access guard limiting restricted sessions
-to the password, kit and keyset endpoints; the transition to `open`; client screens to enter the
-code and complete the forced change; events; tests; and review under D-19.
+**Code handling.** 32 random bytes, shown as `RC1-` plus 43 base64url characters, printed only by
+`ruvee-admin restore-complete` or `restore-reopen-code` on the host; only its SHA-256 is stored,
+with the `restore_id` and the account it is for. Valid **60 minutes**; **5 failed attempts**
+(a wrong code, or a right code with wrong credentials) revoke it. At most one code is usable at a
+time: issuing one revokes the others and ends every reopen session. Consumption is one
+conditional `UPDATE … WHERE consumed_at IS NULL AND revoked_at IS NULL AND expires_at > now()` in
+the transaction that creates the reopen session, so concurrent submissions yield one session and
+the others fail; failed credentials never consume it. The code never appears in a URL, a log, an
+event, or browser storage: it is sent in a request body and held by the client only in memory.
 
-**The approval question:** Should the first owner session after a restore require a single-use
-reopen code issued on the server host, in addition to the snapshot-time password or Recovery
-Kit, with that session limited to replacing the password and the Recovery Kit (and optionally
-`SK`), and ordinary login and recovery closed until both are replaced — accepting that host
-access, not knowledge of old credentials, becomes the root of control after a restore? (Option C
-applies the same only to recovery.)
+**Retry path.** If the code expires, is used up by failures, or the reopen session is lost (tab
+closed, 30 minutes passed), the operator runs `ruvee-admin restore-reopen-code --restore-id <id>`
+on the host. The installation stays in `reopening` throughout; nothing falls back to ordinary
+access.
+
+**Which credentials work when:**
+
+| Stage                       | Ordinary login, recovery, registration, pairing, old sessions | Reopening                                           | Snapshot-time password and kit                  | New password and kit |
+| --------------------------- | ------------------------------------------------------------- | --------------------------------------------------- | ----------------------------------------------- | -------------------- |
+| `restoring`, `review`       | 503                                                           | 503                                                 | Unusable                                        | —                    |
+| `reopening`, before R2      | 503 `reopening`                                               | With a valid code and the snapshot-time credentials | Only together with the code                     | —                    |
+| `reopening`, reopen session | 503 `reopening`                                               | That session, for R3 and R4 only                    | As above (a new code is needed for another try) | Not yet installed    |
+| `open`                      | Normal                                                        | Gone (codes and reopen sessions revoked)            | **Refused**: both were replaced in R4           | Work                 |
+
+There is no durable state between "password replaced" and "kit replaced": both happen in R4 or
+not at all. An interruption anywhere before R4 leaves the snapshot-time credentials in place and
+the installation closed; the old kit is retired only when the new one, already checked by the
+client, is installed. Devices keep their local data throughout: the password path updates the
+device's own wrap without touching its items or pending edits; the kit path is for a browser
+without local data and refuses one that has it.
+
+**What it still does not do:** it cannot stop anyone who holds an old dump and the old
+credentials from decrypting that copy offline, and it revokes no key or ciphertext already
+copied. Someone with shell access to the host is, in this model, the owner.
 
 ## 4. Portable encrypted export (milestone M2)
 

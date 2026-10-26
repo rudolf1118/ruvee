@@ -1,0 +1,394 @@
+import { timingSafeEqual } from 'node:crypto';
+import { Injectable } from '@nestjs/common';
+import {
+  OPAQUE_CONFIG_ID,
+  type LoginFinishRequest,
+  type LoginStartResponse,
+  type RecoveryCompleteRequest,
+  type ReopenLoginStartRequest,
+  type ReopenMaterialResponse,
+  type ReopenRecoveryStartRequest,
+  type ReopenStartResponse,
+  type SessionResponse,
+} from '@ruvee/contracts';
+import type { ClientContext } from '../auth/auth.service.js';
+import { LoginStateStore } from '../auth/login-state.store.js';
+import { OpaqueServerService } from '../auth/opaque-server.service.js';
+import { ThrottleService } from '../auth/throttle.service.js';
+import { ApiException } from '../common/api-exception.js';
+import { envelopeHeaderOk, fromBase64url, sha256, toBase64url } from '../common/secrets.js';
+import { PrismaService } from '../database/prisma.service.js';
+import type { Prisma } from '../generated/prisma/client.js';
+import { MaintenanceService } from '../maintenance/maintenance.service.js';
+import { SecurityEventsService } from '../security-events/security-events.service.js';
+import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
+import { REOPEN_MAX_FAILURES, reopenCodeHash } from './reopen-codes.js';
+
+/** Compared against when the username is unknown, so both paths do the same work. */
+const DUMMY_VERIFIER = new Uint8Array(32);
+
+interface CodeRow {
+  id: string;
+  restore_id: string;
+  account_id: string;
+}
+
+type NewReopen = ReopenStartResponse & { token: string; absoluteExpiresAt: Date };
+
+/**
+ * Reopening a restored installation (backup-restore.md §3.13, D-30 option B). The host-issued
+ * code authenticates **who may reopen**; the snapshot-time password (from a device that holds
+ * `SK`) or Recovery Key authenticates **the account**, and is also what decrypts: the code alone
+ * opens nothing. Every failure is `401 reopen_failed`. The code is consumed only in the
+ * transaction that creates the one reopen session, after the credentials verified; wrong codes
+ * and wrong credentials count towards its revocation instead.
+ */
+@Injectable()
+export class ReopenService {
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly opaque: OpaqueServerService,
+    private readonly sessions: SessionService,
+    private readonly loginStates: LoginStateStore,
+    private readonly throttle: ThrottleService,
+    private readonly events: SecurityEventsService,
+    private readonly maintenance: MaintenanceService,
+  ) {}
+
+  /** The usable code with this value, while reopening; or undefined. Never consumes it. */
+  private async usableCode(reopenCode: string): Promise<CodeRow | undefined> {
+    if ((await this.maintenance.state()) !== 'reopening') return undefined;
+    const hash = reopenCodeHash(reopenCode);
+    if (!hash) return undefined;
+    const [row] = await this.prisma.$queryRaw<CodeRow[]>`
+      SELECT c.id, c.restore_id, c.account_id FROM ruvee_reopen_codes c
+      JOIN ruvee_restore_guard g ON g.restore_id = c.restore_id AND g.state = 'reopening'
+      WHERE c.code_hash = ${hash} AND c.revoked_at IS NULL AND c.consumed_at IS NULL
+        AND c.expires_at > now() AND c.failed_attempts < ${REOPEN_MAX_FAILURES}`;
+    return row;
+  }
+
+  /**
+   * A failed attempt: counted on the given code, or (for a wrong code) on every usable one, and
+   * a code reaching the limit is revoked. The operator then issues a new one on the host.
+   */
+  private async fail(client: ClientContext, codeId?: string, accountId?: string): Promise<never> {
+    if ((await this.maintenance.state()) === 'reopening') {
+      if (codeId)
+        await this.prisma.$executeRaw`
+          UPDATE ruvee_reopen_codes SET failed_attempts = failed_attempts + 1,
+            revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
+          WHERE id = ${codeId}::uuid AND revoked_at IS NULL AND consumed_at IS NULL`;
+      else
+        await this.prisma.$executeRaw`
+          UPDATE ruvee_reopen_codes SET failed_attempts = failed_attempts + 1,
+            revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
+          WHERE revoked_at IS NULL AND consumed_at IS NULL AND expires_at > now()`;
+      await this.events.record('reopen_failed', { accountId: accountId ?? null, ...client });
+    }
+    throw new ApiException('reopen_failed');
+  }
+
+  /**
+   * Consumes the code and creates the one reopen session, in one transaction. The guard row is
+   * locked first, so concurrent reopenings serialize; the conditional update lets exactly one
+   * of them consume the code, and the others roll back.
+   */
+  private async consume(
+    tx: Prisma.TransactionClient,
+    code: CodeRow,
+    deviceId: string,
+    via: 'password' | 'recovery',
+    client: ClientContext,
+    now: Date,
+  ) {
+    const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
+      SELECT state, restore_id FROM ruvee_restore_guard WHERE id = 1 FOR UPDATE`;
+    if (g?.state !== 'reopening' || g.restore_id !== code.restore_id)
+      throw new ApiException('reopen_failed');
+    const session = await this.sessions.createReopen(code.account_id, deviceId, tx, now);
+    const consumed = await tx.$executeRaw`
+      UPDATE ruvee_reopen_codes SET consumed_at = now(), session_id = ${session.id}::uuid,
+        via = ${via}
+      WHERE id = ${code.id}::uuid AND consumed_at IS NULL AND revoked_at IS NULL
+        AND expires_at > now() AND failed_attempts < ${REOPEN_MAX_FAILURES}`;
+    if (consumed !== 1) throw new ApiException('reopen_failed');
+    await this.events.record(
+      'reopen_started',
+      { accountId: code.account_id, deviceId, ...client, details: { via } },
+      tx,
+    );
+    return session;
+  }
+
+  /** Password path, step 1: the code, then OPAQUE as for a login. */
+  async loginStart(
+    body: ReopenLoginStartRequest,
+    client: ClientContext,
+  ): Promise<LoginStartResponse> {
+    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertLoginAllowed(body.username);
+    const code = await this.usableCode(body.reopenCode);
+    if (!code) return this.fail(client);
+    const account = await this.prisma.account.findUnique({
+      where: { usernameNormalized: body.username },
+      select: { id: true, opaqueCredential: { select: { registrationRecord: true } } },
+    });
+    // The code is for one account; any other username fails like a wrong code.
+    if (account?.id !== code.account_id || !account.opaqueCredential)
+      return this.fail(client, code.id, code.account_id);
+    let started: { serverLoginState: string; loginResponse: string };
+    try {
+      started = this.opaque.startLogin(
+        body.username,
+        Buffer.from(account.opaqueCredential.registrationRecord).toString('base64url'),
+        body.startLoginRequest,
+      );
+    } catch {
+      throw new ApiException('invalid_request');
+    }
+    const loginId = this.loginStates.put({
+      serverLoginState: started.serverLoginState,
+      username: body.username,
+      accountId: account.id,
+      deviceId: body.deviceId,
+      platform: 'web',
+      reopenCodeId: code.id,
+    });
+    return { loginId, loginResponse: started.loginResponse };
+  }
+
+  /**
+   * Password path, step 2: OPAQUE finish with the snapshot-time password, from a device that is
+   * active in the snapshot (only such a device holds `SK`, without which the password wrap
+   * opens nothing). Then the code is consumed and the reopen session created.
+   */
+  async loginFinish(body: LoginFinishRequest, client: ClientContext): Promise<NewReopen> {
+    this.throttle.assertIpAllowed(client.ip);
+    const pending = this.loginStates.consume(body.loginId);
+    if (!pending?.reopenCodeId || pending.accountId === null || !pending.deviceId)
+      throw new ApiException('reopen_failed');
+    const accountId = pending.accountId;
+    const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
+    if (!verified) {
+      await this.throttle.recordLoginFailure(pending.username);
+      return this.fail(client, pending.reopenCodeId, accountId);
+    }
+    const device = await this.prisma.device.findFirst({
+      where: { id: pending.deviceId, accountId },
+    });
+    if (device?.status !== 'active') return this.fail(client, pending.reopenCodeId, accountId);
+    const code = { id: pending.reopenCodeId, account_id: accountId };
+    const [row] = await this.prisma.$queryRaw<{ restore_id: string }[]>`
+      SELECT restore_id FROM ruvee_reopen_codes WHERE id = ${code.id}::uuid`;
+    if (!row) throw new ApiException('reopen_failed');
+    const now = new Date();
+    const session = await this.prisma.$transaction((tx) =>
+      this.consume(tx, { ...code, restore_id: row.restore_id }, device.id, 'password', client, now),
+    );
+    await this.throttle.resetLogin(pending.username);
+    return {
+      accountId,
+      deviceId: device.id,
+      via: 'password',
+      expiresAt: session.absoluteExpiresAt.toISOString(),
+      token: session.token,
+      absoluteExpiresAt: session.absoluteExpiresAt,
+    };
+  }
+
+  /**
+   * Recovery Kit path: the code and `RAK` of the snapshot-time kit, as in recovery
+   * (account-recovery.md §3). The device is new (pending) or this account's own.
+   */
+  async recoveryStart(body: ReopenRecoveryStartRequest, client: ClientContext): Promise<NewReopen> {
+    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertRecoveryAllowed(body.username);
+    await this.throttle.recordRecoveryAttempt(body.username);
+    const code = await this.usableCode(body.reopenCode);
+    if (!code) return this.fail(client);
+    const account = await this.prisma.account.findUnique({
+      where: { usernameNormalized: body.username },
+      include: { accountKeys: { select: { recoveryVerifier: true } } },
+    });
+    const stored = account?.accountKeys?.recoveryVerifier ?? DUMMY_VERIFIER;
+    const matches = timingSafeEqual(sha256(fromBase64url(body.recoveryAuthKey)), stored);
+    if (!account?.accountKeys || !matches || account.id !== code.account_id)
+      return this.fail(client, code.id, code.account_id);
+    const existing = await this.prisma.device.findUnique({ where: { id: body.device.id } });
+    if (existing && (existing.accountId !== account.id || existing.status === 'revoked'))
+      return this.fail(client, code.id, account.id);
+    const now = new Date();
+    const session = await this.prisma.$transaction(async (tx) => {
+      if (!existing)
+        await tx.device.create({
+          data: {
+            id: body.device.id,
+            accountId: account.id,
+            platform: body.device.platform,
+            status: 'pending',
+            createdAt: now,
+            lastSeenAt: now,
+          },
+        });
+      return this.consume(tx, code, body.device.id, 'recovery', client, now);
+    });
+    return {
+      accountId: account.id,
+      deviceId: body.device.id,
+      via: 'recovery',
+      expiresAt: session.absoluteExpiresAt.toISOString(),
+      token: session.token,
+      absoluteExpiresAt: session.absoluteExpiresAt,
+    };
+  }
+
+  /** The encrypted material of the session's own path only. */
+  async material(session: AuthenticatedSession): Promise<ReopenMaterialResponse> {
+    const keys = await this.prisma.accountKeys.findUnique({
+      where: { accountId: session.accountId },
+    });
+    if (!keys || !session.via) throw new ApiException('reopen_failed');
+    return {
+      accountId: session.accountId,
+      via: session.via,
+      akId: toBase64url(keys.akId),
+      akEpoch: keys.akEpoch,
+      keysetVersion: Number(keys.keysetVersion),
+      keyset: toBase64url(keys.keyset),
+      recoveryKeyId: toBase64url(keys.recoveryKeyId),
+      rowVersion: Number(keys.rowVersion),
+      ...(session.via === 'password'
+        ? {
+            password: {
+              kdfProfile: keys.kdfProfile as 1,
+              saltPw: toBase64url(keys.saltPw),
+              wrappedAkPassword: toBase64url(keys.wrappedAkPassword),
+            },
+          }
+        : { wrappedAkRecovery: toBase64url(keys.wrappedAkRecovery) }),
+    };
+  }
+
+  async passwordStart(session: AuthenticatedSession, registrationRequest: string): Promise<string> {
+    const account = await this.prisma.account.findUniqueOrThrow({
+      where: { id: session.accountId },
+    });
+    try {
+      return this.opaque.createRegistrationResponse(
+        account.usernameNormalized,
+        registrationRequest,
+      );
+    } catch {
+      throw new ApiException('invalid_request');
+    }
+  }
+
+  /**
+   * One transaction, the final authorization transition: the new OPAQUE record, password wrap
+   * and salt, the new Recovery Kit (a different key id is required) with its wrap and verifier;
+   * every session revoked, every code revoked, the guard `reopening` → `open`; this device
+   * active; a normal session for it. Either all of it happens or none: there is no state with a
+   * new password and the old kit.
+   */
+  async complete(
+    session: AuthenticatedSession,
+    body: RecoveryCompleteRequest,
+    client: ClientContext,
+  ): Promise<SessionResponse & { token: string; absoluteExpiresAt: Date }> {
+    const keys = await this.prisma.accountKeys.findUniqueOrThrow({
+      where: { accountId: session.accountId },
+    });
+    const recoveryKeyId = fromBase64url(body.recoveryKeyId);
+    const wrappedAkPassword = fromBase64url(body.wrappedAkPassword);
+    const wrappedAkRecovery = fromBase64url(body.wrappedAkRecovery);
+    const label = body.label === undefined ? null : fromBase64url(body.label);
+    if (
+      !envelopeHeaderOk(wrappedAkPassword, 0x01, { min: 93, max: 93 }, keys.akId) ||
+      !envelopeHeaderOk(wrappedAkRecovery, 0x02, { min: 93, max: 93 }, recoveryKeyId) ||
+      (label !== null && !envelopeHeaderOk(label, 0x08, { min: 61, max: 189 })) ||
+      Buffer.compare(recoveryKeyId, keys.recoveryKeyId) === 0
+    )
+      throw new ApiException('invalid_request');
+    const via = session.via ?? 'password';
+    const now = new Date();
+    const result = await this.prisma.$transaction(async (tx) => {
+      const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
+        SELECT state, restore_id FROM ruvee_restore_guard WHERE id = 1 FOR UPDATE`;
+      const [link] = await tx.$queryRaw<{ restore_id: string }[]>`
+        SELECT restore_id FROM ruvee_reopen_codes
+        WHERE session_id = ${session.sessionId}::uuid AND revoked_at IS NULL`;
+      if (g?.state !== 'reopening' || link?.restore_id !== g.restore_id)
+        throw new ApiException('reopen_failed');
+      const updated = await tx.accountKeys.updateMany({
+        where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
+        data: {
+          kdfProfile: body.kdfProfile,
+          saltPw: fromBase64url(body.saltPw),
+          wrappedAkPassword,
+          recoveryKeyId,
+          wrappedAkRecovery,
+          recoveryVerifier: fromBase64url(body.recoveryVerifier),
+          rowVersion: { increment: 1 },
+          updatedAt: now,
+        },
+      });
+      if (updated.count !== 1) throw new ApiException('row_version_conflict');
+      await tx.opaqueCredential.update({
+        where: { accountId: session.accountId },
+        data: {
+          registrationRecord: fromBase64url(body.registrationRecord),
+          configId: OPAQUE_CONFIG_ID,
+          updatedAt: now,
+        },
+      });
+      await tx.session.updateMany({
+        where: { accountId: session.accountId, revokedAt: null },
+        data: { revokedAt: now, revokeReason: 'reopened' },
+      });
+      await tx.$executeRaw`UPDATE ruvee_reopen_codes SET revoked_at = now() WHERE revoked_at IS NULL`;
+      await tx.$executeRaw`
+        UPDATE ruvee_restore_guard SET state = 'open', reopened_at = now()
+        WHERE id = 1 AND state = 'reopening'`;
+      await tx.device.update({
+        where: { id: session.deviceId },
+        data:
+          via === 'recovery'
+            ? {
+                status: 'active',
+                enrolledVia: 'recovery',
+                enrolledAt: now,
+                lastSeenAt: now,
+                ...(label === null ? {} : { label }),
+              }
+            : { lastSeenAt: now, ...(label === null ? {} : { label }) },
+      });
+      const created = await this.sessions.create(session.accountId, session.deviceId, tx, now);
+      const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
+      await this.events.record(
+        'restore_reopened',
+        { ...context, details: { restoreId: g.restore_id, via } },
+        tx,
+      );
+      await this.events.record('password_changed', context, tx);
+      await this.events.record('recovery_key_rotated', context, tx);
+      if (via === 'recovery')
+        await this.events.record(
+          'device_enrolled',
+          { ...context, details: { enrolledDeviceId: session.deviceId, via: 'recovery' } },
+          tx,
+        );
+      return created;
+    });
+    const account = await this.prisma.account.findUniqueOrThrow({
+      where: { id: session.accountId },
+    });
+    await this.throttle.resetRecovery(account.usernameNormalized);
+    await this.throttle.resetLogin(account.usernameNormalized);
+    return {
+      accountId: session.accountId,
+      device: { id: session.deviceId, status: 'active' },
+      ...result,
+    };
+  }
+}

@@ -298,7 +298,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -310,7 +310,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -504,7 +511,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -516,7 +523,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -674,7 +688,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -686,7 +700,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -869,7 +890,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -881,7 +902,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -1067,7 +1095,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1079,7 +1107,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -1177,7 +1212,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1189,7 +1224,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -1390,7 +1432,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1402,7 +1444,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -1606,7 +1655,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1618,7 +1667,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -1723,7 +1779,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1735,7 +1791,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -1888,7 +1951,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -1900,7 +1963,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -2112,7 +2182,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2124,7 +2194,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -2310,7 +2387,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2322,7 +2399,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -2519,7 +2603,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2531,7 +2615,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -2647,7 +2738,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2659,7 +2750,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -2856,7 +2954,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -2868,7 +2966,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3065,7 +3170,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3077,7 +3182,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3164,7 +3276,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3176,7 +3288,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3299,7 +3418,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3311,7 +3430,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3398,7 +3524,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3410,7 +3536,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3515,7 +3648,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3527,7 +3660,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3650,7 +3790,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3662,7 +3802,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -3823,7 +3970,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -3835,7 +3982,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -4064,7 +4218,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4076,7 +4230,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -4252,7 +4413,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4264,7 +4425,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -4351,7 +4519,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4363,7 +4531,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -4536,7 +4711,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4548,7 +4723,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -4642,6 +4824,1062 @@
                     },
                     {
                       "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "The account keys have changed; refetch them.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRowVersionConflict"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reopen/login/start": {
+      "post": {
+        "operationId": "reopenLoginStart",
+        "summary": "Reopening, password path: the host-issued code and OPAQUE step 1 with the snapshot-time password.",
+        "x-ruvee-access": "none",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReopenLoginStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OPAQUE login response.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Reopening failed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorReopenFailed"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMaintenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reopen/login/finish": {
+      "post": {
+        "operationId": "reopenLoginFinish",
+        "summary": "OPAQUE step 3; consumes the code and opens one 30-minute reopen session (its own cookie).",
+        "x-ruvee-access": "none",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginFinishRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reopen session in Set-Cookie.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReopenStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Reopening failed. / This device has been revoked.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorReopenFailed"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorDeviceRevoked"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMaintenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reopen/recovery/start": {
+      "post": {
+        "operationId": "reopenRecoveryStart",
+        "summary": "Reopening, Recovery Kit path: the code and RAK of the snapshot-time kit; consumes the code.",
+        "x-ruvee-access": "none",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ReopenRecoveryStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Reopen session in Set-Cookie.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReopenStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Reopening failed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorReopenFailed"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many attempts; try again later.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorRateLimited"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMaintenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reopen/material": {
+      "get": {
+        "operationId": "reopenMaterial",
+        "summary": "The wrap of the session's own path, the keyset and ids. Reopen sessions only.",
+        "x-ruvee-access": "reopen",
+        "security": [
+          {
+            "reopenCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Encrypted material.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReopenMaterialResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMaintenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reopen/password/start": {
+      "post": {
+        "operationId": "reopenPasswordStart",
+        "summary": "OPAQUE registration step 1 for the new master password.",
+        "x-ruvee-access": "reopen",
+        "security": [
+          {
+            "reopenCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryPasswordStartRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "OPAQUE registration response.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RegisterStartResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "The request origin is not allowed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorCsrfRejected"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "The request body is too large.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorPayloadTooLarge"
+                }
+              }
+            }
+          },
+          "415": {
+            "description": "Request bodies must be application/json encoded as UTF-8.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorUnsupportedMediaType"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "An internal error occurred.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorInternalError"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "The server is being restored by its owner and is not available yet.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorMaintenance"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/reopen/complete": {
+      "post": {
+        "operationId": "reopenComplete",
+        "summary": "New password and new Recovery Kit in one transaction; revokes every session and code and opens the installation.",
+        "x-ruvee-access": "reopen",
+        "security": [
+          {
+            "reopenCookie": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RecoveryCompleteRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "A normal session in Set-Cookie.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request does not match the expected format. / The request body is not valid JSON.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorInvalidRequest"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorMalformedJson"
+                    }
+                  ]
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Authentication is required. / The session has expired. / Reopening failed.",
+            "headers": {
+              "X-Request-Id": {
+                "$ref": "#/components/headers/X-Request-Id"
+              },
+              "Cache-Control": {
+                "$ref": "#/components/headers/Cache-Control"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorUnauthenticated"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorSessionExpired"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopenFailed"
                     }
                   ]
                 }
@@ -4970,7 +6208,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -4982,7 +6220,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -5117,7 +6362,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5129,7 +6374,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -5326,7 +6578,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5338,7 +6590,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -5562,7 +6821,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5574,7 +6833,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -5798,7 +7064,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5810,7 +7076,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -5963,7 +7236,7 @@
             }
           },
           "503": {
-            "description": "The server is being restored by its owner and is not available yet.",
+            "description": "The server is being restored by its owner and is not available yet. / The server was restored and waits for its owner to reopen it.",
             "headers": {
               "X-Request-Id": {
                 "$ref": "#/components/headers/X-Request-Id"
@@ -5975,7 +7248,14 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ErrorMaintenance"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/ErrorMaintenance"
+                    },
+                    {
+                      "$ref": "#/components/schemas/ErrorReopening"
+                    }
+                  ]
                 }
               }
             }
@@ -5995,6 +7275,11 @@
         "type": "apiKey",
         "in": "cookie",
         "name": "__Host-ruvee_recovery"
+      },
+      "reopenCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "__Host-ruvee_reopen"
       },
       "bearerToken": {
         "type": "http",
@@ -7275,7 +8560,11 @@
                     "bootstrap_failed",
                     "integrity_warning_reported",
                     "server_restored",
-                    "restore_review_completed"
+                    "restore_review_completed",
+                    "reopen_code_issued",
+                    "reopen_started",
+                    "reopen_failed",
+                    "restore_reopened"
                   ]
                 },
                 "deviceId": {
@@ -7581,6 +8870,217 @@
           "wrappedAkRecovery",
           "recoveryVerifier",
           "expectedRowVersion"
+        ],
+        "additionalProperties": false
+      },
+      "ReopenLoginStartRequest": {
+        "type": "object",
+        "properties": {
+          "reopenCode": {
+            "type": "string",
+            "pattern": "^RC1-[A-Za-z0-9_-]{43}$"
+          },
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\p{L}\\p{M}\\p{N}._-]+$"
+          },
+          "startLoginRequest": {
+            "type": "string",
+            "minLength": 128,
+            "maxLength": 128,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "deviceId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          }
+        },
+        "required": [
+          "reopenCode",
+          "username",
+          "startLoginRequest",
+          "deviceId"
+        ],
+        "additionalProperties": false
+      },
+      "ReopenRecoveryStartRequest": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128,
+            "pattern": "^[\\p{L}\\p{M}\\p{N}._-]+$"
+          },
+          "recoveryAuthKey": {
+            "type": "string",
+            "minLength": 43,
+            "maxLength": 43,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "device": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+              },
+              "platform": {
+                "type": "string",
+                "const": "web"
+              }
+            },
+            "required": [
+              "id",
+              "platform"
+            ],
+            "additionalProperties": false
+          },
+          "reopenCode": {
+            "type": "string",
+            "pattern": "^RC1-[A-Za-z0-9_-]{43}$"
+          }
+        },
+        "required": [
+          "username",
+          "recoveryAuthKey",
+          "device",
+          "reopenCode"
+        ],
+        "additionalProperties": false
+      },
+      "ReopenStartResponse": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "deviceId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "password",
+              "recovery"
+            ]
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "pattern": "^(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))T(?:(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:Z))$"
+          }
+        },
+        "required": [
+          "accountId",
+          "deviceId",
+          "via",
+          "expiresAt"
+        ],
+        "additionalProperties": false
+      },
+      "ReopenMaterialResponse": {
+        "type": "object",
+        "properties": {
+          "accountId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+          },
+          "via": {
+            "type": "string",
+            "enum": [
+              "password",
+              "recovery"
+            ]
+          },
+          "akId": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "akEpoch": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "keysetVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
+          "keyset": {
+            "type": "string",
+            "minLength": 82,
+            "maxLength": 21927,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "recoveryKeyId": {
+            "type": "string",
+            "minLength": 22,
+            "maxLength": 22,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          },
+          "rowVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991
+          },
+          "password": {
+            "type": "object",
+            "properties": {
+              "kdfProfile": {
+                "type": "number",
+                "const": 1
+              },
+              "saltPw": {
+                "type": "string",
+                "minLength": 22,
+                "maxLength": 22,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              },
+              "wrappedAkPassword": {
+                "type": "string",
+                "minLength": 124,
+                "maxLength": 124,
+                "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+                "contentEncoding": "base64url"
+              }
+            },
+            "required": [
+              "kdfProfile",
+              "saltPw",
+              "wrappedAkPassword"
+            ],
+            "additionalProperties": false
+          },
+          "wrappedAkRecovery": {
+            "type": "string",
+            "minLength": 124,
+            "maxLength": 124,
+            "pattern": "^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-][AQgw]|[A-Za-z0-9_-]{2}[AEIMQUYcgkosw048])?$",
+            "contentEncoding": "base64url"
+          }
+        },
+        "required": [
+          "accountId",
+          "via",
+          "akId",
+          "akEpoch",
+          "keysetVersion",
+          "keyset",
+          "recoveryKeyId",
+          "rowVersion"
         ],
         "additionalProperties": false
       },
@@ -8057,6 +9557,34 @@
               "message": {
                 "type": "string",
                 "const": "Recovery failed."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 401
+              },
+              "error": {
+                "type": "string",
+                "const": "reopen_failed"
+              },
+              "message": {
+                "type": "string",
+                "const": "Reopening failed."
               },
               "requestId": {
                 "type": "string",
@@ -8605,6 +10133,34 @@
               "requestId"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 503
+              },
+              "error": {
+                "type": "string",
+                "const": "reopening"
+              },
+              "message": {
+                "type": "string",
+                "const": "The server was restored and waits for its owner to reopen it."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -8815,6 +10371,34 @@
           "message": {
             "type": "string",
             "const": "Recovery failed."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorReopenFailed": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 401
+          },
+          "error": {
+            "type": "string",
+            "const": "reopen_failed"
+          },
+          "message": {
+            "type": "string",
+            "const": "Reopening failed."
           },
           "requestId": {
             "type": "string",
@@ -9350,6 +10934,34 @@
           "message": {
             "type": "string",
             "const": "The server is being restored by its owner and is not available yet."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorReopening": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 503
+          },
+          "error": {
+            "type": "string",
+            "const": "reopening"
+          },
+          "message": {
+            "type": "string",
+            "const": "The server was restored and waits for its owner to reopen it."
           },
           "requestId": {
             "type": "string",

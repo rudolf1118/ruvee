@@ -9,6 +9,8 @@ import { PairingController } from '../pairing/pairing.controller.js';
 import { PairingService } from '../pairing/pairing.service.js';
 import { RecoveryController } from '../recovery/recovery.controller.js';
 import { RecoveryService } from '../recovery/recovery.service.js';
+import { ReopenController } from '../reopen/reopen.controller.js';
+import { ReopenService } from '../reopen/reopen.service.js';
 import { SecurityEventsService } from '../security-events/security-events.service.js';
 import { AccessGuard } from '../sessions/access.guard.js';
 import { SessionService } from '../sessions/session.service.js';
@@ -29,6 +31,7 @@ import { ThrottleService } from './throttle.service.js';
     VaultController,
     PairingController,
     RecoveryController,
+    ReopenController,
     AccountSecurityController,
   ],
   providers: [
@@ -42,6 +45,7 @@ import { ThrottleService } from './throttle.service.js';
     SyncService,
     PairingService,
     RecoveryService,
+    ReopenService,
     AccountSecurityService,
     { provide: APP_GUARD, useClass: AccessGuard },
   ],

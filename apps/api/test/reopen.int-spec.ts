@@ -1,0 +1,508 @@
+import { randomBytes } from 'node:crypto';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  API_ERRORS,
+  errorResponseSchema,
+  loginStartResponseSchema,
+  syncChangesResponseSchema,
+} from '@ruvee/contracts';
+import type request from 'supertest';
+import { pgToolsFromEnv } from '../src/admin/pg-tools.js';
+import {
+  completeRestore,
+  createBackup,
+  issueReopenCode,
+  knownMigrations,
+  restoreBackup,
+  type BackupResult,
+} from '../src/admin/server-restore.js';
+import {
+  registerAccount,
+  sessionCookie,
+  startHarness,
+  type Harness,
+} from './support/api-harness.js';
+import { testBackupKey, type TestBackupKey } from './support/backup-keys.js';
+import {
+  reopenCompleteBody,
+  reopenCookie,
+  reopenMaterial,
+  reopenWithKit,
+  reopenWithPassword,
+  unwrapReopenMaterial,
+} from './support/reopen-client.js';
+import {
+  finishLogin,
+  startLogin,
+  startRegistration,
+  SYNTHETIC_PASSWORD,
+  syntheticAccount,
+  type SyntheticAccount,
+} from './support/synthetic-client.js';
+import { createTempDatabase, migrate, query } from './support/temp-database.js';
+import { VaultWriter } from './support/vault-writer.js';
+
+/**
+ * Reopening a restored installation (backup-restore.md §3.13, D-30 option B) with real dumps,
+ * real OPAQUE and real envelopes. Each path gets its own restore of the same backup.
+ * Synthetic data only.
+ */
+
+const MIGRATIONS = knownMigrations(new URL('../prisma/migrations', import.meta.url).pathname);
+const tools = pgToolsFromEnv();
+const config = {
+  publicOrigin: 'http://127.0.0.1:3100',
+  sessionCookieSecure: 'true' as const,
+  extensionOrigins: '',
+};
+const SERVER_URL = process.env.DATABASE_URL ?? '';
+const NEW_PASSWORD = 'synthetic reopened passphrase 3c7a';
+
+function expectError(res: request.Response | undefined, code: keyof typeof API_ERRORS) {
+  if (!res) throw new Error('no response');
+  expect(res.status, res.text).toBe(API_ERRORS[code].status);
+  expect(errorResponseSchema.parse(res.body).error).toBe(code);
+}
+
+async function login(h: Harness, account: SyntheticAccount, password = SYNTHETIC_PASSWORD) {
+  const client = startLogin(password);
+  const start = await h.post('/api/v1/auth/login/start', {
+    username: account.username,
+    startLoginRequest: client.startLoginRequest,
+    platform: 'web',
+    deviceId: account.deviceId,
+  });
+  if (start.status !== 200) return start;
+  const parsed = loginStartResponseSchema.parse(start.body);
+  const finished = finishLogin(client.clientLoginState, parsed.loginResponse, password);
+  if (!finished) return undefined;
+  return h.post('/api/v1/auth/login/finish', {
+    loginId: parsed.loginId,
+    finishLoginRequest: finished.finishLoginRequest,
+  });
+}
+
+const codes = (url: string) =>
+  query<{ failed_attempts: number; revoked: boolean; consumed: boolean }>(
+    url,
+    `SELECT failed_attempts, revoked_at IS NOT NULL AS revoked, consumed_at IS NOT NULL AS consumed
+     FROM ruvee_reopen_codes ORDER BY created_at`,
+  );
+const guardState = async (url: string) =>
+  (await query<{ state: string }>(url, 'SELECT state FROM ruvee_restore_guard'))[0]?.state;
+
+describe('reopening a restored installation (real database, real dumps)', () => {
+  let source: Harness;
+  let account: SyntheticAccount;
+  let ownerCookie: string;
+  let itemIds: string[];
+  let key: TestBackupKey;
+  let outDir: string;
+  let backup: BackupResult;
+
+  /** A new restore of `backup`, reviewed: `reopening`, with its first code. */
+  async function restoredAndReviewed() {
+    // On the test server itself: each harness points DATABASE_URL at its own database.
+    process.env.DATABASE_URL = SERVER_URL;
+    const db = await createTempDatabase();
+    const result = await restoreBackup({
+      manifestPath: backup.manifestPath,
+      identityPath: key.identityPath,
+      trustedDigest: backup.digest,
+      targetDatabaseUrl: db.url,
+      tools,
+      migrate,
+      knownMigrations: MIGRATIONS,
+    });
+    if (!('removed' in result)) throw new Error('restore stopped');
+    const done = await completeRestore(db.url, {
+      restoreId: result.restoreId,
+      devicesReviewed: true,
+      acceptRestoredCredentials: true,
+    });
+    if (done.state !== 'reopening') throw new Error('expected reopening');
+    vi.resetModules();
+    const h = await startHarness({ database: db });
+    const throttle = (await import('../src/auth/throttle.service.js')).ThrottleService;
+    return {
+      db,
+      h,
+      restoreId: result.restoreId,
+      code: done.reopen.code,
+      clearThrottle: () => {
+        h.app.get(throttle).clearIpWindows();
+      },
+    };
+  }
+
+  beforeAll(async () => {
+    process.env.DATABASE_URL = SERVER_URL;
+    vi.resetModules();
+    source = await startHarness();
+    account = await syntheticAccount('synthetic-reopen-owner');
+    ownerCookie = await registerAccount(source, account);
+    const writer = new VaultWriter(source, account, ownerCookie);
+    await writer.add();
+    itemIds = [
+      (await writer.add({ v: 1, type: 'note', title: 'Kept 1' })) ?? '',
+      (await writer.add({ v: 1, type: 'note', title: 'Kept 2' })) ?? '',
+    ];
+    key = await testBackupKey();
+    outDir = mkdtempSync(join(tmpdir(), 'ruvee-reopen-it-'));
+    backup = await createBackup({
+      databaseUrl: source.db.url,
+      outDir,
+      tools,
+      recipient: key.recipient,
+      syntheticTestOnly: true,
+      config,
+    });
+  }, 120_000);
+
+  afterAll(async () => {
+    await (source as Harness | undefined)?.close();
+    rmSync(outDir, { recursive: true, force: true });
+    (key as TestBackupKey | undefined)?.drop();
+  });
+
+  describe('password path (a device active in the snapshot, with its own Secret Key)', () => {
+    let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
+
+    beforeAll(async () => {
+      r = await restoredAndReviewed();
+    }, 120_000);
+    afterAll(async () => {
+      await (r as typeof r | undefined)?.h.close();
+    });
+    beforeEach(() => {
+      r.clearThrottle();
+    });
+
+    it('keeps everything but /reopen/* closed, and old credentials alone open nothing', async () => {
+      expect(await guardState(r.db.url)).toBe('reopening');
+      expectError(await r.h.get('/api/v1/account/keys', ownerCookie), 'reopening');
+      expectError(await r.h.get('/api/v1/sync/changes?since=0', ownerCookie), 'reopening');
+      expectError(await login(r.h, account), 'reopening');
+      expectError(
+        await r.h.post('/api/v1/recovery/start', {
+          username: account.username,
+          recoveryAuthKey: Buffer.alloc(32, 1).toString('base64url'),
+          device: { id: account.crypto.generateUuid(), platform: 'web' },
+        }),
+        'reopening',
+      );
+      expectError(
+        await r.h.post('/api/v1/auth/register/start', {
+          bootstrapToken: await r.h.bootstrapToken(),
+          username: 'synthetic-intruder',
+          registrationRequest: startRegistration().registrationRequest,
+        }),
+        'reopening',
+      );
+      expectError(
+        await r.h.post(
+          '/api/v1/pairings',
+          { pairingId: randomBytes(16).toString('base64url') },
+          ownerCookie,
+        ),
+        'reopening',
+      );
+      await r.h.http().get('/health/live').expect(200);
+      // The snapshot-time password without the code: refused at the door.
+      const noCode = await reopenWithPassword(r.h, account, `RC1-${'A'.repeat(43)}`);
+      expectError(noCode.start, 'reopen_failed');
+      expectError(
+        await r.h.post('/api/v1/reopen/login/start', {
+          username: account.username,
+          startLoginRequest: startLogin().startLoginRequest,
+          deviceId: account.deviceId,
+        }),
+        'invalid_request',
+      );
+    });
+
+    it('does not let the code authenticate alone, or another account, device or password use it', async () => {
+      expectError(await r.h.get('/api/v1/reopen/material'), 'unauthenticated');
+      // Right code, wrong password: refused, counted, and the code is not consumed.
+      const wrong = await reopenWithPassword(r.h, account, r.code, {
+        password: 'synthetic wrong guess 9',
+      });
+      expect(wrong.finish).toBeUndefined();
+      // The client rejected OPAQUE, so the server only saw the start; finish with garbage:
+      const parsed = loginStartResponseSchema.parse(wrong.start.body);
+      expectError(
+        await r.h.post('/api/v1/reopen/login/finish', {
+          loginId: parsed.loginId,
+          finishLoginRequest: Buffer.alloc(64, 7).toString('base64url'),
+        }),
+        'reopen_failed',
+      );
+      // An unknown device: no Secret Key, no password path.
+      expectError(
+        (
+          await reopenWithPassword(r.h, account, r.code, {
+            deviceId: account.crypto.generateUuid(),
+          })
+        ).finish,
+        'reopen_failed',
+      );
+      // Another username.
+      expectError(
+        (await reopenWithPassword(r.h, account, r.code, { username: 'someone-else' })).start,
+        'reopen_failed',
+      );
+      // Four failures: the wrong code of the previous test counts against the usable code too.
+      expect(await codes(r.db.url)).toEqual([
+        { failed_attempts: 4, revoked: false, consumed: false },
+      ]);
+      expect(await guardState(r.db.url)).toBe('reopening');
+    });
+
+    it('revokes a code after five failures, and the host issues a new one', async () => {
+      for (let i = 0; i < 2; i++)
+        // The fifth failure revokes the code; the sixth is not counted on a revoked code.
+        expectError(
+          (await reopenWithPassword(r.h, account, `RC1-${randomBytes(32).toString('base64url')}`))
+            .start,
+          'reopen_failed',
+        );
+      expect(await codes(r.db.url)).toEqual([
+        { failed_attempts: 5, revoked: true, consumed: false },
+      ]);
+      expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
+      const fresh = await issueReopenCode(r.db.url, { restoreId: r.restoreId });
+      r.code = fresh.code;
+      expect(await guardState(r.db.url)).toBe('reopening');
+    });
+
+    it('fails an expired code, and keeps a lost reopen session recoverable only from the host', async () => {
+      await query(
+        r.db.url,
+        `UPDATE ruvee_reopen_codes SET expires_at = now() - interval '1 second' WHERE revoked_at IS NULL`,
+      );
+      expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
+      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      // A reopening that starts, then is abandoned (tab closed): the session is lost.
+      const started = await reopenWithPassword(r.h, account, r.code);
+      expect(started.finish?.status, started.finish?.text).toBe(200);
+      const lost = reopenCookie(started.finish as request.Response);
+      expect(await codes(r.db.url)).toContainEqual({
+        failed_attempts: 0,
+        revoked: false,
+        consumed: true,
+      });
+      // Replayed code: consumed.
+      expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
+      // Still closed, the restricted session reaches nothing else.
+      expectError(await r.h.get('/api/v1/account/keys', lost), 'reopening');
+      expect(await guardState(r.db.url)).toBe('reopening');
+      // The host retry ends that session and issues a new code.
+      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      expectError(await r.h.get('/api/v1/reopen/material', lost), 'unauthenticated');
+    });
+
+    it('serves only the reset workflow to a reopen session, and refuses an incomplete completion', async () => {
+      const started = await reopenWithPassword(r.h, account, r.code);
+      const cookie = reopenCookie(started.finish as request.Response);
+      // Not a normal cookie, not a bearer token.
+      expect(started.finish?.headers['set-cookie']?.toString()).not.toMatch(/ruvee_session=/);
+      const token = cookie.slice(cookie.indexOf('=') + 1);
+      expectError(
+        await r.h.http().get('/api/v1/reopen/material').set('Authorization', `Bearer ${token}`),
+        'unauthenticated',
+      );
+      for (const path of [
+        '/api/v1/vault',
+        '/api/v1/devices',
+        '/api/v1/account',
+        '/api/v1/sync/changes?since=0',
+      ])
+        expectError(await r.h.get(path, cookie), 'reopening');
+      expectError(
+        await r.h.post(
+          '/api/v1/recovery/password/start',
+          { registrationRequest: startRegistration().registrationRequest },
+          cookie,
+        ),
+        'reopening',
+      );
+      const material = await reopenMaterial(r.h, cookie);
+      expect(material.via).toBe('password');
+      expect(material.wrappedAkRecovery).toBeUndefined();
+      const unwrapped = unwrapReopenMaterial(account, material, {});
+      // Keeping the old Recovery Kit: refused; nothing changed.
+      const kept = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        unwrapped,
+        NEW_PASSWORD,
+        { keepKit: true },
+      );
+      expectError(await r.h.post('/api/v1/reopen/complete', kept.body, cookie), 'invalid_request');
+      // A stale row version: refused; nothing changed.
+      const stale = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        unwrapped,
+        NEW_PASSWORD,
+      );
+      expectError(
+        await r.h.post(
+          '/api/v1/reopen/complete',
+          { ...stale.body, expectedRowVersion: material.rowVersion + 3 },
+          cookie,
+        ),
+        'row_version_conflict',
+      );
+      expect(await guardState(r.db.url)).toBe('reopening');
+      // The old password still works for reopening only (a new password was never installed).
+      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      expectError(await r.h.get('/api/v1/reopen/material', cookie), 'unauthenticated');
+    });
+
+    it('completes once: new password and kit together, then everything old fails and data is intact', async () => {
+      const started = await reopenWithPassword(r.h, account, r.code);
+      const cookie = reopenCookie(started.finish as request.Response);
+      const material = await reopenMaterial(r.h, cookie);
+      const { body } = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        unwrapReopenMaterial(account, material, {}),
+        NEW_PASSWORD,
+      );
+      const done = await r.h.post('/api/v1/reopen/complete', body, cookie);
+      expect(done.status, done.text).toBe(200);
+      const fresh = sessionCookie(done);
+      expect(String(done.headers['set-cookie'])).toMatch(/ruvee_reopen=;/);
+      expect(await guardState(r.db.url)).toBe('open');
+      expect(await codes(r.db.url)).not.toContainEqual(expect.objectContaining({ revoked: false }));
+
+      // The new session works; the vault is exactly as restored.
+      const pulled = syncChangesResponseSchema.parse(
+        (await r.h.get('/api/v1/sync/changes?since=0', fresh).expect(200)).body,
+      );
+      expect(pulled.items.map((i) => i.itemId).sort()).toEqual([...itemIds].sort());
+      // Old: the restored cookie, the reopen session, the code, the password, the kit.
+      expectError(await r.h.get('/api/v1/account', ownerCookie), 'unauthenticated');
+      expectError(await r.h.post('/api/v1/reopen/complete', body, cookie), 'unauthenticated');
+      expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
+      expect(await login(r.h, account)).toBeUndefined();
+      const keys = account.crypto.deriveRecoveryKeys(
+        account.crypto.parseRecoveryKey(account.recoveryKeyText),
+      );
+      expectError(
+        await r.h.post('/api/v1/recovery/start', {
+          username: account.username,
+          recoveryAuthKey: Buffer.from(keys.recoveryAuthKey).toString('base64url'),
+          device: { id: account.crypto.generateUuid(), platform: 'web' },
+        }),
+        'recovery_failed',
+      );
+      const again = await login(r.h, account, NEW_PASSWORD);
+      expect(again?.status).toBe(200);
+      const events = await query<{ type: string }>(
+        r.db.url,
+        `SELECT type FROM security_events WHERE type::text LIKE 're%open%' OR type = 'restore_review_completed' ORDER BY created_at`,
+      );
+      expect(events.map((e) => e.type)).toEqual(
+        expect.arrayContaining([
+          'restore_review_completed',
+          'reopen_code_issued',
+          'reopen_started',
+          'reopen_failed',
+          'restore_reopened',
+        ]),
+      );
+    });
+  });
+
+  describe('Recovery Kit path (a browser with no keys)', () => {
+    let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
+
+    beforeAll(async () => {
+      r = await restoredAndReviewed();
+    }, 120_000);
+    afterAll(async () => {
+      await (r as typeof r | undefined)?.h.close();
+    });
+    beforeEach(() => {
+      r.clearThrottle();
+    });
+
+    it('needs the code and the snapshot-time kit; a wrong kit counts and consumes nothing', async () => {
+      const wrongKit = account.crypto.formatRecoveryKey(
+        account.crypto.generateRecoveryKey().recoveryKey,
+      );
+      expectError(
+        await reopenWithKit(r.h, account, r.code, { recoveryKeyText: wrongKit }),
+        'reopen_failed',
+      );
+      expectError(await reopenWithKit(r.h, account, `RC1-${'B'.repeat(43)}`), 'reopen_failed');
+      expect(await codes(r.db.url)).toEqual([
+        { failed_attempts: 2, revoked: false, consumed: false },
+      ]);
+    });
+
+    it('lets exactly one of two concurrent submissions of the code through', async () => {
+      const results = await Promise.all([
+        reopenWithKit(r.h, account, r.code),
+        reopenWithKit(r.h, account, r.code),
+      ]);
+      expect(results.map((x) => x.status).sort()).toEqual([200, 401]);
+      const sessions = await query<{ n: string }>(
+        r.db.url,
+        `SELECT count(*) AS n FROM sessions WHERE kind = 'reopen'`,
+      );
+      expect(sessions[0]?.n).toBe('1');
+      // The losing device row stays pending and can do nothing.
+      expect(await guardState(r.db.url)).toBe('reopening');
+      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+    });
+
+    it('opens with a new password and kit; the new device is enrolled by recovery', async () => {
+      const deviceId = account.crypto.generateUuid();
+      const started = await reopenWithKit(r.h, account, r.code, { deviceId });
+      expect(started.status, started.text).toBe(200);
+      const cookie = reopenCookie(started);
+      const material = await reopenMaterial(r.h, cookie);
+      expect(material.via).toBe('recovery');
+      expect(material.password).toBeUndefined();
+      const { body, newKitText } = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        unwrapReopenMaterial(account, material, {}),
+        NEW_PASSWORD,
+      );
+      const done = await r.h.post('/api/v1/reopen/complete', body, cookie);
+      expect(done.status, done.text).toBe(200);
+      expect(await guardState(r.db.url)).toBe('open');
+      const [device] = await query<{ status: string; enrolled_via: string }>(
+        r.db.url,
+        'SELECT status, enrolled_via FROM devices WHERE id = $1',
+        [deviceId],
+      );
+      expect(device).toEqual({ status: 'active', enrolled_via: 'recovery' });
+      // The old kit is retired, the new one recovers.
+      const kit = (text: string) =>
+        account.crypto.deriveRecoveryKeys(account.crypto.parseRecoveryKey(text)).recoveryAuthKey;
+      const recover = (rak: Uint8Array) =>
+        r.h.post('/api/v1/recovery/start', {
+          username: account.username,
+          recoveryAuthKey: Buffer.from(rak).toString('base64url'),
+          device: { id: account.crypto.generateUuid(), platform: 'web' },
+        });
+      expectError(await recover(kit(account.recoveryKeyText)), 'recovery_failed');
+      expect((await recover(kit(newKitText))).status).toBe(200);
+    });
+  });
+});

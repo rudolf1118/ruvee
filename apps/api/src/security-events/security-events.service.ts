@@ -28,6 +28,10 @@ const DETAIL_FIELDS: Readonly<Record<SecurityEventType, readonly string[]>> = {
   integrity_warning_reported: ['kind'],
   server_restored: ['restoreId'],
   restore_review_completed: ['restoreId'],
+  reopen_code_issued: ['restoreId'],
+  reopen_started: ['via'],
+  reopen_failed: [],
+  restore_reopened: ['restoreId', 'via'],
 };
 
 const DETAIL_VALUE = /^[A-Za-z0-9_-]{1,64}$/;

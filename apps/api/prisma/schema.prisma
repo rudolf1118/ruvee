@@ -44,6 +44,7 @@ enum SessionKind {
   cookie
   token
   recovery
+  reopen
 
   @@map("session_kind")
 }
@@ -58,6 +59,7 @@ enum RevokeReason {
   expired
   superseded
   restored
+  reopened
 
   @@map("revoke_reason")
 }
@@ -92,6 +94,10 @@ enum SecurityEventType {
   integrity_warning_reported
   server_restored
   restore_review_completed
+  reopen_code_issued
+  reopen_started
+  reopen_failed
+  restore_reopened
 
   @@map("security_event_type")
 }

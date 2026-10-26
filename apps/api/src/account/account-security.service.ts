@@ -32,6 +32,8 @@ export class AccountSecurityService {
     const rows = await this.prisma.session.findMany({
       where: {
         accountId: session.accountId,
+        // Reopen sessions exist only while the installation is closed, and are never listed.
+        kind: { in: ['cookie', 'token', 'recovery'] },
         revokedAt: null,
         idleExpiresAt: { gt: now },
         absoluteExpiresAt: { gt: now },
@@ -43,7 +45,7 @@ export class AccountSecurityService {
       sessions: rows.map((r) => ({
         id: r.id,
         deviceId: r.deviceId,
-        kind: r.kind,
+        kind: r.kind as 'cookie' | 'token' | 'recovery',
         current: r.id === session.sessionId,
         createdAt: r.createdAt.toISOString(),
         lastUsedAt: r.lastUsedAt.toISOString(),

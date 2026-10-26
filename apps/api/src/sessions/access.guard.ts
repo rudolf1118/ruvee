@@ -6,7 +6,7 @@ import { ApiException } from '../common/api-exception.js';
 import type { Env } from '../config/env.js';
 import { ACCESS_METADATA, type AccessLevel, type RequestWithSession } from './access.decorator.js';
 import { readCookie } from './client-info.js';
-import { MaintenanceService } from '../maintenance/maintenance.service.js';
+import { MaintenanceService, REOPEN_PREFIX } from '../maintenance/maintenance.service.js';
 import { SessionService, STEP_UP_MS } from './session.service.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
@@ -45,10 +45,10 @@ export class AccessGuard implements CanActivate {
     if (level === undefined) throw new ApiException('internal_error');
 
     const req = context.switchToHttp().getRequest<RequestWithSession>();
-    // A restored installation in review serves nothing at all, whatever the credentials:
-    // restored cookies, tokens and passwords cannot open it (backup-restore.md §3.6 rules 3, 4).
-    if (req.path.startsWith('/api/') && !(await this.maintenance.isOpen()))
-      throw new ApiException('maintenance');
+    // A restored installation in review serves nothing at all, whatever the credentials, and
+    // while it waits to be reopened only the reopening endpoints: restored cookies, tokens and
+    // passwords cannot open it (backup-restore.md §3.6 rules 3, 4; §3.13).
+    await this.maintenance.gate(req.path);
     let bearer: string | undefined;
     if (req.path.startsWith('/api/')) {
       if (req.headers.authorization !== undefined) {
@@ -61,7 +61,8 @@ export class AccessGuard implements CanActivate {
         // it fetches with `credentials: 'omit'`, so a cookie here means someone else's request.
         const cookie =
           readCookie(req, this.sessions.cookieName) ??
-          readCookie(req, this.sessions.recoveryCookieName);
+          readCookie(req, this.sessions.recoveryCookieName) ??
+          readCookie(req, this.sessions.reopenCookieName);
         const origin = req.headers.origin;
         const originOk =
           origin === this.publicOrigin ||
@@ -79,6 +80,17 @@ export class AccessGuard implements CanActivate {
       if (bearer !== undefined) throw new ApiException('unauthenticated');
       req.ruveeSession = await this.sessions.authenticateRecovery(
         readCookie(req, this.sessions.recoveryCookieName),
+      );
+      return true;
+    }
+
+    if (level === 'reopen') {
+      // Only the reopening endpoints, only with the reopen cookie: never a bearer token, and a
+      // reopen session is never accepted anywhere else (backup-restore.md §3.13).
+      if (!req.path.startsWith(REOPEN_PREFIX)) throw new ApiException('internal_error');
+      if (bearer !== undefined) throw new ApiException('unauthenticated');
+      req.ruveeSession = await this.sessions.authenticateReopen(
+        readCookie(req, this.sessions.reopenCookieName),
       );
       return true;
     }

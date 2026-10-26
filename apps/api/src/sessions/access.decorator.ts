@@ -10,8 +10,10 @@ import type { AuthenticatedSession } from './session.service.js';
  * - `active`: as `session`, and the device is enrolled
  * - `step-up`: as `active`, and the session authenticated with OPAQUE within 5 minutes
  * - `recovery`: a recovery session (its own cookie); accepted only on /recovery/* endpoints
+ * - `reopen`: a reopen session (its own cookie); accepted only on /reopen/* endpoints while the
+ *   restored installation is `reopening` (backup-restore.md §3.13)
  */
-export type AccessLevel = 'none' | 'session' | 'active' | 'step-up' | 'recovery';
+export type AccessLevel = 'none' | 'session' | 'active' | 'step-up' | 'recovery' | 'reopen';
 
 export const ACCESS_METADATA = 'ruvee:access';
 

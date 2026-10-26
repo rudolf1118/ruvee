@@ -228,8 +228,10 @@ export class AuthService {
     this.throttle.assertIpAllowed(client.ip);
     // Consumed before anything else, so a replayed loginId always fails (INV-23).
     const pending = this.loginStates.consume(body.loginId);
-    // A step-up state is bound to its session and can never create a new one.
-    if (!pending || pending.sessionId !== undefined) throw new ApiException('login_failed');
+    // A step-up state is bound to its session and can never create a new one; a reopening
+    // state can only create a reopen session.
+    if (!pending || pending.sessionId !== undefined || pending.reopenCodeId !== undefined)
+      throw new ApiException('login_failed');
     const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
     if (!verified || pending.accountId === null) {
       await this.throttle.recordLoginFailure(pending.username);

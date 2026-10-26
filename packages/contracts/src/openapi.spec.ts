@@ -52,6 +52,12 @@ describe('OpenAPI document', () => {
       '/api/v1/recovery/material',
       '/api/v1/recovery/password/start',
       '/api/v1/recovery/start',
+      '/api/v1/reopen/complete',
+      '/api/v1/reopen/login/finish',
+      '/api/v1/reopen/login/start',
+      '/api/v1/reopen/material',
+      '/api/v1/reopen/password/start',
+      '/api/v1/reopen/recovery/start',
       '/api/v1/sessions',
       '/api/v1/sessions/{sessionId}',
       '/api/v1/sync/changes',
@@ -80,15 +86,18 @@ describe('OpenAPI document', () => {
       )) {
         if (path.startsWith('/health/')) continue;
         const access = op['x-ruvee-access'];
-        expect(['none', 'session', 'active', 'step-up', 'recovery'], `${method} ${path}`).toContain(
-          access,
-        );
+        expect(
+          ['none', 'session', 'active', 'step-up', 'recovery', 'reopen'],
+          `${method} ${path}`,
+        ).toContain(access);
         if (access === 'none') expect(op.security, `${method} ${path}`).toBeUndefined();
         else
           expect(op.security, `${method} ${path}`).toEqual([
             ...(access === 'recovery'
               ? [{ recoveryCookie: [] }]
-              : [{ sessionCookie: [] }, { bearerToken: [] }]),
+              : access === 'reopen'
+                ? [{ reopenCookie: [] }]
+                : [{ sessionCookie: [] }, { bearerToken: [] }]),
           ]);
       }
     }

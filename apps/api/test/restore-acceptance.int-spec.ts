@@ -1,14 +1,8 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { uuidToBytes } from '@ruvee/crypto';
-import {
-  loginStartResponseSchema,
-  recoveryMaterialResponseSchema,
-  registerStartResponseSchema,
-} from '@ruvee/contracts';
+import { loginStartResponseSchema } from '@ruvee/contracts';
 import * as opaque from '@serenity-kit/opaque';
-import type request from 'supertest';
 import { pgToolsFromEnv } from '../src/admin/pg-tools.js';
 import {
   completeRestore,
@@ -25,10 +19,16 @@ import {
 } from './support/api-harness.js';
 import { testBackupKey, type TestBackupKey } from './support/backup-keys.js';
 import {
+  reopenCompleteBody,
+  reopenCookie,
+  reopenMaterial,
+  reopenWithKit,
+  reopenWithPassword,
+  unwrapReopenMaterial,
+} from './support/reopen-client.js';
+import {
   finishLogin,
-  finishRegistration,
   startLogin,
-  startRegistration,
   SYNTHETIC_PASSWORD,
   syntheticAccount,
   type SyntheticAccount,
@@ -48,8 +48,6 @@ const config = {
   sessionCookieSecure: 'true' as const,
   extensionOrigins: '',
 };
-const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
-const unb64 = (text: string) => new Uint8Array(Buffer.from(text, 'base64url'));
 const NEW_PASSWORD = 'synthetic post-restore passphrase 5d1e';
 const ORIGINAL_SETUP = process.env.OPAQUE_SERVER_SETUP_FILE ?? '';
 /** The test server's URL: each harness points DATABASE_URL at its own database. */
@@ -91,12 +89,40 @@ async function restoredServer(backup: BackupResult, key: TestBackupKey) {
     knownMigrations: MIGRATIONS,
   });
   if (!('removed' in result)) throw new Error('restore stopped');
-  await completeRestore(db.url, {
+  const ended = await completeRestore(db.url, {
     restoreId: result.restoreId,
     devicesReviewed: true,
     acceptRestoredCredentials: true,
   });
-  return db;
+  if (ended.state !== 'reopening') throw new Error('expected reopening');
+  return { db, code: ended.reopen.code };
+}
+
+/** The reopening of §3.13 on either path; returns the normal session cookie it ends with. */
+async function reopen(
+  h: Harness,
+  account: SyntheticAccount,
+  code: string,
+  via: 'password' | 'recovery',
+): Promise<string> {
+  const res =
+    via === 'password'
+      ? (await reopenWithPassword(h, account, code)).finish
+      : await reopenWithKit(h, account, code);
+  if (res?.status !== 200) throw new Error(`reopening failed: ${String(res?.status)}`);
+  const cookie = reopenCookie(res);
+  const material = await reopenMaterial(h, cookie);
+  const { body } = await reopenCompleteBody(
+    h,
+    account,
+    cookie,
+    material,
+    unwrapReopenMaterial(account, material, {}),
+    NEW_PASSWORD,
+  );
+  const done = await h.post('/api/v1/reopen/complete', body, cookie);
+  if (done.status !== 200) throw new Error(`complete failed: ${String(done.status)} ${done.text}`);
+  return sessionCookie(done);
 }
 
 describe('R1: a backup taken during concurrent commits is a coherent, restorable snapshot', () => {
@@ -145,12 +171,11 @@ describe('R1: a backup taken during concurrent commits is a coherent, restorable
     const seqAtEnd = writer.seq;
     expect(seqAtEnd).toBeGreaterThan(seqAtStart);
 
-    const db = await restoredServer(backup, key);
+    const { db, code } = await restoredServer(backup, key);
     vi.resetModules();
     restored = await startHarness({ database: db });
-    const fresh = await login(restored, account);
-    expect(fresh).toBeDefined();
-    const pulled = await pullAndVerify(restored, account, fresh ?? '');
+    const fresh = await reopen(restored, account, code, 'password');
+    const pulled = await pullAndVerify(restored, account, fresh);
     // One snapshot: some prefix of the history, chained and complete, never a half commit.
     expect(pulled.seq).toBeGreaterThanOrEqual(seqAtStart);
     expect(pulled.seq).toBeLessThanOrEqual(seqAtEnd);
@@ -165,6 +190,7 @@ describe('R3: missing or mismatched OPAQUE setup material fails safely', () => {
   let key: TestBackupKey;
   let outDir: string;
   let db: TempDatabase;
+  let code: string;
   let restored: Harness | undefined;
 
   beforeAll(async () => {
@@ -183,7 +209,7 @@ describe('R3: missing or mismatched OPAQUE setup material fails safely', () => {
       syntheticTestOnly: true,
       config,
     });
-    db = await restoredServer(backup, key);
+    ({ db, code } = await restoredServer(backup, key));
   }, 120_000);
 
   afterAll(async () => {
@@ -202,7 +228,7 @@ describe('R3: missing or mismatched OPAQUE setup material fails safely', () => {
     await expect(startHarness({ database: db })).rejects.toThrow(/OPAQUE|setup/i);
   });
 
-  it('with another setup, no login succeeds; the snapshot-time kit recovers and re-registers', async () => {
+  it('with another setup, no login succeeds; the code and the snapshot-time kit reopen and re-register', async () => {
     await opaque.ready;
     const otherSetup = join(outDir, 'other-opaque-setup');
     writeFileSync(otherSetup, `${opaque.server.createSetup()}\n`, { mode: 0o600 });
@@ -211,106 +237,14 @@ describe('R3: missing or mismatched OPAQUE setup material fails safely', () => {
     restored = await startHarness({ database: db });
     const h = restored;
 
-    // The server answers login/start as usual, but the client rejects its response: the
-    // password is never accepted and no session is created.
-    const { client, res } = await startLoginFor(h, account, SYNTHETIC_PASSWORD);
-    expect(res.status, res.text).toBe(200);
-    const parsed = loginStartResponseSchema.parse(res.body);
-    expect(
-      finishLogin(client.clientLoginState, parsed.loginResponse, SYNTHETIC_PASSWORD),
-    ).toBeUndefined();
-    expect(await login(h, account)).toBeUndefined();
-
-    // Recovery with the Recovery Kit as of the snapshot, then a new password under the new setup.
-    const { crypto } = account;
-    const keys = crypto.deriveRecoveryKeys(crypto.parseRecoveryKey(account.recoveryKeyText));
-    const started: request.Response = await h.post('/api/v1/recovery/start', {
-      username: account.username,
-      recoveryAuthKey: b64(keys.recoveryAuthKey),
-      device: { id: crypto.generateUuid(), platform: 'web' },
-    });
-    expect(started.status, started.text).toBe(200);
-    const recoveryCookie =
-      (started.headers['set-cookie'] as unknown as string[])
-        .find((c) => c.startsWith('__Host-ruvee_recovery='))
-        ?.split(';')[0] ?? '';
-    const material = recoveryMaterialResponseSchema.parse(
-      (await h.get('/api/v1/recovery/material', recoveryCookie).expect(200)).body,
-    );
-    const accountId = uuidToBytes(account.accountId);
-    const ak = crypto.unwrapAccountKeyForRecovery({
-      recoveryWrapKey: keys.recoveryWrapKey,
-      recoveryKeyId: unb64(material.recoveryKeyId),
-      accountId,
-      accountKeyId: unb64(material.akId),
-      accountKeyEpoch: material.akEpoch,
-      envelope: unb64(material.wrappedAkRecovery),
-    });
-    const keyset = crypto.openKeyset({
-      accountKey: ak,
-      accountKeyId: unb64(material.akId),
-      accountId,
-      keysetVersion: material.keysetVersion,
-      envelope: unb64(material.keyset),
-    });
-    const reg = startRegistration(NEW_PASSWORD);
-    const regStart = await h
-      .post(
-        '/api/v1/recovery/password/start',
-        { registrationRequest: reg.registrationRequest },
-        recoveryCookie,
-      )
-      .expect(200);
-    const record = finishRegistration(
-      reg.clientRegistrationState,
-      registerStartResponseSchema.parse(regStart.body).registrationResponse,
-      NEW_PASSWORD,
-    );
-    const saltPw = crypto.generatePasswordSalt();
-    const auk = crypto.deriveAccountUnlockKey({
-      password: NEW_PASSWORD,
-      passwordSalt: saltPw,
-      profile: 1,
-      secretKey: keyset.secretKey,
-      accountId,
-    });
-    const rotated = crypto.generateRecoveryKey();
-    const rotatedKeys = crypto.deriveRecoveryKeys(rotated.recoveryKey);
-    const done = await h.post(
-      '/api/v1/recovery/complete',
-      {
-        registrationRecord: record,
-        kdfProfile: 1,
-        saltPw: b64(saltPw),
-        wrappedAkPassword: b64(
-          crypto.wrapAccountKey({
-            accountUnlockKey: auk,
-            accountKey: ak,
-            accountId,
-            accountKeyId: unb64(material.akId),
-            accountKeyEpoch: material.akEpoch,
-            profile: 1,
-            passwordSalt: saltPw,
-          }),
-        ),
-        recoveryKeyId: b64(rotated.recoveryKeyId),
-        wrappedAkRecovery: b64(
-          crypto.wrapAccountKeyForRecovery({
-            recoveryWrapKey: rotatedKeys.recoveryWrapKey,
-            recoveryKeyId: rotated.recoveryKeyId,
-            accountId,
-            accountKeyId: unb64(material.akId),
-            accountKeyEpoch: material.akEpoch,
-            accountKey: ak,
-          }),
-        ),
-        recoveryVerifier: b64(crypto.recoveryVerifier(rotatedKeys.recoveryAuthKey)),
-        expectedRowVersion: material.rowVersion,
-      },
-      recoveryCookie,
-    );
-    expect(done.status, done.text).toBe(200);
-    // The new password now works under the new setup; the old one still does not.
+    // Ordinary login is closed while reopening, whatever the setup.
+    expect((await startLoginFor(h, account, SYNTHETIC_PASSWORD)).res.status).toBe(503);
+    // The password path of the reopening fails: the client rejects the OPAQUE response made
+    // with another setup, so the password is never accepted and no session is created.
+    expect((await reopenWithPassword(h, account, code)).finish).toBeUndefined();
+    // The Recovery Kit path does not use OPAQUE to authenticate: with the code and the
+    // snapshot-time kit, the owner reopens and registers a new password under the new setup.
+    await reopen(h, account, code, 'recovery');
     h.app.get((await import('../src/auth/throttle.service.js')).ThrottleService).clearIpWindows();
     expect(await login(h, account, NEW_PASSWORD)).toBeDefined();
     expect(await login(h, account)).toBeUndefined();

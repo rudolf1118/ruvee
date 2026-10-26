@@ -15,6 +15,8 @@ export interface PendingLogin {
   readonly platform: 'web' | 'extension';
   /** Set for `reauth`: the state can only finish on this session. */
   readonly sessionId?: string;
+  /** Set for a reopening (backup-restore.md §3.13): finishes only at /reopen/login/finish. */
+  readonly reopenCodeId?: string;
   readonly expiresAt: number;
 }
 

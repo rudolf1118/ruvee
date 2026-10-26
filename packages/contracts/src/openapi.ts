@@ -56,6 +56,13 @@ import {
   recoveryStartResponseSchema,
 } from './recovery.js';
 import {
+  REOPEN_COOKIE_SECURE,
+  reopenLoginStartRequestSchema,
+  reopenMaterialResponseSchema,
+  reopenRecoveryStartRequestSchema,
+  reopenStartResponseSchema,
+} from './reopen.js';
+import {
   createPairingRequestSchema,
   pairingApproveRequestSchema,
   pairingCancelRequestSchema,
@@ -118,7 +125,7 @@ Conventions that apply to every request:
 - Errors use the \`ErrorResponse\` shape with a code from a closed list and a fixed message.
   Unknown paths return \`404 not_found\`.`;
 
-type Access = 'none' | 'session' | 'active' | 'step-up' | 'recovery';
+type Access = 'none' | 'session' | 'active' | 'step-up' | 'recovery' | 'reopen';
 
 const idParameter = (name: string, description: string) => ({
   name,
@@ -142,6 +149,7 @@ const ACCESS_ERRORS: Record<Access, ApiErrorCode[]> = {
   session: ['unauthenticated', 'session_expired', 'device_revoked'],
   active: ['unauthenticated', 'session_expired', 'device_revoked', 'device_not_enrolled'],
   recovery: ['unauthenticated', 'session_expired', 'device_revoked'],
+  reopen: ['unauthenticated', 'session_expired'],
   'step-up': [
     'unauthenticated',
     'session_expired',
@@ -201,6 +209,8 @@ function operation(options: {
     'internal_error',
     // Every API operation while a restored installation is in review (backup-restore.md §3.5).
     'maintenance',
+    // Every operation but /reopen/* while it waits to be reopened (§3.13).
+    ...(options.operationId.startsWith('reopen') ? [] : (['reopening'] as const)),
   ];
   return {
     operationId: options.operationId,
@@ -212,7 +222,9 @@ function operation(options: {
           security: [
             ...(options.access === 'recovery'
               ? [{ recoveryCookie: [] }]
-              : [{ sessionCookie: [] }, { bearerToken: [] }]),
+              : options.access === 'reopen'
+                ? [{ reopenCookie: [] }]
+                : [{ sessionCookie: [] }, { bearerToken: [] }]),
           ],
         }),
     ...(options.parameters ? { parameters: options.parameters } : {}),
@@ -622,6 +634,91 @@ export function buildOpenApiDocument(): JsonSchema {
           errors: ['row_version_conflict'],
         }),
       },
+      '/api/v1/reopen/login/start': {
+        post: operation({
+          operationId: 'reopenLoginStart',
+          summary:
+            'Reopening, password path: the host-issued code and OPAQUE step 1 with the snapshot-time password.',
+          access: 'none',
+          request: 'ReopenLoginStartRequest',
+          success: {
+            status: '200',
+            description: 'OPAQUE login response.',
+            schema: 'LoginStartResponse',
+          },
+          errors: ['reopen_failed', 'rate_limited'],
+        }),
+      },
+      '/api/v1/reopen/login/finish': {
+        post: operation({
+          operationId: 'reopenLoginFinish',
+          summary:
+            'OPAQUE step 3; consumes the code and opens one 30-minute reopen session (its own cookie).',
+          access: 'none',
+          request: 'LoginFinishRequest',
+          success: {
+            status: '200',
+            description: 'Reopen session in Set-Cookie.',
+            schema: 'ReopenStartResponse',
+          },
+          errors: ['reopen_failed', 'device_revoked', 'rate_limited'],
+        }),
+      },
+      '/api/v1/reopen/recovery/start': {
+        post: operation({
+          operationId: 'reopenRecoveryStart',
+          summary:
+            'Reopening, Recovery Kit path: the code and RAK of the snapshot-time kit; consumes the code.',
+          access: 'none',
+          request: 'ReopenRecoveryStartRequest',
+          success: {
+            status: '200',
+            description: 'Reopen session in Set-Cookie.',
+            schema: 'ReopenStartResponse',
+          },
+          errors: ['reopen_failed', 'rate_limited'],
+        }),
+      },
+      '/api/v1/reopen/material': {
+        get: operation({
+          operationId: 'reopenMaterial',
+          summary: "The wrap of the session's own path, the keyset and ids. Reopen sessions only.",
+          access: 'reopen',
+          success: {
+            status: '200',
+            description: 'Encrypted material.',
+            schema: 'ReopenMaterialResponse',
+          },
+        }),
+      },
+      '/api/v1/reopen/password/start': {
+        post: operation({
+          operationId: 'reopenPasswordStart',
+          summary: 'OPAQUE registration step 1 for the new master password.',
+          access: 'reopen',
+          request: 'RecoveryPasswordStartRequest',
+          success: {
+            status: '200',
+            description: 'OPAQUE registration response.',
+            schema: 'RegisterStartResponse',
+          },
+        }),
+      },
+      '/api/v1/reopen/complete': {
+        post: operation({
+          operationId: 'reopenComplete',
+          summary:
+            'New password and new Recovery Kit in one transaction; revokes every session and code and opens the installation.',
+          access: 'reopen',
+          request: 'RecoveryCompleteRequest',
+          success: {
+            status: '200',
+            description: 'A normal session in Set-Cookie.',
+            schema: 'SessionResponse',
+          },
+          errors: ['row_version_conflict', 'reopen_failed'],
+        }),
+      },
       '/api/v1/pairings': {
         post: operation({
           operationId: 'createPairing',
@@ -689,6 +786,7 @@ export function buildOpenApiDocument(): JsonSchema {
       securitySchemes: {
         sessionCookie: { type: 'apiKey', in: 'cookie', name: SESSION_COOKIE_SECURE },
         recoveryCookie: { type: 'apiKey', in: 'cookie', name: '__Host-ruvee_recovery' },
+        reopenCookie: { type: 'apiKey', in: 'cookie', name: REOPEN_COOKIE_SECURE },
         bearerToken: { type: 'http', scheme: 'bearer', description: 'Token clients (extension).' },
       },
       schemas: {
@@ -723,6 +821,10 @@ export function buildOpenApiDocument(): JsonSchema {
         RecoveryMaterialResponse: jsonSchema(recoveryMaterialResponseSchema),
         RecoveryPasswordStartRequest: jsonSchema(recoveryPasswordStartRequestSchema),
         RecoveryCompleteRequest: jsonSchema(recoveryCompleteRequestSchema),
+        ReopenLoginStartRequest: jsonSchema(reopenLoginStartRequestSchema),
+        ReopenRecoveryStartRequest: jsonSchema(reopenRecoveryStartRequestSchema),
+        ReopenStartResponse: jsonSchema(reopenStartResponseSchema),
+        ReopenMaterialResponse: jsonSchema(reopenMaterialResponseSchema),
         PairingCreated: {
           type: 'object',
           properties: { expiresAt: { type: 'string', format: 'date-time' } },

@@ -10,6 +10,9 @@
  *                                           restore into RESTORE_DATABASE_URL (new, empty)
  *   ruvee-admin restore-review [--revoke-device <id> --reason lost|retired]
  *   ruvee-admin restore-complete --restore-id <id> --devices-reviewed --accept-restored-credentials
+ *                                           ends the review; prints the reopening code once
+ *   ruvee-admin restore-reopen-code --restore-id <id>
+ *                                           a new reopening code (revokes the previous one)
  *
  * Restore commands read RESTORE_DATABASE_URL, never a command-line URL, so no password appears
  * in the process list (backup-restore.md §3.5, §3.6a).
@@ -24,6 +27,8 @@ import { PrismaClient } from '../generated/prisma/client.js';
 import { pgToolsFromEnv } from './pg-tools.js';
 import {
   completeRestore,
+  issueReopenCode,
+  type IssuedReopenCode,
   createBackup,
   knownMigrations,
   restoreBackup,
@@ -155,14 +160,14 @@ async function review(args: string[]): Promise<void> {
         `  ${d.id}  ${d.platform.padEnd(9)} ${d.status.padEnd(8)} last seen ${d.lastSeenAt ?? 'never'}`,
     ),
     '',
-    'When maintenance ends, these become valid again:',
-    `  the master password set ${r.validAgain.passwordSetAt ?? '(none)'}`,
+    'For the reopening only, together with the host-issued code, these work again:',
+    `  the master password set ${r.validAgain.passwordSetAt ?? '(none)'} (from a device active below)`,
     `  the Recovery Kit of ${r.validAgain.recoveryKitSetAt ?? '(none)'}`,
     `  keyset version ${String(r.validAgain.keysetVersion ?? '(none)')}, and the Secret Key in it`,
     `  ${String(r.validAgain.activeDevices)} active devices, with whatever keys they hold`,
-    'If you changed the password, replaced the Recovery Kit or the Secret Key after the snapshot,',
-    'repeat it right after opening. The server cannot know about devices added or removed,',
-    'password, kit or Secret Key changes, recoveries or item changes after the snapshot.',
+    'The reopening replaces the password and the Recovery Kit before anything else opens; then',
+    'replace the Secret Key if a device was lost. The server cannot know about devices added or',
+    'removed, password, kit or Secret Key changes, recoveries or item changes after the snapshot.',
     'Ending sessions and replacing the Secret Key never revoke ciphertext or keys that anyone',
     'already copied, from this server or a device.',
     '',
@@ -177,14 +182,43 @@ async function complete(args: string[]): Promise<void> {
     fail(
       'usage: ruvee-admin restore-complete --restore-id <id> --devices-reviewed --accept-restored-credentials',
     );
-  await completeRestore(restoreUrl(), {
+  const result = await completeRestore(restoreUrl(), {
     restoreId: id,
     devicesReviewed: args.includes('--devices-reviewed'),
     acceptRestoredCredentials: args.includes('--accept-restored-credentials'),
   });
+  if (result.state === 'open') {
+    process.stdout.write(
+      'The snapshot had no account: the installation is open, and setting up needs a new token\n' +
+        '(ruvee-admin bootstrap-token).\n',
+    );
+    return;
+  }
+  printReopenCode(result.reopen, id);
+}
+
+/**
+ * The reopening code goes to this terminal only, once (backup-restore.md §3.13). It is never
+ * logged, and only its hash is stored.
+ */
+function printReopenCode(reopen: IssuedReopenCode, restoreId: string): void {
   process.stdout.write(
-    'The installation is open. If the snapshot had no account, registration needs a new token.\n',
+    'The review is complete. The installation now waits to be reopened by its owner: every\n' +
+      'other request is still refused.\n\n' +
+      `Reopening code (single use, expires ${reopen.expiresAt}; only its hash is stored):\n\n` +
+      `  ${reopen.code}\n\n` +
+      'Give it to the owner in person. In the web app, the owner enters it together with the\n' +
+      'master password or the Recovery Kit as of the backup, then must set a new password and a\n' +
+      'new Recovery Kit before anything else works. Five failed attempts revoke the code.\n' +
+      `New code (revokes this one and any reopening in progress):\n` +
+      `  ruvee-admin restore-reopen-code --restore-id ${restoreId}\n`,
   );
+}
+
+async function reopenCode(args: string[]): Promise<void> {
+  const id = option(args, '--restore-id');
+  if (!id) fail('usage: RESTORE_DATABASE_URL=… ruvee-admin restore-reopen-code --restore-id <id>');
+  printReopenCode(await issueReopenCode(restoreUrl(), { restoreId: id }), id);
 }
 
 const BOOTSTRAP_TOKEN_TTL_MS = 60 * 60 * 1000;
@@ -246,10 +280,12 @@ switch (command) {
   case 'restore':
   case 'restore-review':
   case 'restore-complete':
+  case 'restore-reopen-code':
     try {
       if (command === 'backup') await backup(rest);
       else if (command === 'restore') await restore(rest);
       else if (command === 'restore-review') await review(rest);
+      else if (command === 'restore-reopen-code') await reopenCode(rest);
       else await complete(rest);
     } catch (error) {
       if (error instanceof RestoreError) fail(`${error.stage}: ${error.message}`);
@@ -258,6 +294,6 @@ switch (command) {
     break;
   default:
     fail(
-      'commands: opaque-setup | bootstrap-token | backup | restore | restore-review | restore-complete',
+      'commands: opaque-setup | bootstrap-token | backup | restore | restore-review | restore-complete | restore-reopen-code',
     );
 }

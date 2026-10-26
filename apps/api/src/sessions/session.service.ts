@@ -5,6 +5,9 @@ import {
   RECOVERY_COOKIE_INSECURE_DEV,
   RECOVERY_COOKIE_SECURE,
   RECOVERY_SESSION_MS,
+  REOPEN_COOKIE_INSECURE_DEV,
+  REOPEN_COOKIE_SECURE,
+  REOPEN_SESSION_MS,
   SESSION_COOKIE_INSECURE_DEV,
   SESSION_COOKIE_SECURE,
   type TokenPair,
@@ -35,6 +38,8 @@ export interface AuthenticatedSession {
   readonly deviceId: string;
   readonly deviceStatus: DeviceStatus;
   readonly authAt: Date;
+  /** Reopen sessions only: which snapshot-time credential opened it (backup-restore.md §3.13). */
+  readonly via?: 'password' | 'recovery';
 }
 
 @Injectable()
@@ -42,6 +47,8 @@ export class SessionService {
   readonly cookieName: string;
   /** The recovery session's own cookie, so it can never stand in for a normal session. */
   readonly recoveryCookieName: string;
+  /** The reopen session's own cookie (§3.13): it never stands in for any other session. */
+  readonly reopenCookieName: string;
   private readonly secure: boolean;
 
   constructor(
@@ -51,6 +58,80 @@ export class SessionService {
     this.secure = config.get('SESSION_COOKIE_SECURE', { infer: true }) === 'true';
     this.cookieName = this.secure ? SESSION_COOKIE_SECURE : SESSION_COOKIE_INSECURE_DEV;
     this.recoveryCookieName = this.secure ? RECOVERY_COOKIE_SECURE : RECOVERY_COOKIE_INSECURE_DEV;
+    this.reopenCookieName = this.secure ? REOPEN_COOKIE_SECURE : REOPEN_COOKIE_INSECURE_DEV;
+  }
+
+  /**
+   * backup-restore.md §3.13: the restricted session of a reopening, 30 minutes, usable only on
+   * the reopening endpoints. Created in the transaction that consumes the code; the caller links
+   * the code to `id`.
+   */
+  async createReopen(
+    accountId: string,
+    deviceId: string,
+    tx: Prisma.TransactionClient,
+    now = new Date(),
+  ): Promise<{ id: string; token: string; absoluteExpiresAt: Date }> {
+    const id = randomUUID();
+    const token = randomToken();
+    const absoluteExpiresAt = new Date(now.getTime() + REOPEN_SESSION_MS);
+    await tx.session.create({
+      data: {
+        id,
+        accountId,
+        deviceId,
+        kind: 'reopen',
+        secretHash: sha256(token),
+        authAt: now,
+        createdAt: now,
+        lastUsedAt: now,
+        idleExpiresAt: absoluteExpiresAt,
+        absoluteExpiresAt,
+      },
+    });
+    return { id, token, absoluteExpiresAt };
+  }
+
+  setReopenCookie(res: Response, token: string, absoluteExpiresAt: Date, now = new Date()): void {
+    const maxAge = Math.max(0, Math.floor((absoluteExpiresAt.getTime() - now.getTime()) / 1000));
+    res.append('Set-Cookie', this.cookie(token, maxAge, this.reopenCookieName));
+  }
+
+  clearReopenCookie(res: Response): void {
+    res.append('Set-Cookie', this.cookie('', 0, this.reopenCookieName));
+  }
+
+  /**
+   * A live reopen session: kind `reopen`, not revoked or expired, and still linked to a code of
+   * this restore that was not revoked (issuing a new code ends it), while the installation is
+   * `reopening`. Any other session kind is refused here, and this kind everywhere else.
+   */
+  async authenticateReopen(
+    token: string | undefined,
+    now = new Date(),
+  ): Promise<AuthenticatedSession> {
+    if (token === undefined || !TOKEN_TEXT.test(token)) throw new ApiException('unauthenticated');
+    const session = await this.prisma.session.findUnique({
+      where: { secretHash: sha256(token) },
+      include: { device: { select: { status: true } } },
+    });
+    if (session?.kind !== 'reopen' || session.revokedAt !== null)
+      throw new ApiException('unauthenticated');
+    if (session.absoluteExpiresAt <= now) throw new ApiException('session_expired');
+    const [link] = await this.prisma.$queryRaw<{ via: 'password' | 'recovery' }[]>`
+      SELECT c.via FROM ruvee_reopen_codes c
+      JOIN ruvee_restore_guard g ON g.restore_id = c.restore_id AND g.state = 'reopening'
+      WHERE c.session_id = ${session.id}::uuid AND c.revoked_at IS NULL
+        AND c.account_id = ${session.accountId}::uuid`;
+    if (!link) throw new ApiException('unauthenticated');
+    return {
+      sessionId: session.id,
+      accountId: session.accountId,
+      deviceId: session.deviceId,
+      deviceStatus: session.device.status,
+      authAt: session.authAt,
+      via: link.via,
+    };
   }
 
   /** account-recovery.md §3 step 2: 15 minutes, usable only on the recovery endpoints. */

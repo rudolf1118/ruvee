@@ -14,6 +14,7 @@ export const API_ERRORS = {
   login_failed: { status: 401, message: 'Login failed.' },
   bootstrap_failed: { status: 401, message: 'The setup token is not valid.' },
   recovery_failed: { status: 401, message: 'Recovery failed.' },
+  reopen_failed: { status: 401, message: 'Reopening failed.' },
   session_expired: { status: 401, message: 'The session has expired.' },
   device_revoked: { status: 401, message: 'This device has been revoked.' },
   forbidden: { status: 403, message: 'This request is not allowed.' },
@@ -39,6 +40,10 @@ export const API_ERRORS = {
   maintenance: {
     status: 503,
     message: 'The server is being restored by its owner and is not available yet.',
+  },
+  reopening: {
+    status: 503,
+    message: 'The server was restored and waits for its owner to reopen it.',
   },
 } as const;
 
