@@ -1,13 +1,14 @@
 # Server backup and restore (operator guide)
 
-For the person who runs a Ruvee server. Design and reasons:
+For the person who runs a Ruvee server, who in V1 is also the account's owner. Design and
+reasons:
 [backup-restore.md §3](../architecture/backup-restore.md#3-operational-server-backup-milestone-m1).
 
 > **Status (2026-10-26): development only.** Everything below is implemented and tested against
 > synthetic test databases. It is **not** ready for real data: `ruvee-admin backup` refuses any
-> database except a synthetic `ruvee_it_*` / `ruvee_e2e_*` one, and two decisions are open
-> (D-30, how the owner takes control after a restore; D-19, the independent review). Nothing
-> here has been run on a deployed server. Use it to rehearse, with synthetic data.
+> database except a synthetic `ruvee_it_*` / `ruvee_e2e_*` one, and the independent review
+> (D-19) is still open. Nothing here has been run on a deployed server. Use it to rehearse, with
+> synthetic data.
 
 ## 1. What you need, and where it lives
 
@@ -36,7 +37,8 @@ Make the identity on a machine you trust, **not** on the server, with the mainta
 age-keygen -o ruvee-backup-identity.txt
 ```
 
-It prints the public key (`Public key: age1…`). Put that value in the server's configuration as
+It prints the public key (`Public key: age1…`). `age-keygen`'s file is used as is by
+`ruvee-admin restore --identity` (checked with age v1.3.2). Put that value in the server's configuration as
 `BACKUP_AGE_RECIPIENT`. Keep `ruvee-backup-identity.txt` offline, mode 0600, and make a second
 offline copy. If you lose every copy, every backup is unreadable.
 
@@ -92,50 +94,79 @@ and Recovery Kit of its own day, for as long as it exists.
    `503 maintenance`; health checks answer. Clients say the server is being restored and stay
    read-only.
 
-## 5. Review, then open
+## 5. Review, then reopen
 
 ```bash
 RESTORE_DATABASE_URL=… pnpm --filter @ruvee/api admin restore-review
 ```
 
 It prints the restore id, the snapshot time, the backup digest and whether it was checked, every
-device as of the snapshot, **what becomes valid again** (the password, Recovery Kit and keys as of
-the snapshot, and every active device), and what the server cannot know.
+device as of the snapshot, **what works again for the reopening only** (the password, Recovery
+Kit and keys as of the snapshot), and what the server cannot know.
 
-- For every device you **removed after the snapshot**:
-  `restore-review --revoke-device <id> --reason lost|retired`.
-- Then open:
+1. For every device you **removed after the snapshot**:
+   `restore-review --revoke-device <id> --reason lost|retired`.
+2. End the review:
 
-  ```bash
-  RESTORE_DATABASE_URL=… pnpm --filter @ruvee/api admin restore-complete --restore-id <id> --devices-reviewed --accept-restored-credentials
-  ```
+   ```bash
+   RESTORE_DATABASE_URL=… pnpm --filter @ruvee/api admin restore-complete --restore-id <id> --devices-reviewed --accept-restored-credentials
+   ```
 
-  No restart is needed. If the snapshot had no account, setting up needs a new token
-  (`bootstrap-token`).
+   It prints a **reopening code** (`RC1-…`) once, valid for 60 minutes. Only its hash is stored.
+   The server is still closed: every request except the reopening ones gets
+   `503 reopening`. (If the snapshot had no account, it opens instead; setting up then needs a new
+   token from `bootstrap-token`.)
 
-**Right after opening** (D-30 is not built, so nothing forces this): sign in with the password as
-of the snapshot, then change the password, make a new Recovery Kit, and replace the Secret Key
-(always if a device was lost). Until you do, an old password or kit that you replaced after the
-backup works again for whoever knows it. None of this revokes copies anyone already made.
+3. **Reopen**, in the web app, with the code **and** a credential as of the backup, on one of two
+   paths. Do not send the code over a channel others can read; it is meant to be typed by the
+   owner, who is normally the person at the host.
+   - **Password path** (preferred; keeps that device's data): on a device that was active at the
+     time of the backup, unlock, choose **Reopen the server**, enter the code and the master
+     password **as of the backup**. The device's own Secret Key is what decrypts.
+   - **Recovery Kit path**: on a browser with no Ruvee data, choose **Reopen a restored server
+     with your Recovery Kit** on the welcome screen, enter the code, the username and the Recovery
+     Kit **as of the backup**. (A browser that holds a vault refuses this path, so it can never
+     wipe newer local data.)
 
-On devices: those in step with the backup continue. Those ahead show "the server reports that it
-was restored": open **Security → After a server restore**, download the verified copy (it does
-not contain changes still waiting to sync; the screen says how many, and they stay on the device
-until you erase it), erase the device only if you choose to, then pair or recover it again and
-re-enter newer items from the copy (opened read-only from the welcome screen).
+   Either way you then **must** set a new master password and get a new Recovery Kit, which you
+   type back before anything is sent. Both are installed in one step; only then does the server
+   open, every old session and code ends, and the old password and kit stop working.
+
+4. If a device was lost, also replace the Secret Key now (**Security**); the new session is fresh
+   enough. None of this revokes copies anyone already made.
+
+**If the reopening is interrupted** (the code expired, five failed attempts used it up, or the
+tab closed during the reopening): issue a new code on the host. It revokes every earlier code and
+reopening in progress. Nothing reopens on its own.
+
+```bash
+RESTORE_DATABASE_URL=… pnpm --filter @ruvee/api admin restore-reopen-code --restore-id <id>
+```
+
+On other devices: those in step with the backup sign in with the **new** password and continue.
+Those ahead show "the server reports that it was restored": open **Security → After a server
+restore**, download the verified copy (it does not contain changes still waiting to sync; the
+screen says how many, and they stay on the device until you erase it), erase the device only if
+you choose to, then pair or recover it again and re-enter newer items from the copy (opened
+read-only from the welcome screen). A device whose Secret Key was replaced after the backup
+cannot use the password path; use the Recovery Kit path on a new browser.
 
 ## 6. When something fails
 
-| What happened                                         | What it means                                                    | What to do                                                                      |
-| ----------------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| `verify: … trusted digest …`                          | This is not the backup you recorded                              | Stop. Find the right set; do not use `--no-trusted-digest` to get past it       |
-| `verify: … could not be decrypted and authenticated`  | Wrong identity, or a damaged, truncated or altered file          | Try another copy of the set; nothing was created                                |
-| `verify: this identity is not the backup's recipient` | You brought the wrong identity file                              | Use the identity matching `BACKUP_AGE_RECIPIENT` at backup time                 |
-| `verify: … readable by others`                        | The identity file is not 0600                                    | `chmod 600` it                                                                  |
-| `verify: … newer or unknown schema`                   | The backup is from a newer Ruvee                                 | Install the same or a newer Ruvee                                               |
-| `prepare: the target database is not empty`           | Never restores over data                                         | Create a new, empty database                                                    |
-| `load: …` or `migrate: …`, or the restore was killed  | The new database is half-restored and stays closed (maintenance) | Drop that database; restore again into a new one                                |
-| `backup: …` (any)                                     | Nothing was published                                            | Fix the cause (space, tools, recipient) and run again; delete stray `*.partial` |
+| What happened                                                       | What it means                                                                                              | What to do                                                                      |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
+| `verify: … trusted digest …`                                        | This is not the backup you recorded                                                                        | Stop. Find the right set; do not use `--no-trusted-digest` to get past it       |
+| `verify: … could not be decrypted and authenticated`                | Wrong identity, or a damaged, truncated or altered file                                                    | Try another copy of the set; nothing was created                                |
+| `verify: this identity is not the backup's recipient`               | You brought the wrong identity file                                                                        | Use the identity matching `BACKUP_AGE_RECIPIENT` at backup time                 |
+| `verify: … readable by others`                                      | The identity file is not 0600                                                                              | `chmod 600` it                                                                  |
+| `verify: … newer or unknown schema`                                 | The backup is from a newer Ruvee                                                                           | Install the same or a newer Ruvee                                               |
+| `prepare: the target database is not empty`                         | Never restores over data                                                                                   | Create a new, empty database                                                    |
+| `load: …` or `migrate: …`, or the restore was killed                | The new database is half-restored and stays closed (maintenance)                                           | Drop that database; restore again into a new one                                |
+| `backup: …` (any)                                                   | Nothing was published                                                                                      | Fix the cause (space, tools, recipient) and run again; delete stray `*.partial` |
+| Web app: "That reopening code, username or credential doesn't work" | A wrong, expired, used or replaced code, or a wrong backup-time credential (five failures revoke the code) | Check them; if needed, `restore-reopen-code` on the host                        |
+| Web app: "newer Secret Key than the backup"                         | That device's `SK` was replaced after the backup                                                           | Reopen with the Recovery Kit path on a browser with no Ruvee data               |
+| Web app: "This browser holds a vault"                               | The Recovery Kit path would replace this browser's data                                                    | Use the password path on it, or another browser                                 |
+| `complete: a reopening code exists only while reopening`            | The server is already open (or not yet reviewed)                                                           | Nothing to do, or finish the review first                                       |
 
 ## 7. Rehearsal (do this before you need it)
 
@@ -144,11 +175,15 @@ Rehearse with synthetic data on a separate machine or database server, never on 
 1. Set up a throwaway installation with a synthetic account, two devices and a few items.
 2. Make a key pair (§2) and a backup (§3); record the digest.
 3. On device A, add an item, then stop the server and add another (it stays pending).
-4. Restore (§4) into a new database, with the identity and the digest; review and open (§5).
-5. Check: A shows the restore explanation, keeps all items read-only, exports a verified copy
+4. Restore (§4) into a new database, with the identity and the digest; review (§5).
+5. Reopen from A with the code and the old password; try a wrong password and a replaced code
+   first. Set the new password and kit.
+6. Check: A shows the restore explanation, keeps all items read-only, exports a verified copy
    that opens on a clean browser, and is erased only after you type the confirmation; B, which
-   was in step, syncs; an old session cookie is refused.
-6. Try the failures in §6 on copies of the set (wrong identity, a changed byte, a wrong digest).
-7. Drop the rehearsal databases and delete the rehearsal identity.
+   was in step, syncs with the new password; the old password and kit are refused.
+7. Restore the same backup again into another database and reopen it with the Recovery Kit path
+   from a fresh browser.
+8. Try the failures in §6 on copies of the set (wrong identity, a changed byte, a wrong digest).
+9. Drop the rehearsal databases and delete the rehearsal identity.
 
 The automated version of this rehearsal is `pnpm --filter @ruvee/web test:restore` (README).

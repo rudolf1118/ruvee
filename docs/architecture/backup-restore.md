@@ -72,7 +72,8 @@ export restores _the vault's contents_ without the service.
 
 Revision of 2026-10-26. The revised D-28 policy (owner-specified) and D-29 option B (approved
 for development) are implemented and tested **on synthetic data only**; §3.11 says what is done
-and what is not. M1 is **not** accepted for real data: D-30 and D-19 are open. The operator
+and what is not. D-30 option B (reopening, §3.13) is implemented too. M1 is **not** accepted for
+real data: D-19 is open and nothing is deployed. The operator
 procedure is in [the operator guide](../guides/server-backup-restore.md).
 
 ### 3.1 What is backed up
@@ -106,8 +107,12 @@ ciphertext of its day, and with the setup file it allows offline password guessi
   uses `@noble/ciphers` 2.4.0 and `@noble/hashes` 2.4.0, the versions `packages/crypto` already
   pins, plus `@noble/curves` 2.4.0, `@noble/post-quantum` 0.5.4 and `@scure/base` 2.4.0
   (lockfile). Ruvee implements no primitive and no format: it calls `Encrypter`/`Decrypter`
-  (`apps/api/src/admin/backup-files.ts`). The files are standard age files; decrypting one with the
-  Go `age` tool was **not** tested here (it is not installed on the development machine).
+  (`apps/api/src/admin/backup-files.ts`). The files are standard age files. **Interoperability,
+  checked 2026-10-26** with the official `age` v1.3.2 (Alpine 3.24.2 package, in a throwaway
+  container; synthetic data): `age -d -i <age-keygen identity>` decrypts Ruvee's metadata and dump,
+  and the dump's SHA-256 equals the one in the metadata; it refuses a file with one changed byte and
+  a wrong identity; Ruvee restores a backup made to an `age-keygen` recipient using the
+  `age-keygen` identity file as is; and `age-encryption` decrypts a file encrypted by `age -r`.
   Post-quantum (hybrid) recipients are not used: D-29 chose X25519.
 - **Server configuration holds the public key only:** `BACKUP_AGE_RECIPIENT=age1…` (validated in
   `env.ts`; an `AGE-SECRET-KEY-1…` value is refused). The identity (private key) is never
@@ -230,7 +235,7 @@ the restore tool creates first, `ruvee_restore_guard`, outside the Prisma schema
 every backup, so a dump can never carry an "open" state into a restore.
 
 ```
- VERIFY ─► PREPARE ─► LOAD ─► MIGRATE ─► APPLY POLICY ─► REVIEW ──(restore-complete)──► OPEN
+ VERIFY ─► PREPARE ─► LOAD ─► MIGRATE ─► APPLY POLICY ─► REVIEW ──(restore-complete)──► REOPENING ─► OPEN
  (digest,   (empty db;   (pg_     (prisma    (one tx: end       (maintenance:          (normal
   identity,  guard row    restore)  migrate)   sessions, delete   every /api request     service)
   whole dump 'restoring')                      transients, event, gets 503 maintenance)
@@ -239,20 +244,22 @@ every backup, so a dump can never carry an "open" state into a restore.
    restore-complete refuses; the operator discards that database and starts again
 ```
 
-| State         | Guard row                              | API                          | Fails safely because                                                                                |
-| ------------- | -------------------------------------- | ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| VERIFY        | —                                      | not pointed at it            | Digest, files, identity, metadata, schema, and the whole dump decrypted and hashed; nothing created |
-| PREPARE       | `restoring`, with a fresh `restore_id` | 503 for every `/api` request | The guard is written **before** any restored row exists                                             |
-| LOAD, MIGRATE | `restoring`                            | 503                          | A partial load is still behind the guard                                                            |
-| APPLY POLICY  | `review` (same transaction)            | 503                          | All or nothing; structural checks inside the transaction                                            |
-| REVIEW        | `review`                               | 503                          | Only the local CLI acts                                                                             |
-| OPEN          | `open`, `review_completed_at`          | normal                       | Reached only through `restore-complete`                                                             |
+| State         | Guard row                              | API                           | Fails safely because                                                                                |
+| ------------- | -------------------------------------- | ----------------------------- | --------------------------------------------------------------------------------------------------- |
+| VERIFY        | —                                      | not pointed at it             | Digest, files, identity, metadata, schema, and the whole dump decrypted and hashed; nothing created |
+| PREPARE       | `restoring`, with a fresh `restore_id` | 503 for every `/api` request  | The guard is written **before** any restored row exists                                             |
+| LOAD, MIGRATE | `restoring`                            | 503                           | A partial load is still behind the guard                                                            |
+| APPLY POLICY  | `review` (same transaction)            | 503                           | All or nothing; structural checks inside the transaction                                            |
+| REVIEW        | `review`                               | 503                           | Only the local CLI acts                                                                             |
+| REOPENING     | `reopening`, `review_completed_at`     | 503 except `/api/v1/reopen/*` | Only the host code plus snapshot-time credentials start it (§3.13)                                  |
+| OPEN          | `open`, `reopened_at`                  | normal                        | Reached only by completing the reopening (or, with no account, `restore-complete`)                  |
 
 The API (`MaintenanceService`, checked first in the global access guard) fails closed: no
 guard table means an ordinary, never-restored installation; a guard that is not `open`, or a
 guard table without its row, means maintenance. Until it has seen `open`, the API reads the guard
-on every request, so `restore-complete` takes effect without a restart. Once it has seen `open`
-it stops asking: the guard can never go from `open` back to maintenance for the same database.
+on every request, so each transition takes effect without a restart. While `reopening`, only the
+reopening routes answer (`503 reopening` elsewhere). Once it has seen `open` it stops asking: the
+guard can never go from `open` back to maintenance for the same database.
 
 ### 3.6 Revised V1 restore policy (D-28, revised 2026-10-26)
 
@@ -268,8 +275,9 @@ Required by the owner on 2026-10-26, replacing the earlier option A:
    login, registration, recovery, pairing, refresh and sync, returns `503 maintenance`. Health
    endpoints still answer.
 4. **Restored credentials cannot lift it:** only `ruvee-admin restore-complete`, run on the server
-   host against that database with the printed `restore_id`, opens it. No API endpoint changes the
-   guard, and there is no remote administrative endpoint.
+   host against that database with the printed `restore_id`, ends the review, and then only a
+   reopening with the host-issued code and the replacement of the password and Recovery Kit opens
+   it (§3.13). There is no remote administrative endpoint.
 5. **A pre-account snapshot is not open registration:** unused setup tokens are deleted (rule 2);
    after the review, registration needs a new token from `ruvee-admin bootstrap-token`.
 6. **A restore event and identifier:** `server_restored` with a fresh random `restore_id`, and
@@ -310,25 +318,18 @@ the command line, so its password is not in the process list or the shell histor
   does. For `lost`, the CLI prints that `SK` must be replaced from an enrolled device after the
   review: the server cannot rotate `SK`, because only devices hold `AK`.
 - **Passwords and Recovery Kits replaced after the snapshot:** the review prints that the old
-  password and the old kit are valid again when maintenance ends. The owner changes the password
-  and makes a new kit from a device right after opening. Making these mandatory before normal use
-  needs a restricted post-restore session, which is a new authentication state: see D-30.
+  password and the old kit work again **only for the reopening, together with the host code**; the
+  reopening replaces both before anything else opens (§3.13).
 - **`SK` rotated after the snapshot:** devices that hold the newer keyset stop at their next online
   unlock (`keyset_rollback`); the restored server's keyset holds the old `SK`. The owner starts
   over on those devices and replaces `SK` again. Rotating `SK` again protects only future copies
   of the database; it never revokes anything already copied.
 
 **`ruvee-admin restore-complete --restore-id <id> --devices-reviewed
---accept-restored-credentials`** opens the installation. It refuses unless the guard is in
-`review`, the id matches, and both acknowledgements are given; it records
-`restore_review_completed`. The API serves normally from the next request.
-
-**What is not enforced, and why (D-30).** After opening, the snapshot-time password and Recovery
-Kit work for ordinary login and recovery at once. Forcing a password change or a new kit before
-anything else, or keeping recovery closed until a new kit exists, needs an authentication state
-the protocol does not have (a session that may do only that). That part is not implemented; it
-is decision D-30 (§7). The review makes the consequence explicit instead, and
-`--accept-restored-credentials` is the owner's acknowledgement of it.
+--accept-restored-credentials`** ends the review. It refuses unless the guard is in `review`,
+the id matches, and both acknowledgements are given; it records `restore_review_completed`,
+moves the guard to `reopening`, and prints the reopening code once (§3.13). With no account in
+the snapshot it opens directly.
 
 ### 3.7 Changes made after the snapshot
 
@@ -392,7 +393,10 @@ enrolments, password, Recovery Kit and `SK` changes made after the snapshot.
   `server-restore.ts`, `pg-tools.ts`, `cli.ts`; `BACKUP_AGE_RECIPIENT` in `env.ts`.
 - `ruvee-admin backup --out <dir> --synthetic-test-only`, `restore --manifest --identity
 (--trusted-digest | --no-trusted-digest)`, `restore-review` (with `--revoke-device`),
-  `restore-complete`.
+  `restore-complete`, `restore-reopen-code`.
+- Reopening (§3.13, D-30 B): `apps/api/src/reopen/`, the `reopen` session kind and access level,
+  migration `20261026170000_reopening`; the engine's `reopenBegin` and coded `recoveryBegin`; the
+  web flows; tests `reopen.int-spec.ts`, engine "reopening", and the second browser test.
 - Maintenance mode and the review (§3.5, §3.6a); clients after a restore (§3.12).
 - Tests (§6): `backup-encryption.int-spec.ts` (layout, refusals, failed `pg_dump`, full disk,
   interruption, wrong and loose identities, wrong digest, truncation and modification,
@@ -403,10 +407,9 @@ enrolments, password, Recovery Kit and `SK` changes made after the snapshot.
 
 **Not verified, or required before real data:**
 
-- D-30 (a restricted post-restore session, §3.13) and D-19 (independent review, which must now
-  include `age-encryption` and `backup-files.ts`) are open. `backup` keeps refusing real
-  databases until M1 is accepted.
-- Decryption with the Go `age` tool (interoperability) was not tested.
+- D-19 (independent review, which must now include `age-encryption`, `backup-files.ts` and the
+  reopening) is open. `backup` keeps refusing real databases until M1 is accepted.
+- Interoperability with the Go `age` tool was checked by hand once (§3.2), not in CI.
 - No deployment exists: no scheduled backups, no off-host copy procedure, no restore rehearsal on
   a real host, no non-superuser restore role set up (§3.2b), no monitoring of backup age.
 - R2 (sign-in with the snapshot password in a browser after restore) is covered by R14; R7, R8
@@ -726,19 +729,18 @@ R8 and R10 are covered by engine tests only.
 
 ## 7. Decision table
 
-| ID       | Decision                                               | Options                                                                                                                                                                                                                                                                                                                                                        | Recommended                                                                   | User-visible consequence                                                                                                                                                                                                                                                                               |
-| -------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| **D-13** | Portable export format                                 | **A.** Container of existing envelopes; `AK` wrapped under the Recovery Key typed at export (§4). **B.** A, plus an export passphrase: `AK` also wrapped under an Argon2id key from a new passphrase (new purpose `0x09`). **C.** Encrypt the export with the established `age` format (passphrase or X25519 recipient) over A's content.                      | **A**                                                                         | To make or open an export, you need your Recovery Kit. Without it the export is useless. With B, a passphrase opens the file, so a stolen file can be guessed offline at one Argon2id per try. C adds a second library and, in passphrase mode, the same weakness, for no gain over A's existing AEAD. |
-| **D-28** | What restoring a server backup undoes                  | **Revised policy, specified by the owner on 2026-10-26** (§3.6): isolated maintenance-mode installation, all transient state invalidated, closed until a local review completes, restored credentials cannot open it, pre-account snapshot stays closed, `server_restored` with a fresh id. The earlier option A (devices resume at once) is **not** approved. | Revised policy (implemented for development)                                  | Every device signs in again, and only after the owner has reviewed the restore on the server host. Newer data on a device is kept read-only until you export it.                                                                                                                                       |
-| **D-29** | Encrypting dump files at rest (**required** for M1)    | **A.** Ruvee writes plain dumps; the operator must use encrypted storage. **B.** `ruvee-admin backup` encrypts with `age` to an X25519 recipient; the server holds only the public key, the owner holds the identity offline, apart from backup storage and the setup file. **C.** `age` with a passphrase (scrypt). **D.** GPG to an operator key.            | **B: approved by the owner for development (2026-10-26)**; implemented (§3.2) | A stolen backup or a compromised server cannot read old backups; restoring needs the offline identity, and losing it loses every backup. age does not prove who made a backup: keep each backup's digest apart (§3.2a).                                                                                |
-| **D-30** | Credentials restored from the snapshot after reopening | **A.** As implemented: after the review, the snapshot-time password and kit work at once; the review states it and the owner repeats changes. **B.** A restricted post-restore session bound to a single-use reopen code issued on the server host (§3.13). **C.** B for the kit only: recovery stays closed until a new kit is made.                          | **B**, open: not approved, not implemented                                    | With A, an old password or kit you replaced after the backup works again, for whoever knows it, until you repeat the change. B makes the host operator's code, not the old credentials, decide who takes control after a restore; it needs a new protocol state and its own review.                    |
+| ID       | Decision                                               | Options                                                                                                                                                                                                                                                                                                                                                        | Recommended                                                                    | User-visible consequence                                                                                                                                                                                                                                                                               |
+| -------- | ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **D-13** | Portable export format                                 | **A.** Container of existing envelopes; `AK` wrapped under the Recovery Key typed at export (§4). **B.** A, plus an export passphrase: `AK` also wrapped under an Argon2id key from a new passphrase (new purpose `0x09`). **C.** Encrypt the export with the established `age` format (passphrase or X25519 recipient) over A's content.                      | **A**                                                                          | To make or open an export, you need your Recovery Kit. Without it the export is useless. With B, a passphrase opens the file, so a stolen file can be guessed offline at one Argon2id per try. C adds a second library and, in passphrase mode, the same weakness, for no gain over A's existing AEAD. |
+| **D-28** | What restoring a server backup undoes                  | **Revised policy, specified by the owner on 2026-10-26** (§3.6): isolated maintenance-mode installation, all transient state invalidated, closed until a local review completes, restored credentials cannot open it, pre-account snapshot stays closed, `server_restored` with a fresh id. The earlier option A (devices resume at once) is **not** approved. | Revised policy (implemented for development)                                   | Every device signs in again, and only after the owner has reviewed the restore on the server host. Newer data on a device is kept read-only until you export it.                                                                                                                                       |
+| **D-29** | Encrypting dump files at rest (**required** for M1)    | **A.** Ruvee writes plain dumps; the operator must use encrypted storage. **B.** `ruvee-admin backup` encrypts with `age` to an X25519 recipient; the server holds only the public key, the owner holds the identity offline, apart from backup storage and the setup file. **C.** `age` with a passphrase (scrypt). **D.** GPG to an operator key.            | **B: approved by the owner for development (2026-10-26)**; implemented (§3.2)  | A stolen backup or a compromised server cannot read old backups; restoring needs the offline identity, and losing it loses every backup. age does not prove who made a backup: keep each backup's digest apart (§3.2a).                                                                                |
+| **D-30** | Credentials restored from the snapshot after reopening | **A.** After the review, the snapshot-time password and kit work at once; the owner repeats changes. **B.** A restricted reopening bound to a single-use code issued on the server host, with mandatory replacement of the password and the Recovery Kit before anything opens (§3.13). **C.** B for the kit only.                                             | **B: approved by the owner for development (2026-10-26)**; implemented (§3.13) | After a restore, the owner reopens with a code from the server host and the old password or kit, and must set a new password and kit first; the old ones then stop working. Whoever knows only the old credentials cannot take over.                                                                   |
 
 ## 8. Implementation plan
 
-**M1 (revised D-28, D-29 B)**, in order. Status 2026-10-26: steps 1 to 6 are implemented and
-tested on synthetic data (§3.11). The milestone is **not accepted for real data** until D-30 is
-decided (and, if B, built), D-19 reviews the restore and backup code, and the deployment items in
-§3.11 exist.
+**M1 (revised D-28, D-29 B, D-30 B)**, in order. Status 2026-10-26: steps 1 to 7 are implemented
+and tested on synthetic data (§3.11). The milestone is **not accepted for real data** until D-19
+reviews the backup, restore and reopening code and a private deployment rehearsal (§3.11) is done.
 
 1. Migration: revoke reason `restored`, events `server_restored` and `restore_review_completed` (with down).
 2. `ruvee-admin backup`: `pg_dump` streamed into age, encrypted metadata, manifest last (§3.2).
@@ -748,6 +750,7 @@ decided (and, if B, built), D-19 reviews the restore and backup code, and the de
    encrypted export.
 5. Tests R1, R3 to R6, R9, R11 to R14 (§6); CI runs the restore tests with the PostgreSQL 18 tools.
 6. [Operator guide](../guides/server-backup-restore.md).
+7. Reopening after a restore (§3.13): codes, restricted session, both credential paths, clients.
 
 **M2 (D-13 approved for development; independent review of §4 still required)**
 

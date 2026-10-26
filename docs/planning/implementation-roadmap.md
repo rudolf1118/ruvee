@@ -241,7 +241,7 @@ The current state, commands and gaps are kept in [status.md](status.md). In shor
 
 ## Next bounded task
 
-Encrypted server backups (D-29 B) and the revised D-28 restore are implemented for synthetic data, with an operator guide; M1 waits for D-30, D-19 and a deployment before real data.
+Encrypted server backups (D-29 B), the revised D-28 restore and the reopening after a restore (D-30 B) are implemented for synthetic data, with an operator guide; real data waits for D-19 and a private deployment rehearsal.
 
 ## Changes after architecture validation
 
