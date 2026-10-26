@@ -95,9 +95,15 @@ function tokenTransport(origin: string): Transport {
 }
 
 let engine: Promise<VaultEngine> | undefined;
+/**
+ * Bumped by every lock. Work that began before a lock (an unlock, a resume) must not store `AK`
+ * again after it (review R19): the engine refuses to finish it, and this is checked as well.
+ */
+let lockGeneration = 0;
 
 function getEngine(): Promise<VaultEngine> {
-  engine ??= (async () => {
+  if (engine) return engine;
+  const starting = (async () => {
     const origin = await serverOrigin();
     if (!origin) throw new VaultError('offline');
     const [crypto] = await Promise.all([initRuveeCrypto(), opaque.ready]);
@@ -114,6 +120,7 @@ function getEngine(): Promise<VaultEngine> {
       },
     });
     // Back from a service-worker restart: resume the unlocked state if there is one (D-27).
+    const generation = lockGeneration;
     const saved = (await chrome.storage.session.get(SESSION_AK))[SESSION_AK];
     if (typeof saved === 'string') {
       const ak = fromB64(saved);
@@ -124,16 +131,28 @@ function getEngine(): Promise<VaultEngine> {
       } finally {
         ak.fill(0);
       }
+      // Locked while resuming: the resumed engine is discarded with everything it holds.
+      if (generation !== lockGeneration) {
+        e.wipeMemory();
+        throw new VaultError('locked');
+      }
     }
     return e;
   })();
-  engine.catch(() => {
-    engine = undefined;
+  engine = starting;
+  // Only this attempt is forgotten; a lock may already have replaced it with a newer one.
+  starting.catch(() => {
+    if (engine === starting) engine = undefined;
   });
-  return engine;
+  return starting;
 }
 
-async function rememberUnlocked(e: VaultEngine): Promise<void> {
+async function rememberUnlocked(e: VaultEngine, generation: number): Promise<void> {
+  // A lock since the unlock began wins (R19): nothing is stored, the engine is wiped.
+  if (generation !== lockGeneration) {
+    e.wipeMemory();
+    throw new VaultError('locked');
+  }
   const ak = e.accountKeyForResume();
   try {
     await chrome.storage.session.set({ [SESSION_AK]: toB64(ak) });
@@ -144,6 +163,7 @@ async function rememberUnlocked(e: VaultEngine): Promise<void> {
 
 /** INV-15: drop `AK` everywhere it is held; the next message starts a locked engine. */
 async function lock(): Promise<void> {
+  lockGeneration++;
   await chrome.storage.session.remove(SESSION_AK);
   const current = engine;
   engine = undefined;
@@ -248,6 +268,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     case 'fill':
       return fill(request.tabId, request.itemId);
     case 'vault': {
+      const generation = lockGeneration;
       const e = await getEngine();
       let result: unknown;
       try {
@@ -263,7 +284,7 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
         request.method === 'unlock' ||
         (request.method === 'pairingWait' &&
           (result as { state?: string } | undefined)?.state === 'enrolled');
-      if (enrolled) await rememberUnlocked(e);
+      if (enrolled) await rememberUnlocked(e, generation);
       if (request.method === 'logout') await forget();
       // A sync that found the session gone reports it in its status rather than throwing.
       if (

@@ -353,8 +353,40 @@ export class VaultEngine {
   private recovery: PendingRecovery | undefined;
   /** Serializes every state change, so a save never interleaves with a sync. */
   private queue: Promise<unknown> = Promise.resolve();
+  /** Bumped by every `wipeMemory` (a lock). */
+  private generation = 0;
+  /** The generation the running operation started in; undefined between operations. */
+  private running: number | undefined;
+  private readonly deps: EngineDeps;
 
-  constructor(private readonly deps: EngineDeps) {}
+  constructor(deps: EngineDeps) {
+    this.deps = { ...deps, store: this.lockAware(deps.store) };
+  }
+
+  /**
+   * Review R19: a lock can arrive while an operation waits on the network. Its keys are zeroed
+   * at once, so whatever it would still write (records sealed under a zeroed key, a device
+   * record without its keys) is refused, and so is a session it would install afterwards.
+   */
+  private lockAware(store: DeviceStore): DeviceStore {
+    const assertCurrent = () => {
+      if (this.running !== undefined && this.running !== this.generation)
+        throw new VaultError('locked');
+    };
+    return new Proxy(store, {
+      get: (target, key, receiver) => {
+        const value: unknown = Reflect.get(target, key, receiver);
+        if (typeof value !== 'function') return value;
+        const method = value as (...args: unknown[]) => unknown;
+        if (key === 'putDevice' || key === 'apply' || key === 'wipe')
+          return (...args: unknown[]) => {
+            assertCurrent();
+            return method.apply(target, args);
+          };
+        return method.bind(target);
+      },
+    });
+  }
 
   /** Resolves when every queued operation, background syncs included, has finished. */
   async idle(): Promise<void> {
@@ -366,7 +398,22 @@ export class VaultEngine {
   }
 
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.queue.then(task, task);
+    const guarded = async () => {
+      const generation = this.generation;
+      this.running = generation;
+      try {
+        const result = await task();
+        // Locked while it ran: nothing it unlocked or derived may outlive the lock (R19).
+        if (this.generation !== generation) {
+          this.clearMemory();
+          throw new VaultError('locked');
+        }
+        return result;
+      } finally {
+        this.running = undefined;
+      }
+    };
+    const run = this.queue.then(guarded, guarded);
     this.queue = run.catch(() => undefined);
     return run;
   }
@@ -769,29 +816,39 @@ export class VaultEngine {
       } finally {
         auk.fill(0);
       }
-      if (params.previousPassword !== undefined) {
-        // The old wrap opened; the new password must open the server's wrap under the new SK.
-        const updated = await this.adoptServerKeys(device, enrolled, password, accountKey);
-        if (!updated) throw new VaultError('wrong_password');
-        enrolled = updated;
-        passwordUpdated = true;
+      let session: Session;
+      try {
+        if (params.previousPassword !== undefined) {
+          // The old wrap opened; the new password must open the server's wrap under the new SK.
+          const updated = await this.adoptServerKeys(device, enrolled, password, accountKey);
+          if (!updated) throw new VaultError('wrong_password');
+          enrolled = updated;
+          passwordUpdated = true;
+        }
+        const keyset = crypto.openKeyset({
+          accountKey,
+          accountKeyId: enrolled.akId,
+          accountId,
+          keysetVersion: enrolled.keysetVersion,
+          envelope: enrolled.keyset,
+        });
+        const vault = keyset.vaults[0];
+        if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId) {
+          keyset.secretKey.fill(0);
+          vault.vk.fill(0);
+          throw new VaultError('internal');
+        }
+        session = this.newSession(
+          { ...device, enrolled },
+          accountKey,
+          vault.vk,
+          await this.loadCheckpoint(device, accountKey, enrolled),
+        );
+      } catch (error) {
+        // Nothing holds AK yet: zero it before reporting the failure (INV-15, review R23).
+        accountKey.fill(0);
+        throw error;
       }
-      const keyset = crypto.openKeyset({
-        accountKey,
-        accountKeyId: enrolled.akId,
-        accountId,
-        keysetVersion: enrolled.keysetVersion,
-        envelope: enrolled.keyset,
-      });
-      const vault = keyset.vaults[0];
-      if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId)
-        throw new VaultError('internal');
-      const session = this.newSession(
-        { ...device, enrolled },
-        accountKey,
-        vault.vk,
-        await this.loadCheckpoint(device, accountKey, enrolled),
-      );
       this.session = session;
       await this.loadLocalState();
       session.deviceKey = await this.loadDeviceKey(session);
@@ -2188,7 +2245,7 @@ export class VaultEngine {
           : await api.recoveryMaterial();
         const accountId = uuidToBytes(started.accountId);
         const accountKeyId = fromB64(material.akId);
-        let accountKey: Uint8Array;
+        let accountKey: Uint8Array | undefined;
         let keyset;
         try {
           accountKey = crypto.unwrapAccountKeyForRecovery({
@@ -2208,9 +2265,14 @@ export class VaultEngine {
           });
         } catch {
           // RAK matched, so a wrap that does not open is an integrity failure, not a wrong key.
+          accountKey?.fill(0);
           throw new VaultError('integrity');
         }
         const vault = keyset.vaults[0];
+        const refuse = (code: 'local_data_other_account' | 'integrity'): never => {
+          for (const key of [accountKey, keyset.secretKey, vault.vk]) key.fill(0);
+          throw new VaultError(code);
+        };
         // The forgotten-password case: the same account, device and vault under the same `AK`,
         // so this browser's own sealed records open and are kept.
         const keepLocal =
@@ -2221,16 +2283,11 @@ export class VaultEngine {
           local.deviceId === started.deviceId &&
           same(local.enrolled.akId, accountKeyId) &&
           local.enrolled.vaultId === vault.vaultId;
-        if (local?.enrolled && sameName && !keepLocal && params.replaceLocalData !== true) {
-          accountKey.fill(0);
-          throw new VaultError('local_data_other_account');
-        }
+        if (local?.enrolled && sameName && !keepLocal && params.replaceLocalData !== true)
+          refuse('local_data_other_account');
         // R20: the keyset version this browser verified is a floor, as on every unlock (INV-09).
         // Checked before anything changes on the server.
-        if (keepLocal && material.keysetVersion < local.enrolled.keysetVersion) {
-          accountKey.fill(0);
-          throw new VaultError('integrity');
-        }
+        if (keepLocal && material.keysetVersion < local.enrolled.keysetVersion) refuse('integrity');
         this.recovery = {
           keepLocal,
           username,
@@ -2343,11 +2400,14 @@ export class VaultEngine {
           envelope: fromB64(material.keyset),
         });
       } catch {
+        accountKey.fill(0);
         throw new VaultError('integrity');
       }
       const vault = keyset.vaults[0];
-      if (vault.vaultId !== enrolled.vaultId || !same(accountKey, session.accountKey))
+      if (vault.vaultId !== enrolled.vaultId || !same(accountKey, session.accountKey)) {
+        for (const key of [accountKey, keyset.secretKey, vault.vk]) key.fill(0);
         throw new VaultError('integrity');
+      }
       this.recovery = {
         // The password path never replaces local data: it finishes on this device's own session.
         keepLocal: false,
@@ -3367,23 +3427,26 @@ export class VaultEngine {
   /**
    * Erases this device's copy so it can log in to a restored server afresh. Never automatic:
    * only on this call, with the typed confirmation, after a local export of the current state
-   * or an explicit `withoutExport`, and with the pending count the user was shown.
+   * or an explicit `withoutExport`, and with the pending and conflict counts the user was shown
+   * (review R22: a conflict draft is as unrecoverable as a pending edit once erased).
    */
   startOver(params: {
     confirm: 'erase-this-device';
     withoutExport?: boolean;
     pendingSeen: number;
+    conflictsSeen: number;
   }): Promise<true> {
     return this.exclusive(async () => {
       const session = this.requireSession();
       // Checked at run time too: parameters arrive from the UI as a message.
       if ((params.confirm as string) !== 'erase-this-device') throw new VaultError('internal');
       const pending = session.pending.length + (session.inflight?.mutations.length ?? 0);
-      if (params.pendingSeen !== pending) throw new VaultError('unsynced_changes');
+      if (params.pendingSeen !== pending || params.conflictsSeen !== session.conflicts.size)
+        throw new VaultError('unsynced_changes');
       if (!params.withoutExport && session.localExportMark !== this.localMark(session))
         throw new VaultError('export_first');
       await this.deps.store.wipe();
-      this.wipeMemory();
+      this.clearMemory();
       return true as const;
     });
   }
@@ -3447,10 +3510,13 @@ export class VaultEngine {
 
   /**
    * UPLOADING: moves the next batch from the queue into the pending queue when it is empty.
-   * Items already in the synced state (uploaded before a crash) leave the queue instead.
+   * Items already in the synced state (uploaded before a crash) leave the queue instead. Never
+   * while anything is pending or in flight: a queued row stays in the queue until it is synced,
+   * so feeding then would queue the same item twice (review R22).
    */
   private async feedImport(session: Session): Promise<void> {
     if (session.importState?.state !== 'uploading') return;
+    if (session.pending.length > 0 || session.inflight) return;
     const { store } = this.deps;
     const rows = await store.imports(IMPORT_BATCH_ITEMS);
     const done = rows.filter((r) => session.synced.has(r.itemId));
@@ -3859,7 +3925,33 @@ export class VaultEngine {
   }
 
   /** Best-effort zeroing before the worker is terminated (sync-protocol §Memory and lock). */
+  /** An unfinished setup's keys (INV-15, review R23). */
+  private dropSetup(): void {
+    const s = this.setup;
+    this.setup = undefined;
+    if (!s) return;
+    for (const key of [s.secretKey, s.accountKey, s.vaultKey]) key.fill(0);
+  }
+
+  /** What an unfinished recovery or reopening unlocked (INV-15, review R23). */
+  private dropRecovery(): void {
+    const r = this.recovery;
+    this.recovery = undefined;
+    if (!r) return;
+    // The password path shares AK with the unlocked session, which wipeMemory clears anyway.
+    for (const key of [r.accountKey, r.secretKey, r.vaultKey]) key.fill(0);
+  }
+
+  /**
+   * INV-15: the lock. Zeroes what this engine holds now, even while an operation runs; that
+   * operation can then neither write nor leave a session behind (review R19).
+   */
   wipeMemory(): void {
+    this.generation++;
+    this.clearMemory();
+  }
+
+  private clearMemory(): void {
     const session = this.session;
     if (session) {
       session.accountKey.fill(0);
@@ -3870,7 +3962,9 @@ export class VaultEngine {
       session.bodies.clear();
     }
     this.session = undefined;
-    this.setup = undefined;
+    this.dropSetup();
+    this.dropRecovery();
+    this.kitRotation = undefined;
     for (const id of [...this.hosting.keys()]) this.dropHosted(id);
     this.dropJoining();
     this.pendingPassword = undefined;

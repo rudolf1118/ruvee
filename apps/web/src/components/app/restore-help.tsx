@@ -117,6 +117,7 @@ export function RestoreHelpSection({
       .call('startOver', {
         confirm: 'erase-this-device',
         pendingSeen: local.pending,
+        conflictsSeen: local.conflicts,
         ...(withoutExport ? { withoutExport: true } : {}),
       })
       .then(onErased, (e: unknown) => {

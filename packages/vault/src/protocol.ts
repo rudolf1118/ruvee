@@ -358,6 +358,7 @@ export interface VaultMethods {
     confirm: 'erase-this-device';
     withoutExport?: boolean;
     pendingSeen: number;
+    conflictsSeen: number;
   }): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */

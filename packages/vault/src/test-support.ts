@@ -38,6 +38,12 @@ export interface FakeServerState {
 const cryptoReady = initRuveeCrypto();
 const raw = (text: string) => new Uint8Array(Buffer.from(text, 'base64url'));
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
+/** A base64url envelope with its last byte flipped. */
+const flipLast = (text: string) => {
+  const bytes = Buffer.from(text, 'base64url');
+  bytes[bytes.length - 1] = (bytes[bytes.length - 1] ?? 0) ^ 1;
+  return bytes.toString('base64url');
+};
 
 export class FakeServer {
   account: RegisterFinishRequest | undefined;
@@ -49,6 +55,8 @@ export class FakeServer {
   commitBudget: number | undefined;
   /** The next commit is applied, but its response never reaches the client. */
   loseNextCommitResponse = false;
+  /** Recovery material carries a keyset envelope with one flipped byte (a corrupt server). */
+  corruptKeyset = false;
   sessionValid = true;
   /** Every request body the server received, for capture checks. */
   received: string[] = [];
@@ -582,7 +590,7 @@ export class FakeServer {
           akId: keys.akId,
           akEpoch: keys.akEpoch,
           keysetVersion: keys.keysetVersion,
-          keyset: keys.keyset,
+          keyset: this.corruptKeyset ? flipLast(keys.keyset) : keys.keyset,
           rowVersion: this.rowVersion,
         });
       },
