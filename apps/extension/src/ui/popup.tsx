@@ -1,4 +1,4 @@
-import type { DevicePhase, PairingJoinStatus } from '@ruvee/vault';
+import type { DevicePhase, PairingJoinStatus, SyncStatus } from '@ruvee/vault';
 import { type SubmitEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Candidates, FillOutcome, Status } from '../messages';
@@ -325,8 +325,16 @@ function Fill({ onLocked }: { onLocked: () => void }) {
         setTabId(tab);
         if (tab !== null) setFound(await call<Candidates>({ kind: 'candidates', tabId: tab }));
         else setFound({ origin: null, items: [] });
+        // A sync on every open: it brings other devices' changes, and it is how a revoked
+        // browser or an ended session is noticed (the worker then locks or wipes itself).
+        const synced = await call<SyncStatus>({ kind: 'vault', method: 'sync' });
+        if (synced.state === 'session_expired') onLocked();
       } catch (e) {
-        if (e instanceof CallError && e.code === 'locked') onLocked();
+        if (
+          e instanceof CallError &&
+          ['locked', 'session_expired', 'device_revoked'].includes(e.code)
+        )
+          onLocked();
         else setError(messageFor(e));
       }
     })();
@@ -387,6 +395,14 @@ function Fill({ onLocked }: { onLocked: () => void }) {
         }}
       >
         Lock
+      </button>
+      <button
+        type="button"
+        onClick={() => {
+          void call({ kind: 'vault', method: 'logout' }).finally(onLocked);
+        }}
+      >
+        Log out
       </button>
     </section>
   );

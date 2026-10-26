@@ -1,19 +1,7 @@
 import type { Metadata, Viewport } from 'next';
-import { Hanken_Grotesk, JetBrains_Mono } from 'next/font/google';
 import type { ReactNode } from 'react';
+import './fonts.css';
 import './globals.css';
-
-const hankenGrotesk = Hanken_Grotesk({
-  subsets: ['latin'],
-  weight: ['400', '500', '600', '700'],
-  variable: '--font-hanken-grotesk',
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  subsets: ['latin'],
-  weight: ['400', '500'],
-  variable: '--font-jetbrains-mono',
-});
 
 export const metadata: Metadata = {
   title: { default: 'Ruvee', template: '%s · Ruvee' },
@@ -27,7 +15,7 @@ export const viewport: Viewport = {
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className={`${hankenGrotesk.variable} ${jetbrainsMono.variable}`}>
+    <html lang="en">
       <body>{children}</body>
     </html>
   );

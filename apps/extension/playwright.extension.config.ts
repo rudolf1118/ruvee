@@ -10,6 +10,7 @@ import { defineConfig } from '@playwright/test';
 const webPort = Number(process.env.RUVEE_E2E_WEB_PORT ?? 3107);
 const apiPort = Number(process.env.RUVEE_E2E_API_PORT ?? 4107);
 export const WEB_ORIGIN = `http://127.0.0.1:${String(webPort)}`;
+export const API_ORIGIN = `http://127.0.0.1:${String(apiPort)}`;
 export const STATE_FILE = join(tmpdir(), `ruvee-extension-e2e-${String(webPort)}.json`);
 /** The development build's fixed id, from the public key in manifest.json. */
 export const EXTENSION_ID = 'ikjjmgfofphmclnkphkceboclijkfkbd';
@@ -20,13 +21,13 @@ export default defineConfig({
   workers: 1,
   forbidOnly: !!process.env.CI,
   retries: 0,
-  timeout: 180_000,
+  timeout: 240_000,
   reporter: process.env.CI ? 'github' : 'list',
   use: { trace: 'retain-on-failure' },
   webServer: [
     {
       command: 'node ../api/scripts/e2e-stack.mjs',
-      url: `http://127.0.0.1:${String(apiPort)}/health/ready`,
+      url: `${API_ORIGIN}/health/ready`,
       env: {
         RUVEE_E2E_STATE_FILE: STATE_FILE,
         RUVEE_E2E_API_PORT: String(apiPort),

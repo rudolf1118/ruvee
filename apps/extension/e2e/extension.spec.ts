@@ -9,7 +9,8 @@ import {
   type Worker,
   test,
 } from '@playwright/test';
-import { EXTENSION_ID, STATE_FILE, WEB_ORIGIN } from '../playwright.extension.config';
+import pg from 'pg';
+import { API_ORIGIN, EXTENSION_ID, STATE_FILE, WEB_ORIGIN } from '../playwright.extension.config';
 
 /**
  * The extension end to end (extension-design.md §6): the web app creates the account and a login,
@@ -20,6 +21,7 @@ import { EXTENSION_ID, STATE_FILE, WEB_ORIGIN } from '../playwright.extension.co
 const USERNAME = 'synthetic-extension-owner';
 const MASTER = 'synthetic extension harbor 61';
 const ITEM_PASSWORD = 'synthetic-extension-item-secret-7a1';
+const NEW_MASTER = 'synthetic extension lantern 84';
 /** Pages the extension may fill: loopback HTTP, served by route interception (no extra server). */
 const LOGIN_PAGE = 'http://127.0.0.1:3191/login';
 const OTHER_PORT = 'http://127.0.0.1:3192/login';
@@ -46,6 +48,16 @@ async function tabIdOf(worker: Worker, url: string): Promise<number> {
 let profile: string;
 let context: BrowserContext;
 let worker: Worker;
+// Shared by the serial tests below: one account, one paired extension.
+let web: Page;
+let popup: Page;
+let site: Page;
+let siteTab: number;
+let kit = '';
+const wire: string[] = [];
+const cookiesToApi: string[] = [];
+
+test.describe.configure({ mode: 'serial' });
 
 test.beforeAll(async () => {
   profile = mkdtempSync(join(tmpdir(), 'ruvee-ext-profile-'));
@@ -67,8 +79,6 @@ test.afterAll(async () => {
 
 test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => {
   expect(new URL(worker.url()).host).toBe(EXTENSION_ID);
-  const wire: string[] = [];
-  const cookiesToApi: string[] = [];
   context.on('request', (request) => {
     wire.push(request.url(), JSON.stringify(request.headers()), request.postData() ?? '');
     const fromExtension = request.headers().origin === `chrome-extension://${EXTENSION_ID}`;
@@ -76,7 +86,7 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   });
 
   // ---- The web app creates the account and one login for the test page's origin ----
-  const web = await context.newPage();
+  web = await context.newPage();
   await web.goto(WEB_ORIGIN);
   await web.getByRole('button', { name: 'Create an account' }).click();
   await web.getByLabel('Setup token').fill(bootstrapToken());
@@ -86,7 +96,7 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   await web.getByRole('textbox', { name: 'Type it again', exact: true }).fill(MASTER);
   await web.getByRole('checkbox').check();
   await web.getByRole('button', { name: 'Continue' }).click();
-  const kit = (await web.getByTestId('recovery-key').innerText()).trim();
+  kit = (await web.getByTestId('recovery-key').innerText()).trim();
   await web.getByRole('button', { name: "I've saved it" }).click();
   await web.getByLabel('Recovery Key').fill(kit);
   await web.getByRole('button', { name: 'Finish setup' }).click();
@@ -114,7 +124,7 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   await expect(options.getByText('Saved.', { exact: false })).toBeVisible();
 
   // ---- The popup logs in; the extension is a pending device until paired ----
-  const popup = await context.newPage();
+  popup = await context.newPage();
   await popup.goto(popupUrl());
   await popup.getByLabel('Username').fill(USERNAME);
   await popup.getByLabel('Master password').fill(MASTER);
@@ -141,9 +151,9 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   await expect(popup.getByText(/fills only HTTPS pages/)).toBeVisible({ timeout: 30_000 });
 
   // ---- Fill on exactly the saved origin ----
-  const site = await context.newPage();
+  site = await context.newPage();
   await site.goto(LOGIN_PAGE);
-  const siteTab = await tabIdOf(worker, LOGIN_PAGE);
+  siteTab = await tabIdOf(worker, LOGIN_PAGE);
   await popup.goto(popupUrl(siteTab));
   await expect(popup.getByText(`Logins for ${new URL(LOGIN_PAGE).origin}`)).toBeVisible();
   await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
@@ -194,10 +204,252 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   await expect(popup.getByText("That's not the right master password.")).toBeVisible({
     timeout: 30_000,
   });
+});
 
+async function unlock(password: string): Promise<void> {
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByLabel('Master password', { exact: true }).fill(password);
+  await popup.getByRole('button', { name: 'Unlock' }).click();
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible({
+    timeout: 30_000,
+  });
+}
+
+async function stopWorker(): Promise<void> {
+  const cdp = await context.newCDPSession(popup);
+  await cdp.send('ServiceWorker.enable');
+  await cdp.send('ServiceWorker.stopAllWorkers');
+  await cdp.detach();
+}
+
+/** Sets the last-activity time as if the user had been away for `minutes`. */
+async function idleFor(minutes: number): Promise<void> {
+  await worker.evaluate(
+    (ms) => chrome.storage.session.set({ lastActivityMs: Date.now() - ms }),
+    minutes * 60_000,
+  );
+}
+
+test('auto-lock: an expired unlock is never resumed, and the alarm locks an idle vault', async () => {
+  await unlock(MASTER);
+  expect(await sessionKeys(worker)).toContain('ak');
+  // Away for 16 minutes while Chrome had stopped the worker: the next message must not resume.
+  await idleFor(16);
+  await stopWorker();
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible({ timeout: 30_000 });
+  expect(await sessionKeys(worker)).not.toContain('ak');
+
+  // Idle with no message at all: the alarm (30 s in the test build) locks on its own.
+  await unlock(MASTER);
+  await idleFor(16);
+  await expect
+    .poll(() => sessionKeys(worker), { timeout: 75_000, intervals: [2_000] })
+    .not.toContain('ak');
+});
+
+test('chrome.storage.session is out of reach of scripts running in pages', async () => {
+  await unlock(MASTER);
+  expect(await sessionKeys(worker)).toContain('ak');
+  const seen = await worker.evaluate(async (tabId) => {
+    const [isolated] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'ISOLATED',
+      args: [],
+      func: async () => {
+        try {
+          const area = chrome.storage.session as chrome.storage.StorageArea | undefined;
+          if (!area) return 'no session storage';
+          return `read ${String(Object.keys(await area.get(null as never)).length)} keys`;
+        } catch (e) {
+          return `refused: ${String(e).slice(0, 120)}`;
+        }
+      },
+    });
+    const [main] = await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      args: [],
+      func: () => typeof (globalThis as { chrome?: { storage?: unknown } }).chrome?.storage,
+    });
+    return { isolated: isolated?.result, main: main?.result };
+  }, siteTab);
+  // A content script (the isolated world) is refused; the page's own world has no storage API.
+  expect(seen.isolated).not.toMatch(/^read/);
+  expect(seen.main).toBe('undefined');
+});
+
+test('a fill requested for a page that has since navigated away fails closed', async () => {
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+  // The listing is now stale: the same tab moves to another origin before the user clicks.
+  await site.goto(OTHER_PORT);
+  await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
+  await expect(popup.getByText(/isn't saved for this page/)).toBeVisible();
+  await expect(site.locator('#pw')).toHaveValue('');
+  // Back on the saved origin, the same request fills again.
+  await site.goto(LOGIN_PAGE);
+  await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
+  await expect(popup.getByText(/^Filled\./)).toBeVisible();
+  await expect(site.locator('#pw')).toHaveValue(ITEM_PASSWORD);
+});
+
+test('previous-password unlock after the password and SK both changed elsewhere', async () => {
+  // The extension is locked (as if offline) while the web app replaces SK and the password.
+  await popup.getByRole('button', { name: 'Lock' }).click();
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible();
+  await web.bringToFront();
+  await web.getByRole('button', { name: 'Security', exact: true }).click();
+  const skSection = web.getByRole('region', { name: 'Secret Key' });
+  await skSection.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  await skSection.getByRole('button', { name: 'Replace Secret Key' }).click();
+  await expect(skSection.getByText('Your Secret Key was replaced.')).toBeVisible({
+    timeout: 30_000,
+  });
+  await web.getByRole('textbox', { name: 'Current master password', exact: true }).fill(MASTER);
+  await web.getByRole('textbox', { name: 'New master password', exact: true }).fill(NEW_MASTER);
+  await web
+    .getByRole('textbox', { name: 'Type the new password again', exact: true })
+    .fill(NEW_MASTER);
+  await web.getByRole('button', { name: 'Change password' }).click();
+  await expect(web.getByText('Your master password was changed.')).toBeVisible({
+    timeout: 30_000,
+  });
+
+  await popup.bringToFront();
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByLabel('Master password', { exact: true }).fill(NEW_MASTER);
+  await popup.getByRole('button', { name: 'Unlock' }).click();
+  await expect(popup.getByText(/both changed on another device/)).toBeVisible({ timeout: 30_000 });
+  await popup.getByLabel('Previous master password').fill('synthetic wrong previous 22');
+  await popup.getByRole('button', { name: 'Unlock' }).click();
+  await expect(popup.getByText("That's not the right master password.")).toBeVisible({
+    timeout: 30_000,
+  });
+  await popup.getByLabel('Previous master password').fill(MASTER);
+  await popup.getByRole('button', { name: 'Unlock' }).click();
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible({
+    timeout: 30_000,
+  });
+  // The browser moved over: the new password alone opens it now, the old one no longer does.
+  await popup.getByRole('button', { name: 'Lock' }).click();
+  await popup.getByLabel('Master password', { exact: true }).fill(MASTER);
+  await popup.getByRole('button', { name: 'Unlock' }).click();
+  await expect(popup.getByText("That's not the right master password.")).toBeVisible({
+    timeout: 30_000,
+  });
+  await unlock(NEW_MASTER);
+});
+
+test('a reused refresh token ends the session for the extension too', async () => {
+  const stolen = await refreshTokenOf(worker);
+  expect(stolen).toMatch(/^[A-Za-z0-9_-]{43}$/);
+  // Expire the access token on the server; the extension's next request refreshes it.
+  await sql(
+    `UPDATE sessions SET access_expires_at = now() - interval '1 second'
+     WHERE kind = 'token' AND revoked_at IS NULL`,
+  );
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+  await expect.poll(() => refreshTokenOf(worker), { timeout: 15_000 }).not.toBe(stolen);
+
+  // Someone who copied the old refresh token presents it after the rotation.
+  const reuse = await fetch(`${API_ORIGIN}/api/v1/auth/refresh`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Ruvee-Request': '1',
+      Origin: `chrome-extension://${EXTENSION_ID}`,
+    },
+    body: JSON.stringify({ refreshToken: stolen }),
+  });
+  expect(reuse.status).toBe(401);
+  // The whole family is revoked: the extension's next sync finds its session gone and locks.
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible({ timeout: 30_000 });
+  expect(await sessionKeys(worker)).not.toContain('ak');
+  const reuses = await sql<{ n: string }>(
+    `SELECT count(*) AS n FROM security_events WHERE type = 'refresh_reuse'`,
+  );
+  expect(reuses[0]?.n).toBe('1');
+  // Unlocking signs in again, with a new session.
+  await unlock(NEW_MASTER);
+});
+
+test('logout ends the session and removes AK and both tokens', async () => {
+  await popup.getByRole('button', { name: 'Log out' }).click();
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible({ timeout: 30_000 });
+  const keys = await sessionKeys(worker);
+  expect(keys).not.toContain('ak');
+  expect(keys).not.toContain('accessToken');
+  expect(await refreshTokenOf(worker)).toBeUndefined();
+  const live = await sql<{ n: string }>(
+    `SELECT count(*) AS n FROM sessions WHERE kind = 'token' AND revoked_at IS NULL`,
+  );
+  expect(live[0]?.n).toBe('0');
+  await unlock(NEW_MASTER);
+});
+
+test('a revoked extension loses access when it reconnects, and must be paired again', async () => {
+  // Locked, as a lost browser would be, when the web app removes it.
+  await popup.getByRole('button', { name: 'Lock' }).click();
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible();
+  await web.bringToFront();
+  await web.getByRole('button', { name: 'Devices' }).click();
+  await web
+    .getByRole('listitem')
+    .filter({ hasText: 'Browser extension' })
+    .getByRole('button', { name: /^Remove/ })
+    .click();
+  await web.getByRole('textbox', { name: 'Master password', exact: true }).fill(NEW_MASTER);
+  await web.getByRole('button', { name: 'Remove device' }).click();
+  // Every login in this suite comes from 127.0.0.1, so the per-IP limit (20 a minute) can be
+  // reached here; that is the limiter working. Wait out the window it names, then retry once.
+  const limited = web.getByText(/Too many attempts\. Wait (\d+) seconds/);
+  const outcome = await Promise.race([
+    limited.waitFor({ timeout: 30_000 }).then(() => 'limited' as const),
+    web
+      .getByText(/^Removed/)
+      .waitFor({ timeout: 30_000 })
+      .then(() => 'removed' as const),
+  ]);
+  if (outcome === 'limited') {
+    const seconds = Number(/Wait (\d+) seconds/.exec(await limited.innerText())?.[1] ?? '60');
+    await web.waitForTimeout((seconds + 1) * 1000);
+    await web.getByRole('button', { name: 'Remove device' }).click();
+  }
+  await expect(web.getByText(/^Removed/)).toBeVisible({ timeout: 30_000 });
+
+  // The local password still opens the local copy, but the first server contact wipes it.
+  await popup.bringToFront();
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByLabel('Master password', { exact: true }).fill(NEW_MASTER);
+  await popup.getByRole('button', { name: 'Unlock' }).click();
+  await expect(popup.getByText(/removed from your account/)).toBeVisible({ timeout: 30_000 });
+  const keys = await sessionKeys(worker);
+  expect(keys).not.toContain('ak');
+  expect(keys).not.toContain('accessToken');
+  expect(await refreshTokenOf(worker)).toBeUndefined();
+  expect(await deviceRecords(worker)).toBe(0);
+  // Logging in again makes a new pending device; nothing opens until it is paired again.
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByLabel('Username').fill(USERNAME);
+  await popup.getByLabel('Master password').fill(NEW_MASTER);
+  await popup.getByRole('button', { name: 'Log in' }).click();
+  await expect(popup.getByLabel('Pairing code')).toBeVisible({ timeout: 30_000 });
+});
+
+test('capture: nothing secret on the wire, in the extension stores, or sent with a cookie', async () => {
   // ---- Capture: nothing secret on the wire, in the extension's stores, or with a cookie ----
   expect(cookiesToApi).toEqual([]);
-  const forbidden = [MASTER, ITEM_PASSWORD, kit, kit.replace(/-/g, ''), 'Synthetic Portal'];
+  const forbidden = [
+    MASTER,
+    NEW_MASTER,
+    ITEM_PASSWORD,
+    kit,
+    kit.replace(/-/g, ''),
+    'Synthetic Portal',
+  ];
   const wireText = wire.join('\n');
   for (const secret of forbidden) expect(wireText, `on the wire: ${secret}`).not.toContain(secret);
   const stored = await worker.evaluate(async () => {
@@ -242,4 +494,58 @@ async function firstItemId(popup: Page, tab: number): Promise<string> {
     };
     return reply.result.items[0]?.id ?? '';
   }, tab);
+}
+
+async function refreshTokenOf(w: Worker): Promise<string | undefined> {
+  return w.evaluate(
+    () =>
+      new Promise<string | undefined>((resolve, reject) => {
+        const req = indexedDB.open('ruvee-extension');
+        req.onerror = () => {
+          reject(new Error('open failed'));
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          const get = db.transaction('tokens').objectStore('tokens').get('refresh');
+          get.onsuccess = () => {
+            db.close();
+            resolve(typeof get.result === 'string' ? get.result : undefined);
+          };
+        };
+      }),
+  );
+}
+
+async function deviceRecords(w: Worker): Promise<number> {
+  return w.evaluate(
+    () =>
+      new Promise<number>((resolve, reject) => {
+        const req = indexedDB.open('ruvee');
+        req.onerror = () => {
+          reject(new Error('open failed'));
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          const count = db.transaction('device').objectStore('device').count();
+          count.onsuccess = () => {
+            db.close();
+            resolve(count.result);
+          };
+        };
+      }),
+  );
+}
+
+/** SQL against this run's throwaway database (named in the stack's state file). */
+async function sql<T = Record<string, unknown>>(text: string): Promise<T[]> {
+  const { database } = JSON.parse(readFileSync(STATE_FILE, 'utf8')) as { database: string };
+  const url = new URL(process.env.RUVEE_E2E_ADMIN_DATABASE_URL ?? '');
+  url.pathname = `/${database}`;
+  const client = new pg.Client({ connectionString: url.toString() });
+  await client.connect();
+  try {
+    return (await client.query(text)).rows as T[];
+  } finally {
+    await client.end();
+  }
 }

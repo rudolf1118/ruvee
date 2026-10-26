@@ -110,7 +110,7 @@ function getEngine(): Promise<VaultEngine> {
       platform: 'extension',
       now: () => Date.now(),
       emit: (event) => {
-        if (event.event === 'ended') void lock();
+        if (event.event === 'ended') void (event.reason === 'device_revoked' ? forget() : lock());
       },
     });
     // Back from a service-worker restart: resume the unlocked state if there is one (D-27).
@@ -148,6 +148,21 @@ async function lock(): Promise<void> {
   const current = engine;
   engine = undefined;
   if (current) (await current.catch(() => undefined))?.wipeMemory();
+}
+
+/** Lock, and drop this browser's tokens too: after logout or revocation they must not linger. */
+async function forget(): Promise<void> {
+  await lock();
+  await clearTokens();
+}
+
+/**
+ * D-10. Checked before every message as well as by the alarm: an alarm can be late (a suspended
+ * worker, a sleeping laptop), and an unlock state that has expired must never be resumed.
+ */
+async function lockIfIdle(): Promise<void> {
+  const last = (await chrome.storage.session.get(SESSION_ACTIVITY))[SESSION_ACTIVITY];
+  if (typeof last !== 'number' || Date.now() - last >= AUTO_LOCK_MS) await lock();
 }
 
 async function isUnlocked(): Promise<boolean> {
@@ -234,13 +249,28 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return fill(request.tabId, request.itemId);
     case 'vault': {
       const e = await getEngine();
-      const result = await dispatch(e, request.method, request.params);
+      let result: unknown;
+      try {
+        result = await dispatch(e, request.method, request.params);
+      } catch (error) {
+        // Settle the lock before replying, so the page's next status read sees it.
+        const code = errorPayload(error).code;
+        if (code === 'device_revoked') await forget();
+        else if (code === 'session_expired') await lock();
+        throw error;
+      }
       const enrolled =
         request.method === 'unlock' ||
         (request.method === 'pairingWait' &&
           (result as { state?: string } | undefined)?.state === 'enrolled');
       if (enrolled) await rememberUnlocked(e);
-      if (request.method === 'logout') await lock();
+      if (request.method === 'logout') await forget();
+      // A sync that found the session gone reports it in its status rather than throwing.
+      if (
+        request.method === 'sync' &&
+        (result as { state?: string } | undefined)?.state === 'session_expired'
+      )
+        await lock();
       return result;
     }
   }
@@ -258,24 +288,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     sendResponse({ ok: false, code: 'internal' } satisfies ExtensionResponse);
     return undefined;
   }
-  void chrome.storage.session.set({ [SESSION_ACTIVITY]: Date.now() });
-  handle(parsed.data).then(
-    (result) => {
-      sendResponse({ ok: true, result } satisfies ExtensionResponse);
-    },
-    (error: unknown) => {
-      sendResponse({ ok: false, ...errorPayload(error) } satisfies ExtensionResponse);
-    },
-  );
+  lockIfIdle()
+    .then(() => chrome.storage.session.set({ [SESSION_ACTIVITY]: Date.now() }))
+    .then(() => handle(parsed.data))
+    .then(
+      (result) => {
+        sendResponse({ ok: true, result } satisfies ExtensionResponse);
+      },
+      (error: unknown) => {
+        sendResponse({ ok: false, ...errorPayload(error) } satisfies ExtensionResponse);
+      },
+    );
   return true;
 });
 
 void chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
-void chrome.alarms.create('autolock', { periodInMinutes: 1 });
+// Chrome's shortest alarm period is 30 seconds; the test build uses it so its test is quick.
+void chrome.alarms.create('autolock', { periodInMinutes: __RUVEE_TEST__ ? 0.5 : 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name !== 'autolock') return;
-  void (async () => {
-    const last = (await chrome.storage.session.get(SESSION_ACTIVITY))[SESSION_ACTIVITY];
-    if (typeof last !== 'number' || Date.now() - last >= AUTO_LOCK_MS) await lock();
-  })();
+  if (alarm.name === 'autolock') void lockIfIdle();
 });

@@ -156,7 +156,8 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     const listed = sessionsResponseSchema.parse(
       (await h.get('/api/v1/sessions', cookieA).expect(200)).body,
     );
-    expect(listed.sessions.filter((s) => s.deviceId === deviceId)).toHaveLength(2);
+    // The second login for the same device superseded the first; only one is live.
+    expect(listed.sessions.filter((s) => s.deviceId === deviceId)).toHaveLength(1);
     expect(listed.sessions.filter((s) => s.current)).toHaveLength(1);
 
     const up = await stepUp(cookieA);
@@ -183,6 +184,23 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     expect(events).toEqual([{ details: { revokedDeviceId: deviceId, reason: 'lost' } }]);
   });
 
+  it("a new login for a device ends that device's older sessions, and only those", async () => {
+    const first = await login();
+    if (!first) throw new Error('login failed');
+    const deviceId = sessionResponseSchema.parse(first.body).device.id;
+    const second = await login(SYNTHETIC_PASSWORD, deviceId);
+    if (!second) throw new Error('login failed');
+    expectError(await h.get('/api/v1/devices/current', sessionCookie(first)), 'unauthenticated');
+    await h.get('/api/v1/devices/current', sessionCookie(second)).expect(200);
+    await h.get('/api/v1/devices/current', cookieA).expect(200);
+    const reasons = await query<{ revoke_reason: string }>(
+      h.db.url,
+      `SELECT revoke_reason FROM sessions WHERE device_id = $1 AND revoked_at IS NOT NULL`,
+      [deviceId],
+    );
+    expect(reasons).toEqual([{ revoke_reason: 'superseded' }]);
+  });
+
   it('ends a single session from the list', async () => {
     const res = await login();
     if (!res) throw new Error('login failed');
@@ -205,7 +223,8 @@ describe('step-up, sessions, revocation and password change (real database)', ()
   });
 
   it('changes the password: same AK, new wrap, other sessions ended, this one kept', async () => {
-    const other = await login(SYNTHETIC_PASSWORD, account.deviceId);
+    // Another device's session; a second login as this device would supersede cookieA itself.
+    const other = await login();
     if (!other) throw new Error('login failed');
     const otherCookie = sessionCookie(other);
     const up = await stepUp(cookieA);

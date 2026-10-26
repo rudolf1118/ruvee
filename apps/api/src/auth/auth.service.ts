@@ -263,6 +263,14 @@ export class AuthService {
             lastSeenAt: now,
           },
         }));
+      // One client installation is one device: a new login ends that device's older sessions,
+      // so a client that signs in again leaves nothing usable behind, and neither does anyone
+      // who copied an older cookie or token from it. Recovery sessions are separate.
+      if (known)
+        await tx.session.updateMany({
+          where: { deviceId: known.id, kind: { in: ['cookie', 'token'] }, revokedAt: null },
+          data: { revokedAt: now, revokeReason: 'superseded' },
+        });
       const cookie =
         pending.platform === 'web'
           ? await this.sessions.create(accountId, device.id, tx, now)

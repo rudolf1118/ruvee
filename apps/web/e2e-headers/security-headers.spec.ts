@@ -164,4 +164,25 @@ test.describe('CSP behaviour', () => {
     // appears only after the worker answered.
     expect(violations).toEqual([]);
   });
+
+  test('loads its fonts from this origin only, with no request to any other host', async ({
+    page,
+    baseURL,
+  }) => {
+    const elsewhere: string[] = [];
+    const fonts: string[] = [];
+    page.on('request', (request) => {
+      if (!request.url().startsWith(baseURL ?? '')) elsewhere.push(request.url());
+      if (request.resourceType() === 'font') fonts.push(new URL(request.url()).pathname);
+    });
+    await page.goto('/');
+    await expect(
+      page.getByRole('heading', { name: 'Keep every password in one calm, safe place.' }),
+    ).toBeVisible();
+    await page.evaluate(() => document.fonts.ready);
+    expect(elsewhere).toEqual([]);
+    expect(fonts.length).toBeGreaterThan(0);
+    for (const path of fonts) expect(path).toMatch(/^\/_next\/static\/media\/[\w.-]+\.woff2$/);
+    expect(await page.evaluate(() => document.fonts.check('600 16px "Hanken Grotesk"'))).toBe(true);
+  });
 });
