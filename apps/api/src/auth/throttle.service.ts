@@ -1,3 +1,4 @@
+import { isIPv4, isIPv6 } from 'node:net';
 import { Injectable } from '@nestjs/common';
 import { ApiException } from '../common/api-exception.js';
 import { sha256, type Bytes } from '../common/secrets.js';
@@ -24,8 +25,39 @@ const IP_LIMIT = 20;
  */
 const WRONG_CODE_WINDOW_MS = 15 * 60_000;
 const WRONG_CODE_LIMIT = 10;
+/** authentication.md §7: every authenticated request, per session (review R16). */
+const SESSION_WINDOW_MS = 60_000;
+const SESSION_LIMIT = 300;
 /** Bound on remembered addresses, so the limiter cannot itself exhaust memory. */
 const IP_TABLE_MAX = 10_000;
+
+/**
+ * The key an address is limited under (review R17): an IPv4 address as it is, an IPv6 address by
+ * its /64, the smallest block one subscriber is normally given, so rotating through the addresses
+ * of one network does not give a fresh window each time.
+ */
+export function addressKey(ip: string): string {
+  if (isIPv4(ip) || !isIPv6(ip)) return ip;
+  let text = ip.toLowerCase();
+  const zone = text.indexOf('%');
+  if (zone >= 0) text = text.slice(0, zone);
+  const v4 = /(\d+)\.(\d+)\.(\d+)\.(\d+)$/.exec(text);
+  if (v4) {
+    const [a, b, c, d] = v4.slice(1).map(Number) as [number, number, number, number];
+    text = `${text.slice(0, v4.index)}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const [head = '', tail] = text.split('::');
+  const left = head ? head.split(':') : [];
+  const right = tail ? tail.split(':') : [];
+  const groups =
+    tail === undefined
+      ? left
+      : [...left, ...Array<string>(8 - left.length - right.length).fill('0'), ...right];
+  return `${groups
+    .slice(0, 4)
+    .map((g) => parseInt(g, 16).toString(16))
+    .join(':')}::/64`;
+}
 
 function subject(scope: ThrottleScope, value: string): Bytes {
   return sha256(`${scope}\u0000${value}`);
@@ -82,6 +114,7 @@ class Windows {
 export class ThrottleService {
   private readonly perIp = new Windows(IP_LIMIT, IP_WINDOW_MS);
   private readonly wrongCodes = new Windows(WRONG_CODE_LIMIT, WRONG_CODE_WINDOW_MS);
+  private readonly perSession = new Windows(SESSION_LIMIT, SESSION_WINDOW_MS);
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -186,20 +219,25 @@ export class ThrottleService {
   /** In-memory, per client address: 20 unauthenticated auth attempts per minute. */
   assertIpAllowed(ip: string | undefined, now = Date.now()): void {
     if (ip === undefined) return;
-    this.perIp.hit(ip, now);
+    this.perIp.hit(addressKey(ip), now);
+  }
+
+  /** In memory: 300 authenticated requests per minute per session (authentication.md §7). */
+  assertSessionAllowed(sessionId: string, now = Date.now()): void {
+    this.perSession.hit(sessionId, now);
   }
 
   /** Before a reopening code is looked up: an address that sent too many wrong codes waits. */
   assertReopenCodeGuessesAllowed(ip: string | undefined, now = Date.now()): void {
     if (ip === undefined) return;
-    this.wrongCodes.check(ip, now);
+    this.wrongCodes.check(addressKey(ip), now);
   }
 
   /** A wrong, malformed, expired or used code from this address (review R11). */
   recordWrongReopenCode(ip: string | undefined, now = Date.now()): void {
     if (ip === undefined) return;
     try {
-      this.wrongCodes.hit(ip, now);
+      this.wrongCodes.hit(addressKey(ip), now);
     } catch {
       // Already over the limit: the next request is refused by the check above.
     }
@@ -209,5 +247,6 @@ export class ThrottleService {
   clearIpWindows(): void {
     this.perIp.clear();
     this.wrongCodes.clear();
+    this.perSession.clear();
   }
 }

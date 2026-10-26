@@ -219,6 +219,12 @@ that must survive a restart, and in memory for general request rates.
 - Every failure is recorded as a security event with no secret material.
 - Client IP comes from Caddy's verified `X-Forwarded-For` only when the request arrives from the
   configured proxy address.
+- As built (2026-10-26, review R3, R16, R17): every password check (login, step-up, reopening)
+  and every recovery and bootstrap attempt is reserved in one atomic statement before it runs, so
+  parallel requests share the bound; the per-session limit is enforced in memory for every
+  authenticated request; per-address limits key IPv6 clients by their /64; the API warns once if
+  a request carries `X-Forwarded-For` while `TRUSTED_PROXY_ADDRESS` is unset, and at start in
+  production when it is unset. Wrong reopening codes have their own per-address limit (R11).
 
 ## 8. What a stolen session can and cannot do
 

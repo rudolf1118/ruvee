@@ -1,7 +1,8 @@
-import { type CanActivate, type ExecutionContext, Injectable } from '@nestjs/common';
+import { type CanActivate, type ExecutionContext, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Reflector } from '@nestjs/core';
 import { CSRF_HEADER, CSRF_HEADER_VALUE } from '@ruvee/contracts';
+import { ThrottleService } from '../auth/throttle.service.js';
 import { ApiException } from '../common/api-exception.js';
 import type { Env } from '../config/env.js';
 import { ACCESS_METADATA, type AccessLevel, type RequestWithSession } from './access.decorator.js';
@@ -14,6 +15,11 @@ const SAFE_METHODS = new Set(['GET', 'HEAD']);
 
 const BEARER = /^Bearer ([A-Za-z0-9_-]{43})$/;
 
+const PROXY_HINT =
+  'every client is limited as the one address of the reverse proxy. Set it to that address (authentication.md §7).';
+const PROXY_UNSET_IN_PRODUCTION = `NODE_ENV is production and TRUSTED_PROXY_ADDRESS is not set: behind a reverse proxy, ${PROXY_HINT}`;
+const FORWARDED_WITHOUT_PROXY = `A request carried X-Forwarded-For, but TRUSTED_PROXY_ADDRESS is not set: ${PROXY_HINT}`;
+
 /**
  * Global guard. In order: the handler must declare an access level (fail closed); a request
  * carries either the session cookie or a bearer token, never both; cookie requests that change
@@ -25,17 +31,42 @@ const BEARER = /^Bearer ([A-Za-z0-9_-]{43})$/;
 export class AccessGuard implements CanActivate {
   private readonly publicOrigin: string;
   private readonly extensionOrigins: ReadonlySet<string>;
+  private readonly logger = new Logger('ClientAddress');
+  private readonly proxyConfigured: boolean;
+  private warnedAboutProxy = false;
 
   constructor(
     private readonly reflector: Reflector,
     private readonly sessions: SessionService,
     private readonly maintenance: MaintenanceService,
+    private readonly throttle: ThrottleService,
     config: ConfigService<Env, true>,
   ) {
     this.publicOrigin = config.get('PUBLIC_ORIGIN', { infer: true });
     this.extensionOrigins = new Set(
       (config.get('EXTENSION_ORIGINS', { infer: true }) ?? '').split(',').filter(Boolean),
     );
+    this.proxyConfigured = config.get('TRUSTED_PROXY_ADDRESS', { infer: true }) !== undefined;
+    if (!this.proxyConfigured && config.get('NODE_ENV', { infer: true }) === 'production')
+      this.logger.warn(PROXY_UNSET_IN_PRODUCTION);
+  }
+
+  /**
+   * Review R17: behind a reverse proxy with no TRUSTED_PROXY_ADDRESS, every client has the
+   * proxy's address, so one client can use up everyone's per-address limits. A forwarded header
+   * with no trusted proxy is the sign of that; it is said once, without the header's value.
+   */
+  private noticeForwarding(req: RequestWithSession): void {
+    if (this.proxyConfigured || this.warnedAboutProxy) return;
+    if (req.headers['x-forwarded-for'] === undefined) return;
+    this.warnedAboutProxy = true;
+    this.logger.warn(FORWARDED_WITHOUT_PROXY);
+  }
+
+  /** Every authenticated request counts against its session's per-minute limit (review R16). */
+  private limited<T extends { sessionId: string }>(session: T): T {
+    this.throttle.assertSessionAllowed(session.sessionId);
+    return session;
   }
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -51,6 +82,7 @@ export class AccessGuard implements CanActivate {
         context.getClass(),
       ]) ?? 'api';
     const req = context.switchToHttp().getRequest<RequestWithSession>();
+    this.noticeForwarding(req);
     // A restored installation in review serves nothing at all, whatever the credentials, and
     // while it waits to be reopened only the reopening endpoints: restored cookies, tokens and
     // passwords cannot open it (backup-restore.md §3.6 rules 3, 4; §3.13). Decided by the matched
@@ -88,8 +120,8 @@ export class AccessGuard implements CanActivate {
     if (level === 'recovery') {
       if (routeClass !== 'recovery') throw new ApiException('internal_error');
       if (bearer !== undefined) throw new ApiException('unauthenticated');
-      req.ruveeSession = await this.sessions.authenticateRecovery(
-        readCookie(req, this.sessions.recoveryCookieName),
+      req.ruveeSession = this.limited(
+        await this.sessions.authenticateRecovery(readCookie(req, this.sessions.recoveryCookieName)),
       );
       return true;
     }
@@ -102,16 +134,17 @@ export class AccessGuard implements CanActivate {
       // reopen session is never accepted anywhere else (backup-restore.md §3.13).
       if (routeClass !== 'reopen') throw new ApiException('internal_error');
       if (bearer !== undefined) throw new ApiException('unauthenticated');
-      req.ruveeSession = await this.sessions.authenticateReopen(
-        readCookie(req, this.sessions.reopenCookieName),
+      req.ruveeSession = this.limited(
+        await this.sessions.authenticateReopen(readCookie(req, this.sessions.reopenCookieName)),
       );
       return true;
     }
 
-    const session =
+    const session = this.limited(
       bearer === undefined
         ? await this.sessions.authenticate(readCookie(req, this.sessions.cookieName))
-        : await this.sessions.authenticate(bearer, new Date(), 'token');
+        : await this.sessions.authenticate(bearer, new Date(), 'token'),
+    );
     if (level !== 'session' && session.deviceStatus !== 'active')
       throw new ApiException('device_not_enrolled');
     if (level === 'step-up' && Date.now() - session.authAt.getTime() > STEP_UP_MS)
