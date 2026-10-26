@@ -14,8 +14,9 @@ import {
   type DependencyStatus,
 } from '../src/database/database-health.service.js';
 import { MaintenanceService } from '../src/maintenance/maintenance.service.js';
+import { InstanceLockService } from '../src/database/instance-lock.service.js';
 import { createTestApp } from './create-test-app.js';
-import { neverRestored } from './fixtures.js';
+import { neverRestored, servingProcess } from './fixtures.js';
 // Every routed write passes the CSRF checks first, test-only routes included (review R1).
 import { WRITE_HEADERS } from './support/api-harness.js';
 import { SENTINEL, TestOnlyController } from './fixtures.js';
@@ -48,7 +49,10 @@ describe('HTTP behaviour', () => {
           // No database here: an ordinary, never-restored installation. The gate itself is
           // tested against a real database (review/r1-path-case.int-spec.ts, reopen.int-spec.ts).
           .overrideProvider(MaintenanceService)
-          .useValue(neverRestored),
+          .useValue(neverRestored)
+          // ...served by its one API process (the lock is tested in instance-lock.int-spec.ts).
+          .overrideProvider(InstanceLockService)
+          .useValue(servingProcess),
     });
   });
 

@@ -54,6 +54,10 @@ export const API_ERRORS = {
     status: 503,
     message: 'The server was restored and waits for its owner to reopen it.',
   },
+  server_unavailable: {
+    status: 503,
+    message: 'The server is not ready to serve requests.',
+  },
 } as const;
 
 export type ApiErrorCode = keyof typeof API_ERRORS;

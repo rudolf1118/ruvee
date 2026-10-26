@@ -11767,6 +11767,34 @@
               "requestId"
             ],
             "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
+                "const": 503
+              },
+              "error": {
+                "type": "string",
+                "const": "server_unavailable"
+              },
+              "message": {
+                "type": "string",
+                "const": "The server is not ready to serve requests."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
           }
         ]
       },
@@ -12652,6 +12680,34 @@
           "message": {
             "type": "string",
             "const": "The server was restored and waits for its owner to reopen it."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorServerUnavailable": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 503
+          },
+          "error": {
+            "type": "string",
+            "const": "server_unavailable"
+          },
+          "message": {
+            "type": "string",
+            "const": "The server is not ready to serve requests."
           },
           "requestId": {
             "type": "string",

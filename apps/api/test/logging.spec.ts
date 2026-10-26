@@ -2,7 +2,7 @@ import { Writable } from 'node:stream';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { LOG_DESTINATION, UNMATCHED_ROUTE } from '../src/logging/logger-options.js';
-import { neverRestored, SENTINEL, TestOnlyController } from './fixtures.js';
+import { neverRestored, SENTINEL, servingProcess, TestOnlyController } from './fixtures.js';
 
 /** Every routed write passes the CSRF checks first, test-only routes included (review R1). */
 const WRITE_HEADERS = { Origin: 'http://127.0.0.1:3100', 'X-Ruvee-Request': '1' };
@@ -38,6 +38,7 @@ describe('logs', () => {
     });
     const { createTestApp } = await import('./create-test-app.js');
     const { MaintenanceService } = await import('../src/maintenance/maintenance.service.js');
+    const { InstanceLockService } = await import('../src/database/instance-lock.service.js');
     app = await createTestApp({
       controllers: [TestOnlyController],
       override: (builder) =>
@@ -46,7 +47,9 @@ describe('logs', () => {
           .useValue(destination)
           // No database here; see http.spec.ts.
           .overrideProvider(MaintenanceService)
-          .useValue(neverRestored),
+          .useValue(neverRestored)
+          .overrideProvider(InstanceLockService)
+          .useValue(servingProcess),
     });
 
     const secretHeaders = {

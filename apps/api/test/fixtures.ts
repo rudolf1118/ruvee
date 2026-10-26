@@ -20,6 +20,9 @@ export const neverRestored = {
   gate: () => Promise.resolve(),
 };
 
+/** InstanceLockService for unit tests without a database: this process is the serving one. */
+export const servingProcess = { held: true, assertServing: () => undefined };
+
 /** Synthetic secret. It must never appear in a response or a log line. */
 export const SENTINEL = 'SENTINEL-7f3a9c-not-a-real-secret';
 

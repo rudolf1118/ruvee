@@ -254,6 +254,10 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('changed_elsewhere');
       case 'maintenance':
         return new VaultError('server_maintenance');
+      // Not this installation's serving process yet (deployment.md, one API process): as if
+      // the server could not be reached.
+      case 'server_unavailable':
+        return new VaultError('offline');
       case 'reopening':
         return new VaultError('server_reopening');
       case 'reopen_failed':

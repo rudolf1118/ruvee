@@ -13,6 +13,7 @@ import {
   type RequestWithSession,
 } from './access.decorator.js';
 import { readCookie } from './client-info.js';
+import { InstanceLockService } from '../database/instance-lock.service.js';
 import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { ROUTE_CLASS_METADATA, type RouteClass } from './route-class.js';
 import { SessionService, STEP_UP_MS } from './session.service.js';
@@ -46,6 +47,7 @@ export class AccessGuard implements CanActivate {
     private readonly sessions: SessionService,
     private readonly maintenance: MaintenanceService,
     private readonly throttle: ThrottleService,
+    private readonly instance: InstanceLockService,
     config: ConfigService<Env, true>,
   ) {
     this.publicOrigin = config.get('PUBLIC_ORIGIN', { infer: true });
@@ -89,6 +91,8 @@ export class AccessGuard implements CanActivate {
       ]) ?? 'api';
     const req = context.switchToHttp().getRequest<RequestWithSession>();
     this.noticeForwarding(req);
+    // Only the one process holding the instance lock serves (V1: one API process per database).
+    if (routeClass !== 'health') this.instance.assertServing();
     // A restored installation in review serves nothing at all, whatever the credentials, and
     // while it waits to be reopened only the reopening endpoints: restored cookies, tokens and
     // passwords cannot open it (backup-restore.md §3.6 rules 3, 4; §3.13). Decided by the matched
