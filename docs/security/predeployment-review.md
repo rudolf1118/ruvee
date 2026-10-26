@@ -5,9 +5,10 @@ not complete D-19.** It looks for defects before the synthetic private deploymen
 
 > **Remediation (2026-10-26):** milestone 1 fixed R1, R7, R8, R9 and R10 (§9); milestone 2 fixed
 > R3, R5, R6, R11, R13, R14, R15, R16, R17 and R20 (§10); the D-31 milestone fixed R2 and R12
-> with device proof of possession (§11). Their reproductions are now regression tests. **Open:**
-> R18, R19, R21, R22 and the R23 items. D-31's protocol is unreviewed, D-19 is open and real-data
-> use stays blocked.
+> with device proof of possession (§11); the final batch fixed R18, R19, R21, R22 and every R23
+> item but one (§12). Their reproductions are now regression tests. **Open:** R23's device-label
+> item (needs a decision). D-31's protocol is unreviewed, D-19 is open and real-data use stays
+> blocked. §12 has the disposition of all 23 findings.
 
 ## 1. What was reviewed
 
@@ -66,12 +67,12 @@ Synthetic data only.
 | R15 | Low                                       | **Fixed** (6ed27df); §10            | With the `docker exec` prefix, killing the client does not stop `pg_restore`; an early exit can hang LOAD |
 | R16 | Low                                       | **Fixed** (417acfe); §10            | The documented 300 requests/min per-session limit does not exist                                          |
 | R17 | Low                                       | **Fixed** (417acfe); §10            | No warning when the proxy address is unset (one global throttle bucket); IPv6 is limited per address      |
-| R18 | Low                                       | Confirmed by reading                | Extension fill checks only the field's own visibility                                                     |
-| R19 | Low                                       | Plausible                           | An extension lock during an in-flight unlock can be undone                                                |
+| R18 | Low                                       | **Fixed** (e67266f, 773626b); §12   | Extension fill checks only the field's own visibility                                                     |
+| R19 | Low                                       | **Fixed** (56731e2, 773626b); §12   | An extension lock during an in-flight unlock can be undone                                                |
 | R20 | Low                                       | **Fixed** (a916561); §10            | Recovery on a device that already holds data drops its rollback floors                                    |
-| R21 | Low                                       | Plausible                           | Concurrent pairing creates can exceed `MAX_OPEN_PAIRINGS`                                                 |
-| R22 | Low                                       | Confirmed by reading                | `startOver` ignores the conflict count; `feedImport` can queue duplicates                                 |
-| R23 | Info                                      | Confirmed by reading                | Smaller items (§2.23)                                                                                     |
+| R21 | Low                                       | **Fixed** (5d1f571); §12            | Concurrent pairing creates can exceed `MAX_OPEN_PAIRINGS`                                                 |
+| R22 | Low                                       | **Fixed** (56731e2); §12            | `startOver` ignores the conflict count; `feedImport` can queue duplicates                                 |
+| R23 | Info                                      | 9 of 10 fixed; 1 open; §12          | Smaller items (§2.23)                                                                                     |
 
 ### R1. A change of case bypasses the maintenance gate, CSRF checks and bearer parsing (High)
 
@@ -419,8 +420,8 @@ Synthetic data only.
     `r16-r17-limits.int-spec.ts`; `throttle-windows.spec.ts` for /64 keys (compressed, zoned and
     IPv4-tailed forms). Residual: the operator must still set the variable; the API cannot
     detect a proxy that strips the header.
-- **R18. Extension fill visibility** (`apps/extension/src/fill.ts:13-22`). Only the element's own style is checked: an ancestor with `opacity:0`, off-screen or clipped fields pass. Precondition: HTML injection on the exact saved origin, and a user click on Fill.
-- **R19. Extension lock race** (`apps/extension/src/background.ts:113`, `:136-147`, `:266`). An `ended` lock during an in-flight `unlock` can be followed by `rememberUnlocked` writing `AK` back. It self-corrects on the next sync. Fix: a lock generation counter or one serialized queue.
+- **R18. Extension fill visibility** (`apps/extension/src/fill.ts:13-22`). Only the element's own style is checked: an ancestor with `opacity:0`, off-screen or clipped fields pass. Precondition: HTML injection on the exact saved origin, and a user click on Fill. **Fixed (§12).**
+- **R19. Extension lock race** (`apps/extension/src/background.ts:113`, `:136-147`, `:266`). An `ended` lock during an in-flight `unlock` can be followed by `rememberUnlocked` writing `AK` back. It self-corrects on the next sync. Fix: a lock generation counter or one serialized queue. **Fixed (§12)**, wider than described: the engine itself kept running an operation on zeroed keys after a lock.
 - **R20. Recovery on a device with data drops rollback floors** (`vault-engine.ts:1914-1937`, `:2205-2212`). It accepts any keyset version and resets the checkpoint to 0, so an old keyset or state could be re-served to a device that knew better.
   - **Fixed (a916561, with R6):** the kept checkpoint and anchor are the floor for the first sync, and a
     keyset older than this browser's is refused in `recoveryBegin`, before the server changes
@@ -428,10 +429,11 @@ Synthetic data only.
     `integrity_error`/`server_behind` after recovery (before: `synced`); an older keyset →
     `integrity` and the password unchanged on the server (before: accepted). A browser with no
     data still has no floor (sync-protocol §Limits).
-- **R21. Pairing open-count race** (`apps/api/src/pairing/pairing.service.ts:51-81`). Count then insert at READ COMMITTED. It bypasses a rate limit only for an already active device.
+- **R21. Pairing open-count race** (`apps/api/src/pairing/pairing.service.ts:51-81`). Count then insert at READ COMMITTED. It bypasses a rate limit only for an already active device. **Fixed (§12).**
 - **R22. `startOver` and `feedImport`.**
   - `startOver` checks only `pendingSeen` (`vault-engine.ts:2900`), so conflict drafts are erased uncounted.
   - `feedImport` (`:2970`) can queue a batch while `pending` is non-empty, which produces spurious self-conflicts. No loss.
+  - **Fixed (§12).** The duplicate needs a commit in flight (pending empty), not a non-empty pending queue.
 
 ### R23. Info
 
@@ -526,7 +528,8 @@ Items 1 to 4 and 6 are done (milestone 1, §9). Items 7, 8, 9 and 10 are done (m
 9. **R3, R11, R16, R17:** check the throttle at finish, per-IP wrong-code limits, the per-session limit, and a proxy configuration warning.
 10. **R13, R14, R15:** reopening transaction re-checks, cache only `open`, and LOAD termination.
 
-**Later (P2):** R18, R19, R21, R22, the R23 items, and the coverage gaps of §4.
+**Later (P2):** R18, R19, R21, R22, the R23 items, and the coverage gaps of §4. Done in §12,
+except R23's device-label item.
 
 ## 8. Can a synthetic private deployment rehearsal proceed?
 
@@ -726,3 +729,193 @@ by `AK` is refused with `device_key_mismatch` or `device_proof_failed`.
 
 **Still open:** R18, R19, R21, R22 and the R23 items (P2). D-19 stays open and real-data use stays
 blocked.
+
+## 12. Final remediation batch (2026-10-27): R18, R19, R21, R22, R23, D-31 verification
+
+Local commits on `vault/web-vault`, none pushed. Every regression test below was run against the
+code before its fix (old source files restored temporarily, or, for the milestone-1 empty-target
+check, a `pg_tables`-only stand-in) and failed there, unless the entry says otherwise.
+
+| Commit    | Scope                   | Change                                                                                      |
+| --------- | ----------------------- | ------------------------------------------------------------------------------------------- |
+| `56731e2` | R19, R22, R23 (zeroing) | Lock-aware engine and extension worker; start-over conflict count; import feed; key zeroing |
+| `e67266f` | R18                     | Fill requires the field to be visible to the user                                           |
+| `82183d7` | R23 (pairing)           | Malformed pairing requests burned and reported; A shows its own receipt time                |
+| `5d1f571` | R21, R23 (CSRF), D-31   | Account-row lock for pairing; extension CSRF per route; nonce issue under the session lock  |
+| `fa73e0c` | topology                | One API process per database, enforced with an advisory lock                                |
+| `74ab988` | R23 (doc)               | Extension sender filtering described as built                                               |
+| `fbb72fb` | D-31                    | Sequential migration, logout zeroing, a lost session proof                                  |
+| `773626b` | R18, R19, worker stops  | Real-Chromium extension tests                                                               |
+
+### 12.1 Findings of this batch
+
+**R18. Extension fill visibility.** Boundary: the extension's injected fill function against a
+hostile page on the exact saved origin. The function checked only the field's own style.
+
+- Fix: every ancestor displayed and visible, effective opacity ≥ 0.5, at least 8 × 8 px, the
+  centre inside the viewport (a field below the fold is scrolled to first), and the field the
+  topmost element at its centre.
+- Evidence: `fill.test.ts` (ancestor opacity 0 and 0.27, ancestor `visibility:hidden`, 1 px,
+  off screen, covered, nothing on top) and extension e2e "R18" (a real page with each case on
+  the saved origin). The old function filled all of them.
+- Residual: a determined page can still make a field look like something else (a visible field
+  with a misleading label). The fill stays manual, per click, on the exact origin.
+
+**R19. A lock during work in flight.** Boundary: the lock (INV-15) in the shared engine and the
+extension worker. Reproduced in two forms. In the extension, an unlock the lock overtook finished
+afterwards and stored `AK` back in `chrome.storage.session`. Wider than reported: in the engine,
+an operation waiting on the network or IndexedDB kept running after `wipeMemory`, so it could
+install a session again, or seal records under the zeroed keys.
+
+- Fix: the engine counts locks; an operation that began before the latest lock has its writes
+  refused (`putDevice`, `apply`, `wipe`), and whatever it unlocked is cleared and reported as
+  `locked`. The worker also counts locks and never stores `AK` after one. Logout now zeroes the
+  engine's keys too.
+- Evidence: `p2-client.test.ts` (a lock before the session exists, after it exists, during a
+  sync), and extension e2e "R19" (a lock sent at eight delays after an unlock; the original
+  engine and worker ended unlocked).
+- Residual: the web app terminates its worker 250 ms after asking it to wipe; a write already
+  inside an IndexedDB transaction when the lock arrives completes with intact keys.
+
+**R21. Pairing open-count race.** Boundary: per-account pairing limits (authentication.md §7).
+Reproduced: eight parallel creates made eight pairings.
+
+- Fix: the create transaction locks the account row first.
+- Evidence: `p2-api.int-spec.ts` (eight parallel creates make exactly three; rounds of parallel
+  creates stop at exactly ten an hour). Before: eight open pairings, and twelve in an hour.
+
+**R22. Start-over and import counts.** Boundary: the "never erase silently" rule of the restore
+help, and import integrity.
+
+- Fix: `startOver` requires the conflict count the user was shown as well as the pending count
+  (the web app sends both). An import batch is fed only into an empty pending queue with no
+  commit in flight.
+- Evidence: `p2-client.test.ts` (a device with one conflict and no pending edit was erased; a
+  dropped connection left a batch in flight that was queued a second time).
+
+**R23. Info items, one by one.**
+
+| Item                                                          | Disposition                                                                                                                                                                                                       |
+| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EXTENSION_ORIGINS` passes CSRF on every `none` route         | **Fixed** (`5d1f571`): only `@ExtensionMayCall` handlers (login start and finish, refresh). Test: registration, recovery and reopening from the extension origin are `csrf_rejected`.                             |
+| The empty-target check counts only `pg_tables`                | **Fixed in milestone 1** (R8 work); regression added (`5d1f571`): a function, view, type, domain, schema, sequence or large object alone makes the target non-empty. Failed against a `pg_tables`-only check.     |
+| Guard tables queried unqualified                              | **Fixed in milestone 1** (R8): every query names `ruvee_control`; the existing regression plants `public.restore_guard` (`r7-r8-backup.int-spec.ts`).                                                             |
+| Key-zeroing gaps (`recovery`, `kitRotation`, `openKeyset`)    | **Fixed** (`56731e2`): `wipeMemory` zeroes an unfinished setup and recovery and drops a kit rotation; failed unlocks, recoveries and reopenings zero what they opened. Tests in `p2-client.test.ts`.              |
+| The approval sends no device `label`                          | **Open, requires a decision.** No client names devices yet; the device list shows the platform. Implementing it is a product feature (naming on A, encrypting, displaying). Decide: implement, or amend the spec. |
+| `requestedAt` is not covered by the request MAC               | **Fixed** without a protocol change (`82183d7`): A shows the time it received the verified request, not the server's. The MAC format (`pair-req-2`, D-31) is unchanged.                                           |
+| Malformed `epk` or platform is not burned and leaves no event | **Fixed** (`82183d7`): a key of the wrong size, an unknown platform or an unparsable reply counts as a failed MAC: burned, cancelled with `mac_failed`.                                                           |
+| The extension design says `sender.tab` messages are dropped   | **Fixed** (`74ab988`): the document describes the `sender.id` and `sender.origin` check, and why `sender.tab` cannot be used.                                                                                     |
+
+That is ten R23 items: nine closed, one open.
+
+### 12.2 D-31 verification
+
+Traced through the engine, the API and the browser suites:
+
+- **Recovery on a fresh browser** (only the Recovery Kit). The recovery start creates a pending
+  device with a new id; the engine generates a new `DSK` at completion; the server checks the
+  `AVSK` proof against the stored `AVPK` and sets the new `DPK`. `AVPK` is unchanged. Tests:
+  `recovery.int-spec.ts` (new key enrolled, `AVPK` unchanged, a different `AK` refused); web
+  `test:vault` "Device C" in three engines.
+- **Reopening through the Recovery Kit on a fresh browser.** It does **not** use a restored
+  device key: the engine generates a new one, like a recovery (`recoveryFinish`, `r.reopen ===
+'recovery'`); only the password path proves the restored key. The snapshot device's key and
+  `AVPK` stay as they were. Tests: `reopen.int-spec.ts` (Recovery Kit path), web `test:restore`
+  "reopening on a new browser with the Recovery Kit" in three engines. The earlier summary was
+  right for the password path only; the fresh-browser path is not broken.
+- **Sequential migration of pre-D-31 devices.** Two devices, each with an unsynced edit, migrate
+  in turn. Each recovery rotates the kit, and the first kit is refused afterwards. Each keeps its
+  pending edit and enrolls its own key; the first sets `AVPK` and the second leaves it
+  (`d31-device-proof.test.ts`).
+- **Refresh.** Pre-proof and proven token sessions keep their status across refreshes, including
+  a session proven after login (`r2-r3-login.int-spec.ts`, `p2-api.int-spec.ts`).
+- **Lock, logout and key cleanup.** A locked engine cannot sign; lock and logout zero `DSK` in
+  memory and keep only the sealed record (`d31-device-proof.test.ts`).
+- **Concurrency.** Nonce issue is now under the session row lock: parallel requests leave
+  exactly one open nonce, and only the last issued works (before: six requests left six open). Concurrent
+  consumption: exactly one wins (`r2-r3-login.int-spec.ts`).
+- **Lost responses.** A revocation sent again after its reply was lost changes nothing and
+  records one event. A session proof sent again is `forbidden` and leaves the session proven. In
+  the engine, a lost session-proof reply ends in one proven session through a new login with the
+  device key.
+- **Caller-supplied `AVPK`.** Only registration (setup token), recovery completion and reopening
+  completion carry an `AVPK`, and the latter two accept it only if it equals the stored one. On an
+  account with no stored `AVPK`, a correct `DSK` and `AVSK` proof for a kit change is refused, and
+  nothing establishes one from the request (`p2-api.int-spec.ts`). Hardened: which operations
+  need the `AVSK` proof is fixed per operation (`NEEDS_ACCOUNT_KEY_PROOF`), never inferred from
+  the request body.
+- **Known D-31 limitation (development accounts only).** On an account from before D-31, the first
+  recovery or kit reopening establishes `AVPK`. Someone holding only that account's `RAK`, without
+  `AK`, could therefore register their own `AVPK` there (device-proof.md §8). No account created
+  since D-31 has this property. **Not accepted here:** recorded for D-19, and it has to be closed
+  or explicitly accepted by the owner before any account from before D-31 holds real data.
+
+### 12.3 Deployment topology
+
+V1 is documented as a single API instance (authentication.md §7). Login states, per-address
+windows and per-session limits are in process memory. Multi-process operation is **not**
+supported, so it is now enforced instead of exercised:
+
+- The serving process holds a PostgreSQL session advisory lock. A second process on the same
+  database answers liveness only; readiness is 503 and every route is `503 server_unavailable`.
+  It takes over within seconds when the first stops (`topology.int-spec.ts`).
+- Startup still does not wait for the database. A lost lock connection is retried; nothing is
+  served meanwhile.
+- README "Deployment topology": one process per database, a direct connection or a session-mode
+  pooler (a transaction-mode pooler does not hold session advisory locks), no replicas.
+
+Shared rate limiting, maintenance transitions and nonce consumption across two processes were
+therefore not exercised. The guarantees they would need do not exist in V1.
+
+### 12.4 Checks run
+
+2026-10-27, at `773626b`, task-owned PostgreSQL 18 container, `pg_dump`/`pg_restore` 18 in it:
+
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build`: pass.
+- `pnpm test`: pass. Per package: contracts 41, crypto 67, API 84, extension 29, web 43, vault
+  92 (+1 skipped fixture regenerator).
+- `pnpm test:integration`: 25 files, 175 tests: pass. No `ruvee_it_*`/`ruvee_e2e_*` database or
+  loader role was left afterwards.
+- Browser, each in **Chromium, Firefox and Playwright WebKit** (not Safari): `test:vault` 1,
+  `test:restore` 2, `test:import` 1: pass.
+- Chromium only: extension suite 13 (four new), `test:headers` 33, `test:e2e` 8 (+4 skipped as
+  before): pass.
+- `test:caddy` (Caddy 2.11.7): 87 checks: pass.
+
+**Not run, or partly covered:**
+
+- The extension in Firefox or WebKit: it is a Chromium MV3 extension.
+- Safari itself.
+- Two API processes serving at once, by design (§12.3).
+- Fuzzing and load testing.
+- Remote CI: nothing was pushed, and its status is unchanged.
+- The R19 browser test needs a lock to land mid-unlock at one of eight delays. It did in every
+  run here, but it depends on timing; the engine tests hold the operation open deterministically.
+- The service-worker stop during a fill accepts either outcome (filled once, or not at all). The
+  run here does not show which one happened.
+
+### 12.5 Disposition of all 23 findings
+
+**Fixed and tested:** R1, R7, R8, R9, R10 (§9); R3, R5, R6, R11, R13, R14, R15, R16, R17, R20
+(§10); R2, R12 (§11); R18, R19, R21, R22 (§12); R23 except the device label (nine items, §12.1).
+
+**Open:** R23, device label (see "Requires a decision").
+
+**Accepted limitation with explicit existing authorization:** none is accepted in this report.
+Limitations that rest on an owner decision already recorded elsewhere: `AK` in
+`chrome.storage.session` while unlocked (D-27); the unreviewed pairing composition (D-21);
+reopening codes that a network attacker can use up (D-30). Each is still subject to D-19.
+
+**Requires a decision:**
+
+1. R23 device label: implement naming on the approving device, or amend device-enrollment.md.
+2. D-31 limitation above: how accounts created before D-31 get a trusted `AVPK` if they are ever
+   to hold real data (today they are synthetic development accounts).
+3. D-19: who reviews, and when. The checklist for it is
+   [follow-up-review-checklist.md](follow-up-review-checklist.md).
+
+**Residual risks not specific to one finding** (T-14, INV-24): a pre-proof session can read the
+encrypted key material; code running in the unlocked origin can sign; a stolen proven session can
+commit until it is revoked; D-31 is unreviewed.
+
+Real-data use stays blocked: D-19 is open, and nothing in this report is a security approval.

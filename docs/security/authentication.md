@@ -210,7 +210,10 @@ somewhere else. A cookie request must always come from `PUBLIC_ORIGIN`.
 ## 7. Rate limiting and brute-force protection
 
 There is no Redis. V1 runs a single API instance; counters are kept in PostgreSQL for anything
-that must survive a restart, and in memory for general request rates.
+that must survive a restart, and in memory for general request rates. As built (2026-10-27): the
+single instance is enforced. The serving process holds a PostgreSQL advisory lock, and another
+process on the same database serves nothing (`503 server_unavailable`; README, "Deployment
+topology").
 
 | Target                           | Limit (proposed)                                                                                 | Storage    |
 | -------------------------------- | ------------------------------------------------------------------------------------------------ | ---------- |
