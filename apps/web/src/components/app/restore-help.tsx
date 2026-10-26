@@ -14,6 +14,7 @@ const RESTORE_REASONS = new Set(['server_behind', 'history_rewritten', 'keyset_r
 export function needsRestoreHelp(status: SyncStatus, sessionProblem: string | undefined): boolean {
   return (
     status.state === 'maintenance' ||
+    status.state === 'reopening' ||
     sessionProblem === 'device_unknown' ||
     (status.state === 'integrity_error' && RESTORE_REASONS.has(status.integrity ?? ''))
   );
@@ -23,6 +24,8 @@ export function needsRestoreHelp(status: SyncStatus, sessionProblem: string | un
 export function restoreExplanation(status: SyncStatus, sessionProblem?: string): string {
   if (status.state === 'maintenance')
     return 'The server is being restored by its owner and is not available yet. This device keeps its local copy, read-only, and changes nothing until the server opens again.';
+  if (status.state === 'reopening')
+    return 'The server was restored from a backup and waits for its owner to reopen it, with a code from the server and the master password from the time of the backup. Until then this device keeps its local copy, read-only.';
   const restored = status.serverRestoredAtMs !== undefined;
   const why = restored
     ? 'The server reports that it was restored from a backup, which can be older than this device.'

@@ -244,6 +244,10 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('changed_elsewhere');
       case 'maintenance':
         return new VaultError('server_maintenance');
+      case 'reopening':
+        return new VaultError('server_reopening');
+      case 'reopen_failed':
+        return new VaultError('reopen_failed');
       default:
         return new VaultError('internal');
     }
@@ -276,6 +280,8 @@ interface PendingRecovery {
   readonly keysetVersion: number;
   readonly keyset: Uint8Array;
   readonly rowVersion: number;
+  /** Set for a reopening (backup-restore.md §3.13): which path, and so which endpoints. */
+  readonly reopen?: 'password' | 'recovery';
   complete?: {
     readonly registrationRecord: string;
     readonly saltPw: Uint8Array;
@@ -697,8 +703,8 @@ export class VaultEngine {
       if (sessionProblem === undefined) {
         secretKeyUpdated = await this.refreshKeyset(session, password);
         await this.syncNow();
-      } else if (sessionProblem === 'maintenance') {
-        session.state = 'maintenance';
+      } else if (sessionProblem === 'maintenance' || sessionProblem === 'reopening') {
+        session.state = sessionProblem;
       } else session.state = sessionProblem === 'offline' ? 'offline' : 'session_expired';
       return {
         ...this.unlockedView(),
@@ -839,6 +845,7 @@ export class VaultEngine {
       const e = vaultErrorFrom(error);
       if (e.code === 'offline') return 'offline';
       if (e.code === 'server_maintenance') return 'maintenance';
+      if (e.code === 'server_reopening') return 'reopening';
       if (e.code === 'device_revoked') return this.revoked();
       if (e.code !== 'session_expired') return 'offline';
     }
@@ -855,6 +862,7 @@ export class VaultEngine {
       if (e.code === 'rate_limited') return 'rate_limited';
       if (e.code === 'offline') return 'offline';
       if (e.code === 'server_maintenance') return 'maintenance';
+      if (e.code === 'server_reopening') return 'reopening';
       return 'login_failed';
     }
   }
@@ -1383,6 +1391,7 @@ export class VaultEngine {
     if (session.state === 'integrity_error') throw new VaultError('read_only');
     // Nothing new is queued against a server in restore review (backup-restore.md §3.5).
     if (session.state === 'maintenance') throw new VaultError('server_maintenance');
+    if (session.state === 'reopening') throw new VaultError('server_reopening');
     // The import is the only writer until it is complete (backup-restore.md §4.4a).
     if (session.importState?.state === 'uploading') throw new VaultError('import_in_progress');
     return session;
@@ -1849,9 +1858,14 @@ export class VaultEngine {
   // ---- Recovery with the Recovery Kit (account-recovery.md §3, D-22) ----
 
   /** Steps 1 to 3: checks the key offline, proves it with `RAK`, unwraps `AK` and the keyset. */
-  recoveryBegin(params: { username: string; recoveryKey: string }): Promise<true> {
+  recoveryBegin(params: {
+    username: string;
+    recoveryKey: string;
+    reopenCode?: string;
+  }): Promise<true> {
     return this.exclusive(async () => {
       const { crypto, api } = this.deps;
+      const reopening = params.reopenCode !== undefined;
       const username = normalizeUsername(params.username);
       if (!username) throw new VaultError('recovery_failed');
       let rk: Uint8Array;
@@ -1864,14 +1878,26 @@ export class VaultEngine {
       rk.fill(0);
       // On a device that is already set up, recovery keeps its id (the forgotten-password case).
       const local = await this.deps.store.device();
+      // Reopening with the kit starts this browser from nothing, so it is only for a browser
+      // with no local data: one that has data reopens with its password (§3.13), and keeps it.
+      if (reopening && local) throw new VaultError('local_data_present');
       const deviceId = local?.username === username ? local.deviceId : crypto.generateUuid();
       try {
-        const started = await api.recoveryStart({
+        const body = {
           username,
           recoveryAuthKey: toB64(keys.recoveryAuthKey),
-          device: { id: deviceId, platform: 'web' },
-        });
-        const material = await api.recoveryMaterial();
+          device: { id: deviceId, platform: 'web' as const },
+        };
+        const started = params.reopenCode
+          ? await api.reopenRecoveryStart({ ...body, reopenCode: params.reopenCode })
+          : await api.recoveryStart(body);
+        const material = reopening
+          ? await (async () => {
+              const m = await api.reopenMaterial();
+              if (!m.wrappedAkRecovery) throw new VaultError('integrity');
+              return { ...m, wrappedAkRecovery: m.wrappedAkRecovery };
+            })()
+          : await api.recoveryMaterial();
         const accountId = uuidToBytes(started.accountId);
         const accountKeyId = fromB64(material.akId);
         let accountKey: Uint8Array;
@@ -1911,6 +1937,7 @@ export class VaultEngine {
           keysetVersion: material.keysetVersion,
           keyset: fromB64(material.keyset),
           rowVersion: material.rowVersion,
+          ...(reopening ? { reopen: 'recovery' as const } : {}),
         };
       } catch (error) {
         if (error instanceof ApiError && error.code === 'recovery_failed')
@@ -1920,6 +1947,103 @@ export class VaultEngine {
         keys.recoveryWrapKey.fill(0);
         keys.recoveryAuthKey.fill(0);
       }
+      return true as const;
+    });
+  }
+
+  /**
+   * Reopening, password path (backup-restore.md §3.13), on this unlocked device: the host code
+   * and OPAQUE with the snapshot-time password authenticate; the server's snapshot-time password
+   * wrap then opens only with this device's own `SK`. The code and the password alone open
+   * nothing. Nothing local changes here; the new password and kit follow as in recovery.
+   */
+  reopenBegin(params: { reopenCode: string; password: string }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      const { crypto, api, opaque } = this.deps;
+      const device = session.device;
+      const enrolled = device.enrolled;
+      let password: string;
+      try {
+        password = normalizePassword(params.password);
+      } catch {
+        throw new VaultError('reopen_failed');
+      }
+      let material;
+      try {
+        const client = opaque.startLogin(password);
+        const start = await api.reopenLoginStart({
+          reopenCode: params.reopenCode,
+          username: device.username,
+          startLoginRequest: client.startLoginRequest,
+          deviceId: device.deviceId,
+        });
+        const finish = opaque.finishLogin(client.clientLoginState, start.loginResponse, password);
+        if (finish === undefined) throw new VaultError('reopen_failed');
+        await api.reopenLoginFinish({ loginId: start.loginId, finishLoginRequest: finish });
+        material = await api.reopenMaterial();
+      } catch (error) {
+        throw vaultErrorFrom(error);
+      }
+      const accountId = uuidToBytes(device.accountId);
+      const p = material.password;
+      if (!p) throw new VaultError('integrity');
+      const auk = crypto.deriveAccountUnlockKey({
+        password,
+        passwordSalt: fromB64(p.saltPw),
+        profile: p.kdfProfile,
+        secretKey: enrolled.secretKey,
+        accountId,
+      });
+      let accountKey: Uint8Array;
+      try {
+        accountKey = crypto.unwrapAccountKey({
+          accountUnlockKey: auk,
+          accountId,
+          accountKeyId: fromB64(material.akId),
+          accountKeyEpoch: material.akEpoch,
+          profile: p.kdfProfile,
+          passwordSalt: fromB64(p.saltPw),
+          envelope: fromB64(p.wrappedAkPassword),
+        });
+      } catch {
+        // OPAQUE accepted the password, so this device's SK is not the snapshot's: it was
+        // replaced after the backup. Only the Recovery Kit path can reopen (on a new browser).
+        throw new VaultError('reopen_needs_kit');
+      } finally {
+        auk.fill(0);
+      }
+      let keyset;
+      try {
+        keyset = crypto.openKeyset({
+          accountKey,
+          accountKeyId: fromB64(material.akId),
+          accountId,
+          keysetVersion: material.keysetVersion,
+          envelope: fromB64(material.keyset),
+        });
+      } catch {
+        throw new VaultError('integrity');
+      }
+      const vault = keyset.vaults[0];
+      if (vault.vaultId !== enrolled.vaultId || !same(accountKey, session.accountKey))
+        throw new VaultError('integrity');
+      this.recovery = {
+        username: device.username,
+        accountId: device.accountId,
+        deviceId: device.deviceId,
+        accountKey,
+        accountKeyId: fromB64(material.akId),
+        accountKeyEpoch: material.akEpoch,
+        secretKey: keyset.secretKey,
+        vaultId: vault.vaultId,
+        vaultKey: vault.vk,
+        vaultKeyId: vault.vkId,
+        keysetVersion: material.keysetVersion,
+        keyset: fromB64(material.keyset),
+        rowVersion: material.rowVersion,
+        reopen: 'password',
+      };
       return true as const;
     });
   }
@@ -1935,9 +2059,9 @@ export class VaultEngine {
       const registration = opaque.startRegistration(password);
       let response: string;
       try {
-        ({ registrationResponse: response } = await api.recoveryPasswordStart(
-          registration.registrationRequest,
-        ));
+        ({ registrationResponse: response } = await (r.reopen
+          ? api.reopenPasswordStart(registration.registrationRequest)
+          : api.recoveryPasswordStart(registration.registrationRequest)));
       } catch (error) {
         throw vaultErrorFrom(error);
       }
@@ -2042,8 +2166,9 @@ export class VaultEngine {
       const r = this.recovery;
       const c = r?.complete;
       if (!r || !c?.verified) throw new VaultError('kit_mismatch');
+      const complete = r.reopen ? this.deps.api.reopenComplete : this.deps.api.recoveryComplete;
       try {
-        await this.deps.api.recoveryComplete({
+        await complete({
           registrationRecord: c.registrationRecord,
           kdfProfile: 1,
           saltPw: toB64(c.saltPw),
@@ -2056,6 +2181,7 @@ export class VaultEngine {
       } catch (error) {
         throw vaultErrorFrom(error);
       }
+      if (r.reopen === 'password') return this.finishReopenOnThisDevice(c);
       const device: DeviceRecord & { enrolled: EnrolledKeys } = {
         v: 1,
         accountId: r.accountId,
@@ -2101,6 +2227,31 @@ export class VaultEngine {
       const view = this.unlockedView();
       return { ...view, recovered: { lastChange: view.sync.lastChange } };
     });
+  }
+
+  /**
+   * After a password-path reopening: only this device's own password wrap is replaced. Its items,
+   * pending edits and checkpoint stay exactly as they were (backup-restore.md §3.13), and the next
+   * sync decides, as always, whether the server is behind it.
+   */
+  private async finishReopenOnThisDevice(
+    c: NonNullable<PendingRecovery['complete']>,
+  ): Promise<UnlockedVault> {
+    const session = this.requireSession();
+    const enrolled: EnrolledKeys = {
+      ...session.device.enrolled,
+      kdfProfile: 1,
+      saltPw: c.saltPw,
+      wrappedAkPassword: c.wrappedAkPassword,
+    };
+    const device = { ...session.device, enrolled };
+    await this.deps.store.putDevice(device);
+    session.device = device;
+    this.recovery = undefined;
+    this.pendingPassword = undefined;
+    session.state = 'syncing';
+    await this.syncNow();
+    return { ...this.unlockedView(), reopened: true };
   }
 
   acknowledgeRecoveryNotice(): Promise<true> {
@@ -2921,6 +3072,8 @@ export class VaultEngine {
         this.deps.emit({ event: 'ended', reason: 'session_expired' });
       } else if (e.code === 'server_maintenance') {
         session.state = 'maintenance';
+      } else if (e.code === 'server_reopening') {
+        session.state = 'reopening';
       } else {
         session.state = 'offline';
       }

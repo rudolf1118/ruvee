@@ -160,8 +160,9 @@ export class RestoreStack {
     return run(['dist/admin/cli.js', 'restore-review'], { RESTORE_DATABASE_URL: urlFor(database) });
   }
 
-  complete(database: string, restoreId: string): void {
-    run(
+  /** `restore-complete`: ends the review; returns the reopening code it prints once. */
+  complete(database: string, restoreId: string): string {
+    const out = run(
       [
         'dist/admin/cli.js',
         'restore-complete',
@@ -172,6 +173,15 @@ export class RestoreStack {
       ],
       { RESTORE_DATABASE_URL: urlFor(database) },
     );
+    return /\n\s+(RC1-[A-Za-z0-9_-]{43})\n/.exec(out)?.[1] ?? '';
+  }
+
+  /** `restore-reopen-code`: the host retry path; revokes the previous code. */
+  reopenCode(database: string, restoreId: string): string {
+    const out = run(['dist/admin/cli.js', 'restore-reopen-code', '--restore-id', restoreId], {
+      RESTORE_DATABASE_URL: urlFor(database),
+    });
+    return /\n\s+(RC1-[A-Za-z0-9_-]{43})\n/.exec(out)?.[1] ?? '';
   }
 
   /** Stops the API and removes exactly what this stack created. */

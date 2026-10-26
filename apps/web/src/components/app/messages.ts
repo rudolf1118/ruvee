@@ -67,6 +67,14 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return "The server's copy of your keys didn't pass Ruvee's checks. Nothing was changed.";
     case 'server_maintenance':
       return 'The server is being restored by its owner and is not available yet. Your local copy is kept, read-only.';
+    case 'server_reopening':
+      return 'The server was restored and waits for its owner to reopen it. Your local copy is kept, read-only.';
+    case 'reopen_failed':
+      return "That reopening code, username or credential doesn't work. Check them; after five failures the code stops working and the server's owner must make a new one.";
+    case 'reopen_needs_kit':
+      return 'This device has a newer Secret Key than the backup, so it cannot reopen with the password. Reopen from a new browser with your Recovery Kit (welcome screen).';
+    case 'local_data_present':
+      return 'This browser holds a vault. Reopen from it with your master password instead, or use a browser with no Ruvee data for the Recovery Kit.';
     case 'export_first':
       return 'Download a verified copy first, or choose to erase without one.';
     case 'internal':

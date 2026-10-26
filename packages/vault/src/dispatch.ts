@@ -33,6 +33,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   pairingJoin: (e, p: Parameters<VaultEngine['pairingJoin']>[0]) => e.pairingJoin(p),
   pairingWait: (e) => e.pairingWait(),
   recoveryBegin: (e, p: Parameters<VaultEngine['recoveryBegin']>[0]) => e.recoveryBegin(p),
+  reopenBegin: (e, p: Parameters<VaultEngine['reopenBegin']>[0]) => e.reopenBegin(p),
   recoverySetPassword: (e, p: Parameters<VaultEngine['recoverySetPassword']>[0]) =>
     e.recoverySetPassword(p),
   recoveryVerifyKit: (e, p: Parameters<VaultEngine['recoveryVerifyKit']>[0]) =>

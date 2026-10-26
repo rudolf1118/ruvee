@@ -19,7 +19,7 @@ import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
 import { AddDevicePanel } from './pairing';
 import { PendingDeviceScreen } from './pending-device';
-import { RecoveryFlow } from './recovery-flow';
+import { RecoveryFlow, type RecoveryMode } from './recovery-flow';
 import { Notice } from './fields';
 import { Button } from '../ui/button';
 import { relativeTime } from './view-model';
@@ -40,7 +40,7 @@ type Screen =
   | { name: 'login' }
   | { name: 'pending'; username: string }
   | { name: 'locked'; username: string; notice?: string }
-  | { name: 'recovery'; username?: string; back: Screen }
+  | { name: 'recovery'; username?: string; mode?: RecoveryMode; back: Screen }
   | { name: 'export-viewer' }
   | { name: 'restore-setup' }
   | { name: 'unlocked'; vault: UnlockedVault; startImport?: boolean };
@@ -142,6 +142,9 @@ export function VaultApp() {
           onOpenExport={() => {
             setScreen({ name: 'export-viewer' });
           }}
+          onReopen={() => {
+            setScreen({ name: 'recovery', mode: 'reopen-kit', back: screen });
+          }}
         />
       );
     case 'export-viewer':
@@ -176,6 +179,7 @@ export function VaultApp() {
         <RecoveryFlow
           client={client}
           {...(screen.username ? { initialUsername: screen.username } : {})}
+          {...(screen.mode ? { mode: screen.mode } : {})}
           onCancel={() => {
             setScreen(screen.back);
           }}
@@ -242,6 +246,14 @@ export function VaultApp() {
           onLock={(notice) => {
             void lock(screen.vault.username, notice);
           }}
+          onReopen={() => {
+            setScreen({
+              name: 'recovery',
+              mode: 'reopen-password',
+              username: screen.vault.username,
+              back: screen,
+            });
+          }}
         />
       );
     default:
@@ -254,11 +266,14 @@ function UnlockedApp({
   vault,
   startImport,
   onLock,
+  onReopen,
 }: {
   client: VaultClient;
   vault: UnlockedVault;
   startImport: boolean;
   onLock: (notice?: string) => void;
+  /** The restored server waits to be reopened: the password path on this device (§3.13). */
+  onReopen: () => void;
 }) {
   const [items, setItems] = useState<readonly ItemSummary[]>(vault.items);
   const [status, setStatus] = useState<SyncStatus>(vault.sync);
@@ -358,7 +373,10 @@ function UnlockedApp({
       : []),
   ].filter((n) => !dismissed.includes(n.id));
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
-  const readOnly = status.state === 'integrity_error' || status.state === 'maintenance';
+  const readOnly =
+    status.state === 'integrity_error' ||
+    status.state === 'maintenance' ||
+    status.state === 'reopening';
   const restoreHelp = needsRestoreHelp(status, vault.sessionProblem);
 
   return (
@@ -372,6 +390,11 @@ function UnlockedApp({
               <Notice key={n.id} tone={n.tone}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span>{n.text}</span>
+                  {n.id === 'reopen' ? (
+                    <Button size="sm" variant="primary" onClick={onReopen}>
+                      Reopen the server
+                    </Button>
+                  ) : null}
                   {n.id === 'restore' ? (
                     <Button
                       size="sm"
@@ -587,6 +610,12 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       tone: 'caution',
       text: `Your Recovery Kit was used ${relativeTime(status.recoveryUsedAtMs)}. If that wasn't you, someone else has your kit and can open your vault.`,
     });
+  if (vault.reopened)
+    out.push({
+      id: 'reopened',
+      tone: 'brand',
+      text: 'The server is open again, with your new master password and Recovery Kit. If a device was lost, also replace your Secret Key in Security.',
+    });
   if (vault.passwordUpdated)
     out.push({
       id: 'password-updated',
@@ -611,7 +640,13 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       tone: 'brand',
       text: `Import complete: all ${String(status.import.total)} items from the export of ${new Date(status.import.sourceAsOfMs).toLocaleString()} are in this vault.`,
     });
-  if (needsRestoreHelp(status, vault.sessionProblem))
+  if (status.state === 'reopening')
+    out.push({
+      id: 'reopen',
+      tone: 'caution',
+      text: restoreExplanation(status, vault.sessionProblem),
+    });
+  else if (needsRestoreHelp(status, vault.sessionProblem))
     out.push({
       id: 'restore',
       tone: 'caution',

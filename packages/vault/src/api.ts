@@ -11,6 +11,8 @@ import {
   loginStartResponseSchema,
   recoveryMaterialResponseSchema,
   recoveryStartResponseSchema,
+  reopenMaterialResponseSchema,
+  reopenStartResponseSchema,
   pairingStateResponseSchema,
   reauthFinishResponseSchema,
   registerStartResponseSchema,
@@ -30,6 +32,8 @@ import {
   type RecoveryCompleteRequest,
   type RecoveryKeyRotateRequest,
   type RecoveryStartRequest,
+  type ReopenLoginStartRequest,
+  type ReopenRecoveryStartRequest,
   type ReauthStartRequest,
   type RegisterFinishRequest,
   type RegisterStartRequest,
@@ -186,6 +190,20 @@ export function createApi(t: Transport) {
       }),
     recoveryComplete: (body: RecoveryCompleteRequest) =>
       send('POST', '/recovery/complete', sessionResponseSchema, body),
+    // Reopening a restored installation (backup-restore.md §3.13). The code goes in the body.
+    reopenLoginStart: (body: ReopenLoginStartRequest) =>
+      send('POST', '/reopen/login/start', loginStartResponseSchema, body),
+    reopenLoginFinish: (body: LoginFinishRequest) =>
+      send('POST', '/reopen/login/finish', reopenStartResponseSchema, body),
+    reopenRecoveryStart: (body: ReopenRecoveryStartRequest) =>
+      send('POST', '/reopen/recovery/start', reopenStartResponseSchema, body),
+    reopenMaterial: () => send('GET', '/reopen/material', reopenMaterialResponseSchema),
+    reopenPasswordStart: (registrationRequest: string) =>
+      send('POST', '/reopen/password/start', registerStartResponseSchema, {
+        registrationRequest,
+      }),
+    reopenComplete: (body: RecoveryCompleteRequest) =>
+      send('POST', '/reopen/complete', sessionResponseSchema, body),
     pairingCreate: (pairingId: string) =>
       send('POST', '/pairings', z.strictObject({ expiresAt: z.iso.datetime() }), { pairingId }),
     pairingState: (pairingId: string) =>

@@ -48,6 +48,12 @@ export class FakeServer {
   lastRestore: { restoredAt: string; restoreId: string } | null = null;
   /** While set, every request fails as a server in restore review does (503 maintenance). */
   maintenance = false;
+  /**
+   * While set, the server waits to be reopened with this code (backup-restore.md §3.13): every
+   * route but the reopening ones fails with 503 reopening.
+   */
+  reopenCode: string | undefined;
+  private reopenConsumed = false;
   recoverySessions = new Set<string>();
   rowVersion = 1;
   /** Stands in for the OPAQUE record: which password the server would accept. */
@@ -114,6 +120,13 @@ export class FakeServer {
     this.lastRestore = { restoredAt: new Date().toISOString(), restoreId };
   }
 
+  /** A reviewed restore that waits to be reopened with `code`. */
+  restoreReopening(state: FakeServerState, restoreId: string, code: string): void {
+    this.restoreReviewed(state, restoreId);
+    this.reopenCode = code;
+    this.reopenConsumed = false;
+  }
+
   get currentSeq(): number {
     return this.manifests.length;
   }
@@ -126,9 +139,10 @@ export class FakeServer {
     throw new ApiError(status, code, details, undefined);
   }
 
-  private check(body?: unknown) {
+  private check(body?: unknown, reopenRoute = false) {
     if (this.offline) throw new NetworkError('offline');
     if (this.maintenance) this.fail(503, 'maintenance');
+    if (this.reopenCode !== undefined && !reopenRoute) this.fail(503, 'reopening');
     if (body !== undefined) this.received.push(JSON.stringify(body));
   }
 
@@ -139,6 +153,13 @@ export class FakeServer {
     let loginDevice: string | undefined;
     let loginTag: string | undefined;
     let reauthTag: string | undefined;
+    let reopenLogin = false;
+    let reopenVia: 'password' | 'recovery' | undefined;
+    const consumeCode = (code: string) => {
+      if (this.reopenCode === undefined || code !== this.reopenCode || this.reopenConsumed)
+        this.fail(401, 'reopen_failed');
+      this.reopenConsumed = true;
+    };
     const requireSession = () => {
       if (!this.sessionValid || !sessionDevice || sessionGeneration !== this.generation)
         this.fail(401, 'session_expired');
@@ -316,6 +337,111 @@ export class FakeServer {
       recoveryPasswordStart: () => {
         this.check({});
         return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
+      },
+      reopenLoginStart: (body) => {
+        this.check(body, true);
+        if (this.reopenCode === undefined || body.reopenCode !== this.reopenCode)
+          this.fail(401, 'reopen_failed');
+        loginDevice = body.deviceId;
+        loginTag = body.startLoginRequest.slice(0, 43);
+        reopenLogin = body.reopenCode === this.reopenCode;
+        return Promise.resolve({ loginId: 'L'.repeat(22), loginResponse: 'R'.repeat(427) });
+      },
+      reopenLoginFinish: (body) => {
+        this.check(body, true);
+        const account = this.account;
+        const device = loginDevice;
+        if (!account || !reopenLogin || loginTag !== this.passwordTag || !device)
+          this.fail(401, 'reopen_failed');
+        if (this.devices.get(device) !== 'active') this.fail(401, 'reopen_failed');
+        consumeCode(this.reopenCode ?? '');
+        reopenVia = 'password';
+        sessionDevice = device;
+        return Promise.resolve({
+          accountId: account.accountId,
+          deviceId: device,
+          via: 'password',
+          expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+        });
+      },
+      reopenRecoveryStart: (body) => {
+        this.check(body, true);
+        const account = this.account;
+        if (account?.username !== body.username) this.fail(401, 'reopen_failed');
+        if (this.verifier(body.recoveryAuthKey) !== account.keys.recoveryVerifier)
+          this.fail(401, 'reopen_failed');
+        consumeCode(body.reopenCode);
+        if (!this.devices.has(body.device.id)) this.devices.set(body.device.id, 'pending');
+        reopenVia = 'recovery';
+        sessionDevice = body.device.id;
+        return Promise.resolve({
+          accountId: account.accountId,
+          deviceId: body.device.id,
+          via: 'recovery',
+          expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
+        });
+      },
+      reopenMaterial: () => {
+        this.check(undefined, true);
+        const account = this.account;
+        if (!account || !reopenVia || this.reopenCode === undefined)
+          this.fail(401, 'unauthenticated');
+        const keys = account.keys;
+        return Promise.resolve({
+          accountId: account.accountId,
+          via: reopenVia,
+          akId: keys.akId,
+          akEpoch: keys.akEpoch,
+          keysetVersion: keys.keysetVersion,
+          keyset: keys.keyset,
+          recoveryKeyId: keys.recoveryKeyId,
+          rowVersion: this.rowVersion,
+          ...(reopenVia === 'password'
+            ? {
+                password: {
+                  kdfProfile: 1 as const,
+                  saltPw: keys.saltPw,
+                  wrappedAkPassword: keys.wrappedAkPassword,
+                },
+              }
+            : { wrappedAkRecovery: keys.wrappedAkRecovery }),
+        });
+      },
+      reopenPasswordStart: () => {
+        this.check({}, true);
+        if (!reopenVia) this.fail(401, 'unauthenticated');
+        return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
+      },
+      reopenComplete: (body) => {
+        this.check(body, true);
+        const account = this.account;
+        const device = sessionDevice;
+        if (!account || !device || !reopenVia || this.reopenCode === undefined)
+          this.fail(401, 'unauthenticated');
+        if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
+        if (body.recoveryKeyId === account.keys.recoveryKeyId) this.fail(400, 'invalid_request');
+        this.account = {
+          ...account,
+          keys: {
+            ...account.keys,
+            saltPw: body.saltPw,
+            wrappedAkPassword: body.wrappedAkPassword,
+            recoveryKeyId: body.recoveryKeyId,
+            wrappedAkRecovery: body.wrappedAkRecovery,
+            recoveryVerifier: body.recoveryVerifier,
+          },
+        };
+        this.rowVersion++;
+        this.passwordTag = body.registrationRecord.slice(0, 43);
+        this.devices.set(device, 'active');
+        this.reopenCode = undefined;
+        reopenVia = undefined;
+        this.generation++;
+        sessionGeneration = this.generation;
+        return Promise.resolve({
+          accountId: account.accountId,
+          device: { id: device, status: 'active' },
+        });
       },
       recoveryComplete: (body) => {
         this.check(body);

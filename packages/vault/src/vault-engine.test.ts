@@ -856,6 +856,134 @@ describe('clients after a server restore (revised D-28, backup-restore.md §3.6 
   });
 });
 
+describe('reopening a restored server (D-30 option B, backup-restore.md §3.13)', () => {
+  const RESTORE_ID = '0f0e7d2c-6b5a-4c39-8a27-1e0d9c8b7a65';
+  const CODE = `RC1-${'C'.repeat(43)}`;
+  const NEW = 'synthetic reopened engine passphrase 2b9e';
+
+  it('reopens with the password on a device that keeps its newer items and pending edit', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    await a.engine.save({ draft: login('Before the backup') });
+    await a.engine.sync();
+    const backup = server.snapshot();
+    await a.engine.save({ draft: login('After the backup') });
+    await a.engine.sync();
+    server.offline = true;
+    await a.engine.save({ draft: login('Pending') });
+    server.offline = false;
+    server.restoreReopening(backup, RESTORE_ID, CODE);
+
+    const reopened = await device(server, a.factory, a.api);
+    const unlocked = await reopened.engine.unlock({ password: PASSWORD });
+    expect(unlocked.sessionProblem).toBe('reopening');
+    expect(unlocked.sync.state).toBe('reopening');
+    expect(await code(reopened.engine.save({ draft: login('Not yet') }))).toBe('server_reopening');
+    expect(
+      await code(
+        reopened.engine.reopenBegin({ reopenCode: `RC1-${'D'.repeat(43)}`, password: PASSWORD }),
+      ),
+    ).toBe('reopen_failed');
+    expect(
+      await code(
+        reopened.engine.reopenBegin({ reopenCode: CODE, password: 'synthetic wrong guess 4' }),
+      ),
+    ).toBe('reopen_failed');
+    // The kit path would start this browser from nothing: refused while it holds data.
+    expect(
+      await code(
+        reopened.engine.recoveryBegin({
+          username: 'synthetic-user',
+          recoveryKey: 'RK1-x',
+          reopenCode: CODE,
+        }),
+      ),
+    ).not.toBe('resolved');
+
+    await reopened.engine.reopenBegin({ reopenCode: CODE, password: PASSWORD });
+    const kit = await reopened.engine.recoverySetPassword({ password: NEW });
+    expect(await code(reopened.engine.recoveryFinish())).toBe('kit_mismatch');
+    await reopened.engine.recoveryVerifyKit({ recoveryKey: kit.recoveryKey });
+    const done = await reopened.engine.recoveryFinish();
+    expect(done.reopened).toBe(true);
+    expect(server.reopenCode).toBeUndefined();
+    // Every local item and the pending edit survive; the device is ahead, so it stays read-only.
+    expect(done.items.map((i) => i.title).sort()).toEqual([
+      'After the backup',
+      'Before the backup',
+      'Pending',
+    ]);
+    expect(done.sync).toMatchObject({
+      state: 'integrity_error',
+      integrity: 'server_behind',
+      pendingCount: 1,
+    });
+    expect(await reopened.store.device()).toBeDefined();
+    // The new password opens this device, the old one no longer does.
+    const later = await device(server, a.factory, a.api);
+    expect(await code(later.engine.unlock({ password: PASSWORD }))).toBe('wrong_password');
+    expect((await later.engine.unlock({ password: NEW })).items).toHaveLength(3);
+  });
+
+  it('refuses the kit path on a browser with data, and reopens with the kit on a new one', async () => {
+    const server = new FakeServer();
+    const { a, kit } = await createAccount(server);
+    await a.engine.save({ draft: login('At the snapshot') });
+    await a.engine.sync();
+    server.restoreReopening(server.snapshot(), RESTORE_ID, CODE);
+    expect(
+      await code(
+        a.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: kit, reopenCode: CODE }),
+      ),
+    ).toBe('local_data_present');
+    const fresh = await device(server);
+    expect(
+      await code(
+        fresh.engine.recoveryBegin({
+          username: 'synthetic-user',
+          recoveryKey: kit,
+          reopenCode: `RC1-${'E'.repeat(43)}`,
+        }),
+      ),
+    ).toBe('reopen_failed');
+    await fresh.engine.recoveryBegin({
+      username: 'synthetic-user',
+      recoveryKey: kit,
+      reopenCode: CODE,
+    });
+    const newKit = await fresh.engine.recoverySetPassword({ password: NEW });
+    expect(newKit.recoveryKey).not.toBe(kit);
+    await fresh.engine.recoveryVerifyKit({ recoveryKey: newKit.recoveryKey });
+    const done = await fresh.engine.recoveryFinish();
+    expect(done.items.map((i) => i.title)).toEqual(['At the snapshot']);
+    expect(server.reopenCode).toBeUndefined();
+    // The replayed code fails now.
+    const other = await device(server);
+    expect(
+      await code(
+        other.engine.recoveryBegin({
+          username: 'synthetic-user',
+          recoveryKey: newKit.recoveryKey,
+          reopenCode: CODE,
+        }),
+      ),
+    ).not.toBe('resolved');
+  });
+
+  it('sends a device whose Secret Key changed after the backup to the kit path', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const backup = server.snapshot();
+    await a.engine.rotateSecretKey({ password: PASSWORD });
+    server.restoreReopening(backup, RESTORE_ID, CODE);
+    const reopened = await device(server, a.factory, a.api);
+    await reopened.engine.unlock({ password: PASSWORD });
+    expect(await code(reopened.engine.reopenBegin({ reopenCode: CODE, password: PASSWORD }))).toBe(
+      'reopen_needs_kit',
+    );
+  });
+});
+
 describe('portable encrypted export (backup-restore.md §4, D-13 option A)', () => {
   async function exported() {
     const server = new FakeServer();

@@ -13,6 +13,51 @@ import { RestoreStack } from './stack';
 
 const USERNAME = 'synthetic-restore-owner';
 const MASTER = 'synthetic restore harbor lantern 61';
+const NEW_MASTER = 'synthetic reopened harbor lantern 62';
+/** What the second test restores again: the backup, and the kit as of the backup. */
+let saved: { backup: { manifest: string; digest: string }; kit: string } | undefined;
+
+/** Everything this origin keeps in the browser: IndexedDB, both storages, script cookies. */
+async function browserStorageText(page: Page): Promise<string> {
+  return page.evaluate(async () => {
+    const dump = (storage: Storage) =>
+      JSON.stringify(
+        Array.from({ length: storage.length }, (_, i) => {
+          const k = storage.key(i) ?? '';
+          return [k, storage.getItem(k)];
+        }),
+      );
+    const parts = [dump(localStorage), dump(sessionStorage)];
+    parts.push(document.cookie);
+    for (const info of await indexedDB.databases()) {
+      if (!info.name) continue;
+      const db = await new Promise<IDBDatabase>((resolve, reject) => {
+        const req = indexedDB.open(info.name ?? '');
+        req.onsuccess = () => {
+          resolve(req.result);
+        };
+        req.onerror = () => {
+          reject(new Error('open failed'));
+        };
+      });
+      for (const name of Array.from(db.objectStoreNames))
+        parts.push(
+          await new Promise<string>((resolve) => {
+            const all = db.transaction(name).objectStore(name).getAll();
+            all.onsuccess = () => {
+              resolve(
+                JSON.stringify(all.result, (_k, v: unknown) =>
+                  v instanceof Uint8Array ? new TextDecoder('latin1').decode(v) : v,
+                ),
+              );
+            };
+          }),
+        );
+      db.close();
+    }
+    return parts.join('\n');
+  });
+}
 
 const row = (page: Page, title: RegExp) =>
   page.locator('#item-list').getByRole('button', { name: title });
@@ -24,14 +69,6 @@ async function addLogin(page: Page, title: string) {
   await page.getByRole('textbox', { name: 'Password', exact: true }).fill(`${title} secret`);
   await page.getByRole('button', { name: 'Save' }).click();
   await expect(page.getByRole('heading', { level: 2, name: title })).toBeVisible();
-}
-
-async function unlock(page: Page) {
-  await expect(page.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible({
-    timeout: 30_000,
-  });
-  await page.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
-  await page.getByRole('button', { name: 'Unlock' }).click();
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -105,6 +142,7 @@ test('R14: a restored server, a device ahead with a pending edit, and a device i
   // ---- The operator backs up; A then moves ahead, and makes an edit the server never sees ----
   const backup = stack.backup();
   expect(backup.digest).toMatch(/^[0-9a-f]{64}$/);
+  saved = { backup, kit };
   await addLogin(a, 'After the backup');
   await expect(a.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
     timeout: 15_000,
@@ -132,18 +170,57 @@ test('R14: a restored server, a device ahead with a pending edit, and a device i
 
   const review = stack.review(restored.database);
   expect(review).toContain('Provenance: the digest matched');
-  expect(review).toMatch(/become valid again/);
-  stack.complete(restored.database, restored.restoreId);
+  expect(review).toMatch(/For the reopening only/);
+  const firstCode = stack.complete(restored.database, restored.restoreId);
+  expect(firstCode).toMatch(/^RC1-/);
 
-  // ---- A signs in again; it is ahead of the restored server and keeps everything ----
+  // ---- Reopening: still closed; the owner reopens from A with the code (password path) ----
   await a.getByRole('button', { name: 'Sync now' }).click();
-  await unlock(a);
+  await expect(a.getByRole('status').filter({ hasText: 'Waiting to be reopened' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await a.getByRole('button', { name: 'Reopen the server' }).click();
+  await a.getByLabel('Reopening code').fill(firstCode);
+  await a
+    .getByRole('textbox', { name: 'Master password at the time of the backup' })
+    .fill('synthetic wrong guess 77');
+  await a.getByRole('button', { name: 'Continue' }).click();
+  await expect(a.getByText(/reopening code, username or credential doesn't work/)).toBeVisible();
+  // The host retry path: a new code; the first one stops working.
+  const reopenCode = stack.reopenCode(restored.database, restored.restoreId);
+  await a.getByLabel('Reopening code').fill(firstCode);
+  await a.getByRole('textbox', { name: 'Master password at the time of the backup' }).fill(MASTER);
+  await a.getByRole('button', { name: 'Continue' }).click();
+  await expect(a.getByText(/reopening code, username or credential doesn't work/)).toBeVisible();
+  await a.getByLabel('Reopening code').fill(reopenCode);
+  await a.getByRole('textbox', { name: 'Master password at the time of the backup' }).fill(MASTER);
+  await a.getByRole('button', { name: 'Continue' }).click();
+  await a.getByRole('textbox', { name: 'New master password', exact: true }).fill(NEW_MASTER);
+  await a.getByRole('textbox', { name: 'Type it again', exact: true }).fill(NEW_MASTER);
+  await a.getByRole('button', { name: 'Continue' }).click();
+  await expect(a.getByRole('heading', { name: 'Save your new Recovery Kit' })).toBeVisible({
+    timeout: 30_000,
+  });
+  const newKit = (await a.getByTestId('recovery-key').innerText()).trim();
+  expect(newKit).not.toBe(kit);
+  await a.getByRole('button', { name: "I've saved it" }).click();
+  // The new kit is checked before the old one is retired.
+  await a.getByLabel('Recovery Key').fill(kit);
+  await a.getByRole('button', { name: 'Finish and reopen' }).click();
+  await expect(a.getByText(/doesn't match/)).toBeVisible();
+  await a.getByLabel('Recovery Key').fill(newKit);
+  await a.getByRole('button', { name: 'Finish and reopen' }).click();
+  await expect(a.getByText(/The server is open again/)).toBeVisible({ timeout: 30_000 });
+  // A is ahead of the restored server and keeps everything, read-only.
   await expect(a.getByText(/reports that it was restored from a backup/).first()).toBeVisible({
     timeout: 30_000,
   });
   await expect(a.getByRole('status').filter({ hasText: 'Sync paused' })).toBeVisible();
   for (const title of [/Before the backup/, /After the backup/, /Pending on this device/])
     await expect(row(a, title)).toBeVisible();
+  // The code was never kept by the browser.
+  const stored = await browserStorageText(a);
+  for (const c of [firstCode, reopenCode]) expect(stored).not.toContain(c);
 
   // ---- The restore help: an offline verified copy, then an explicit erase ----
   await a.getByRole('button', { name: 'What to do' }).click();
@@ -152,7 +229,7 @@ test('R14: a restored server, a device ahead with a pending edit, and a device i
   await expect(help.getByText(/2 items in the last verified copy/)).toBeVisible();
   await expect(help.getByText(/1 change waiting to sync/)).toBeVisible();
   await help.getByLabel('Recovery Key for this export').fill(kit);
-  await help.getByRole('textbox', { name: 'Master password on this device' }).fill(MASTER);
+  await help.getByRole('textbox', { name: 'Master password on this device' }).fill(NEW_MASTER);
   // Without the acknowledgement, the export is refused: the pending edit is not in it.
   await help.getByRole('button', { name: 'Download verified copy' }).click();
   await expect(help.getByText(/still waiting to sync/)).toBeVisible();
@@ -191,8 +268,8 @@ test('R14: a restored server, a device ahead with a pending edit, and a device i
   await expect(c.getByText(/2 items will be imported/)).toBeVisible({ timeout: 30_000 });
   expect(readFileSync(exportPath, 'utf8')).not.toContain('Pending on this device');
 
-  // ---- B, in step with the snapshot, continues normally ----
-  await b.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  // ---- B, in step with the snapshot, continues with the new password ----
+  await b.getByRole('textbox', { name: 'Master password', exact: true }).fill(NEW_MASTER);
   await b.getByRole('button', { name: 'Unlock' }).click();
   await expect(b.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
     timeout: 30_000,
@@ -203,4 +280,60 @@ test('R14: a restored server, a device ahead with a pending edit, and a device i
   await contextA.close();
   await contextB.close();
   await contextC.close();
+});
+
+test('reopening on a new browser with the Recovery Kit as of the backup', async ({ browser }) => {
+  if (!saved) throw new Error('the first test did not run');
+  // The same backup again, into another new database: a second, independent restore.
+  await stack.stop();
+  const restored = stack.restore(saved.backup);
+  await stack.start(restored.database);
+  const code = stack.complete(restored.database, restored.restoreId);
+
+  const context = await browser.newContext();
+  const c = await context.newPage();
+  await c.goto('/');
+  await c.getByRole('button', { name: 'Reopen a restored server with your Recovery Kit' }).click();
+  await c.getByLabel('Reopening code').fill(code);
+  await c.getByLabel('Username').fill(USERNAME);
+  await c.getByLabel('Recovery Key').fill(saved.kit);
+  await c.getByRole('button', { name: 'Continue' }).click();
+  await c.getByRole('textbox', { name: 'New master password', exact: true }).fill(NEW_MASTER);
+  await c.getByRole('textbox', { name: 'Type it again', exact: true }).fill(NEW_MASTER);
+  await c.getByRole('button', { name: 'Continue' }).click();
+  await expect(c.getByRole('heading', { name: 'Save your new Recovery Kit' })).toBeVisible({
+    timeout: 30_000,
+  });
+  const newKit = (await c.getByTestId('recovery-key').innerText()).trim();
+  await c.getByRole('button', { name: "I've saved it" }).click();
+  await c.getByLabel('Recovery Key').fill(newKit);
+  await c.getByRole('button', { name: 'Finish and reopen' }).click();
+  await expect(c.getByRole('heading', { level: 1, name: 'All items' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await expect(row(c, /Before the backup/)).toBeVisible();
+  expect(await browserStorageText(c)).not.toContain(code);
+
+  // Afterwards: the password and the kit as of the backup are refused; the new password works.
+  const d = await (await browser.newContext()).newPage();
+  await d.goto('/');
+  await d.getByRole('button', { name: 'I already have an account' }).click();
+  await d.getByLabel('Username').fill(USERNAME);
+  await d.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  await d.getByRole('button', { name: 'Log in' }).click();
+  await expect(d.getByText('The username or master password is not correct.')).toBeVisible();
+  await d.getByRole('textbox', { name: 'Master password', exact: true }).fill(NEW_MASTER);
+  await d.getByRole('button', { name: 'Log in' }).click();
+  await expect(d.getByRole('heading', { name: 'Add this device' })).toBeVisible({
+    timeout: 30_000,
+  });
+  await d.goto('/');
+  const e = await (await browser.newContext()).newPage();
+  await e.goto('/');
+  await e.getByRole('button', { name: /Use your Recovery Kit/ }).click();
+  await e.getByLabel('Username').fill(USERNAME);
+  await e.getByLabel('Recovery Key').fill(saved.kit);
+  await e.getByRole('button', { name: 'Continue' }).click();
+  await expect(e.getByText(/username and Recovery Key don't work together/)).toBeVisible();
+  await context.close();
 });

@@ -16,18 +16,30 @@ type Step = 'kit' | 'password' | 'new-kit' | 'verify';
  * Recovery with the Recovery Kit (account-recovery.md §3): the kit proves possession of the
  * Recovery Key, the user sets a master password, and a new Recovery Kit replaces the used one.
  * Used for a forgotten password and for a device that has none of the account's keys.
+ *
+ * The same steps reopen a restored server (backup-restore.md §3.13): `reopen-kit` adds the
+ * reopening code to the kit step (a browser with no data); `reopen-password` asks, on this
+ * unlocked device, for the code and the master password as of the backup. Both end with a new
+ * password and a new kit. The code lives only in this component's state.
  */
+export type RecoveryMode = 'recovery' | 'reopen-kit' | 'reopen-password';
+
 export function RecoveryFlow({
   client,
   initialUsername,
+  mode = 'recovery',
   onCancel,
   onDone,
 }: {
   client: VaultClient;
   initialUsername?: string;
+  mode?: RecoveryMode;
   onCancel: () => void;
   onDone: (vault: UnlockedVault) => void;
 }) {
+  const reopening = mode !== 'recovery';
+  const [reopenCode, setReopenCode] = useState('');
+  const [oldPassword, setOldPassword] = useState('');
   const [step, setStep] = useState<Step>('kit');
   const [username, setUsername] = useState(initialUsername ?? '');
   const [recoveryKey, setRecoveryKey] = useState('');
@@ -57,21 +69,82 @@ export function RecoveryFlow({
       });
   };
 
-  if (step === 'kit')
+  const codeField = (
+    <TextField
+      label="Reopening code"
+      value={reopenCode}
+      autoComplete="off"
+      spellCheck={false}
+      placeholder="RC1-…"
+      inputClassName="font-mono"
+      hint="Printed by the server's owner with ruvee-admin on the server. Never sent anywhere else."
+      onChange={(e) => {
+        setReopenCode(e.target.value.trim());
+      }}
+    />
+  );
+
+  if (step === 'kit' && mode === 'reopen-password')
     return (
-      <AuthCard title="Use your Recovery Kit">
+      <AuthCard title="Reopen the restored server">
         <p className="text-body text-ink-muted">
-          Your Recovery Kit lets you set a new master password and open your vault on this device.
-          Afterwards you get a new kit, and the one you use now stops working.
+          The server was restored from a backup and waits for you. Enter the code from the server
+          and the master password you used <strong>at the time of the backup</strong>. This device
+          keeps all its items. Afterwards you choose a new master password and get a new Recovery
+          Kit, and the old ones stop working.
         </p>
         <form
           className="flex flex-col gap-4"
           onSubmit={run(async () => {
-            await client.call('recoveryBegin', { username, recoveryKey });
-            setRecoveryKey('');
+            await client.call('reopenBegin', { reopenCode, password: oldPassword });
+            setReopenCode('');
+            setOldPassword('');
             setStep('password');
           })}
         >
+          {codeField}
+          <PasswordField
+            label="Master password at the time of the backup"
+            value={oldPassword}
+            autoComplete="current-password"
+            onChange={(e) => {
+              setOldPassword(e.target.value);
+            }}
+          />
+          {error ? <Notice>{error}</Notice> : null}
+          <div className="flex justify-between gap-2">
+            <Button variant="ghost" onClick={onCancel}>
+              Back
+            </Button>
+            <Button variant="primary" type="submit" aria-disabled={busy || undefined}>
+              {busy ? 'Checking…' : 'Continue'}
+            </Button>
+          </div>
+        </form>
+      </AuthCard>
+    );
+
+  if (step === 'kit')
+    return (
+      <AuthCard title={reopening ? 'Reopen the restored server' : 'Use your Recovery Kit'}>
+        <p className="text-body text-ink-muted">
+          {reopening
+            ? 'The server was restored from a backup and waits for you. Enter the code from the server, and the Recovery Kit you had at the time of the backup. Afterwards you choose a new master password and get a new kit, and the old ones stop working.'
+            : 'Your Recovery Kit lets you set a new master password and open your vault on this device. Afterwards you get a new kit, and the one you use now stops working.'}
+        </p>
+        <form
+          className="flex flex-col gap-4"
+          onSubmit={run(async () => {
+            await client.call(
+              'recoveryBegin',
+              reopening ? { username, recoveryKey, reopenCode } : { username, recoveryKey },
+            );
+            setRecoveryKey('');
+            setReopenCode('');
+            setStep('password');
+          })}
+        >
+          {reopening ? codeField : null}
           <TextField
             label="Username"
             value={username}
@@ -112,8 +185,9 @@ export function RecoveryFlow({
     return (
       <AuthCard title="Set your master password">
         <p className="text-body text-ink-muted">
-          Your Recovery Key opened your vault. Choose the master password you will use from now on;
-          it can be the old one.
+          {reopening
+            ? 'Choose a new master password. The one from the time of the backup stops working when you finish.'
+            : 'Your Recovery Key opened your vault. Choose the master password you will use from now on; it can be the old one.'}
         </p>
         <form
           className="flex flex-col gap-4"
@@ -214,7 +288,7 @@ export function RecoveryFlow({
             Show the kit again
           </Button>
           <Button variant="primary" type="submit" aria-disabled={busy || undefined}>
-            {busy ? 'Finishing…' : 'Finish recovery'}
+            {busy ? 'Finishing…' : reopening ? 'Finish and reopen' : 'Finish recovery'}
           </Button>
         </div>
       </form>

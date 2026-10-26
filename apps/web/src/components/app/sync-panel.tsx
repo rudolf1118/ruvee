@@ -44,6 +44,8 @@ function describe(status: SyncStatus): {
       };
     case 'maintenance':
       return { title: 'Server unavailable', detail: restoreExplanation(status), tone: 'warn' };
+    case 'reopening':
+      return { title: 'Waiting to be reopened', detail: restoreExplanation(status), tone: 'warn' };
   }
 }
 

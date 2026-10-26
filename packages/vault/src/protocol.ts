@@ -63,7 +63,9 @@ export type SyncState =
   | 'session_expired'
   | 'integrity_error'
   /** The server is being restored by its owner (backup-restore.md §3.5): local copy, read-only. */
-  | 'maintenance';
+  | 'maintenance'
+  /** The restored server waits for its owner to reopen it (§3.13): local copy, read-only. */
+  | 'reopening';
 
 export interface SyncStatus {
   readonly state: SyncState;
@@ -108,6 +110,8 @@ export interface UnlockedVault {
     | 'rate_limited'
     /** The server is in restore review (backup-restore.md §3.5). */
     | 'maintenance'
+    /** The restored server waits to be reopened with a code from its host (§3.13). */
+    | 'reopening'
     /** The password works, but the server does not know this device (a restored server). */
     | 'device_unknown';
   /** Set right after a recovery: this device has no trusted checkpoint (sync-protocol §5). */
@@ -116,6 +120,8 @@ export interface UnlockedVault {
   readonly passwordUpdated?: boolean;
   /** The Secret Key was replaced on another device, and this device now uses the new one. */
   readonly secretKeyUpdated?: boolean;
+  /** This device reopened the restored server, with a new password and Recovery Kit (§3.13). */
+  readonly reopened?: boolean;
 }
 
 export interface RecoveryKitView {
@@ -160,6 +166,10 @@ export type VaultErrorCode =
   | 'vault_not_empty'
   | 'integrity'
   | 'server_maintenance'
+  | 'server_reopening'
+  | 'reopen_failed'
+  | 'reopen_needs_kit'
+  | 'local_data_present'
   | 'export_first'
   | 'internal';
 
@@ -290,7 +300,9 @@ export interface VaultMethods {
   pairingNeedsPassword(): boolean;
   pairingJoin(params: { code: string; password?: string }): true;
   pairingWait(): PairingJoinStatus;
-  recoveryBegin(params: { username: string; recoveryKey: string }): true;
+  recoveryBegin(params: { username: string; recoveryKey: string; reopenCode?: string }): true;
+  /** Reopening, password path, on this unlocked device (backup-restore.md §3.13). */
+  reopenBegin(params: { reopenCode: string; password: string }): true;
   recoverySetPassword(params: { password: string }): RecoveryKitView;
   recoveryVerifyKit(params: { recoveryKey: string }): true;
   recoveryFinish(): UnlockedVault;

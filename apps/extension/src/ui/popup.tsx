@@ -312,6 +312,8 @@ function Unlock({ onDone }: { onDone: () => void }) {
 function restoreNotice(status: SyncStatus): string | null {
   if (status.state === 'maintenance')
     return 'Your Ruvee server is being restored by its owner. Logins here can still be filled; nothing changes until the server opens again.';
+  if (status.state === 'reopening')
+    return 'Your Ruvee server was restored and waits to be reopened in the web app, with the code from the server. Logins here can still be filled.';
   if (
     status.state === 'integrity_error' &&
     ['server_behind', 'history_rewritten', 'keyset_rollback'].includes(status.integrity ?? '')

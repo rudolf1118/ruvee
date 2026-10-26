@@ -48,6 +48,8 @@ export function messageFor(e: unknown): string {
       return 'Your master password and Secret Key were both changed on another device. Also enter the master password this browser used before.';
     case 'locked':
       return 'The vault is locked.';
+    case 'server_reopening':
+      return 'Your Ruvee server was restored and waits for its owner to reopen it in the web app. This browser keeps its copy, read-only.';
     case 'server_maintenance':
       return 'Your Ruvee server is being restored by its owner and is not available yet. This browser keeps its copy, read-only.';
     default:

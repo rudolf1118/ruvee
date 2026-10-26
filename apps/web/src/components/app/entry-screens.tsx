@@ -18,11 +18,14 @@ export function WelcomeScreen({
   onLogin,
   onRecover,
   onOpenExport,
+  onReopen,
 }: {
   onCreate: () => void;
   onLogin: () => void;
   onRecover: () => void;
   onOpenExport: () => void;
+  /** A restored server waiting for its owner (backup-restore.md §3.13), Recovery Kit path. */
+  onReopen: () => void;
 }) {
   return (
     <AuthCard title="Keep every password in one calm, safe place.">
@@ -44,6 +47,9 @@ export function WelcomeScreen({
       </Button>
       <Button variant="link" className="-ml-2 self-start" onClick={onOpenExport}>
         Open an encrypted export
+      </Button>
+      <Button variant="link" className="-ml-2 self-start" onClick={onReopen}>
+        Reopen a restored server with your Recovery Kit
       </Button>
       {showPreviewLink ? (
         <Link
