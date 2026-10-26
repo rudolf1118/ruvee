@@ -447,7 +447,7 @@ describe('encrypted server backups (real dumps, real age)', () => {
     ).rejects.toMatchObject({ stage: 'load' });
     const [guard] = await query<{ state: string; restore_id: string }>(
       db.url,
-      'SELECT state, restore_id FROM ruvee_restore_guard',
+      'SELECT state, restore_id FROM ruvee_control.restore_guard',
     );
     expect(guard?.state).toBe('restoring');
     await expect(

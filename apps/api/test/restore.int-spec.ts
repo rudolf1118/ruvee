@@ -414,7 +414,7 @@ describe('server restore into a maintenance-mode installation (real database, re
       expect('removed' in result).toBe(true);
       const state = await query<{ state: string }>(
         again.url,
-        'SELECT state FROM ruvee_restore_guard',
+        'SELECT state FROM ruvee_control.restore_guard',
       );
       expect(state).toEqual([{ state: 'review' }]);
     } finally {

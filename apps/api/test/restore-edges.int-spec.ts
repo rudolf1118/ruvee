@@ -94,7 +94,7 @@ describe('restore edge cases (real database, real dumps)', () => {
       expect(result).toMatchObject({ stoppedAfter: stopAfter });
       const [guard] = await query<{ state: string }>(
         db.url,
-        'SELECT state FROM ruvee_restore_guard',
+        'SELECT state FROM ruvee_control.restore_guard',
       );
       expect(guard).toEqual({ state: 'restoring' });
       await expect(

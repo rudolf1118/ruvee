@@ -7,7 +7,8 @@ import { createHash, randomBytes } from 'node:crypto';
  * authenticates a reopening together with the snapshot-time credentials; it is never key
  * material, and nothing decrypts with it.
  */
-export const REOPEN_CODES_TABLE = 'ruvee_reopen_codes';
+/** In the restore tool's control schema (restore-control.ts), out of reach of restored SQL. */
+export const REOPEN_CODES_TABLE = 'ruvee_control.reopen_codes';
 export const REOPEN_CODE_TTL_MS = 60 * 60_000;
 /** Failed attempts (a wrong code, or the right one with wrong credentials) before revocation. */
 export const REOPEN_MAX_FAILURES = 5;

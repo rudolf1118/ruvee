@@ -88,10 +88,10 @@ const codes = (url: string) =>
   query<{ failed_attempts: number; revoked: boolean; consumed: boolean }>(
     url,
     `SELECT failed_attempts, revoked_at IS NOT NULL AS revoked, consumed_at IS NOT NULL AS consumed
-     FROM ruvee_reopen_codes ORDER BY created_at`,
+     FROM ruvee_control.reopen_codes ORDER BY created_at`,
   );
 const guardState = async (url: string) =>
-  (await query<{ state: string }>(url, 'SELECT state FROM ruvee_restore_guard'))[0]?.state;
+  (await query<{ state: string }>(url, 'SELECT state FROM ruvee_control.restore_guard'))[0]?.state;
 
 describe('reopening a restored installation (real database, real dumps)', () => {
   let source: Harness;
@@ -280,7 +280,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     it('fails an expired code, and keeps a lost reopen session recoverable only from the host', async () => {
       await query(
         r.db.url,
-        `UPDATE ruvee_reopen_codes SET expires_at = now() - interval '1 second' WHERE revoked_at IS NULL`,
+        `UPDATE ruvee_control.reopen_codes SET expires_at = now() - interval '1 second' WHERE revoked_at IS NULL`,
       );
       expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
       r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;

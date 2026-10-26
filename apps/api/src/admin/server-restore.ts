@@ -29,6 +29,16 @@ import {
   REOPEN_CODES_DDL,
   REOPEN_CODES_TABLE,
 } from '../reopen/reopen-codes.js';
+import {
+  assertEmptyDatabase,
+  CONTROL_SCHEMA,
+  createControlSchema,
+  createLoader,
+  loaderRoleName,
+  GUARD_TABLE,
+  restoredObjectProblems,
+  retireLoader,
+} from './restore-control.js';
 import { connectTo, DumpHeaderCheck, parseDbTarget, type DbTarget } from './db-target.js';
 import type { PgTools } from './pg-tools.js';
 
@@ -42,8 +52,7 @@ import type { PgTools } from './pg-tools.js';
  * task-owned test database.
  */
 
-export { BACKUP_FORMAT };
-export const GUARD_TABLE = 'ruvee_restore_guard';
+export { BACKUP_FORMAT, GUARD_TABLE };
 /** Names of the throwaway databases the test suites create; nothing else may be backed up yet. */
 const SYNTHETIC_DATABASE = /^ruvee_(it|e2e)_[0-9a-f]+$/;
 
@@ -175,8 +184,9 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     return path;
   };
   const run = options.tools.dump(target, {
-    tables: [GUARD_TABLE, REOPEN_CODES_TABLE],
-    schemas: [],
+    tables: [],
+    // The restore tool's own state is never part of a backup (R8).
+    schemas: [CONTROL_SCHEMA],
   });
   const onAbort = () => {
     run.kill();
@@ -301,8 +311,12 @@ export interface RestoreResult {
  * is killed before its input is closed, so it never sees a clean end of a bad dump. Whatever
  * happens, the guard is still `restoring`: nothing here can make the installation openable.
  */
-async function load(backup: Awaited<ReturnType<typeof openBackup>>, url: string, tools: PgTools) {
-  const run = tools.restore(targetOf(url, 'load'));
+async function load(
+  backup: Awaited<ReturnType<typeof openBackup>>,
+  target: DbTarget,
+  tools: PgTools,
+) {
+  const run = tools.restore(target);
   // A pg_restore that exits early makes writes fail; `run.done` reports why.
   run.stdin.on('error', () => undefined);
   const { plaintext, tap } = await backup.decryptDump();
@@ -362,16 +376,17 @@ export async function restoreBackup(
   const restoreId = randomUUID();
   const url = options.targetDatabaseUrl;
 
-  // PREPARE: an empty database only, and the guard before any restored row exists.
+  // PREPARE: an empty database only; the control schema, the guard and the loader role before
+  // any restored row exists (R8: the loader cannot reach the control schema).
+  const target = targetOf(url, 'prepare');
+  const loaderName = loaderRoleName(restoreId);
   await withClient(url, async (c) => {
-    const tables = await c.query<{ n: string }>(
-      `SELECT count(*) AS n FROM pg_tables WHERE schemaname NOT IN ('pg_catalog', 'information_schema')`,
-    );
-    if (Number(tables.rows[0]?.n) !== 0)
+    if (!(await assertEmptyDatabase(c)))
       throw new RestoreError(
         'prepare',
         'the target database is not empty; restore only into a new, empty database',
       );
+    await createControlSchema(c);
     await c.query(`CREATE TABLE ${GUARD_TABLE} (
       id smallint PRIMARY KEY CHECK (id = 1),
       state text NOT NULL CHECK (state IN ('restoring', 'review', 'reopening', 'open')),
@@ -381,19 +396,42 @@ export async function restoreBackup(
       provenance text NOT NULL CHECK (provenance IN ('trusted-digest', 'unchecked')),
       started_at timestamptz NOT NULL DEFAULT now(),
       review_completed_at timestamptz,
-      reopened_at timestamptz
+      reopened_at timestamptz,
+      loader_role text NOT NULL
     )`);
     await c.query(REOPEN_CODES_DDL);
     await c.query(
-      `INSERT INTO ${GUARD_TABLE} (id, state, restore_id, snapshot_at, backup_digest, provenance)
-       VALUES (1, 'restoring', $1, $2, $3, $4)`,
-      [restoreId, backup.meta.snapshotAt, backup.digest, backup.provenance],
+      `INSERT INTO ${GUARD_TABLE} (id, state, restore_id, snapshot_at, backup_digest, provenance, loader_role)
+       VALUES (1, 'restoring', $1, $2, $3, $4, $5)`,
+      [restoreId, backup.meta.snapshotAt, backup.digest, backup.provenance, loaderName],
     );
   });
   if (options.stopAfter === 'prepare') return { stoppedAfter: 'prepare', restoreId };
 
-  await options.beforeLoad?.();
-  await load(backup, url, options.tools);
+  try {
+    await options.beforeLoad?.();
+    const loader = await withClient(url, (c) => createLoader(c, target.database, loaderName));
+    // LOAD as the loader role: restored SQL runs with only its privileges.
+    await load(backup, { ...target, user: loader.name, password: loader.password }, options.tools);
+    // Then, as the admin role: the guard untouched, and nothing Ruvee would not create.
+    await withClient(url, async (c) => {
+      const g = await guard(c);
+      if (g.state !== 'restoring' || g.restore_id !== restoreId)
+        throw new RestoreError(
+          'load',
+          'the restore guard changed during LOAD; discard this database',
+        );
+      const problems = await restoredObjectProblems(c);
+      if (problems.length > 0)
+        throw new RestoreError(
+          'load',
+          `the dump contains objects Ruvee never creates: ${problems.join(', ')}; discard this database`,
+        );
+    });
+  } finally {
+    // The loader role exists only for LOAD, whatever happened.
+    await withClient(url, (c) => retireLoader(c, loaderName)).catch(() => undefined);
+  }
   if (options.stopAfter === 'load') return { stoppedAfter: 'load', restoreId };
   try {
     await options.migrate(url);
@@ -402,10 +440,15 @@ export async function restoreBackup(
   }
   if (options.stopAfter === 'migrate') return { stoppedAfter: 'migrate', restoreId };
 
-  // APPLY POLICY: one transaction; structural checks first.
+  // APPLY POLICY: one transaction; the guard re-checked under lock, structural checks first.
   return withClient(url, async (c) => {
     await c.query('BEGIN');
     try {
+      const locked = await c.query<{ state: string; restore_id: string }>(
+        `SELECT state, restore_id FROM ${GUARD_TABLE} WHERE id = 1 FOR UPDATE`,
+      );
+      if (locked.rows[0]?.state !== 'restoring' || locked.rows[0].restore_id !== restoreId)
+        throw new RestoreError('policy', 'the restore guard is not in the expected state');
       const bad = await c.query<{ n: string }>(
         `SELECT count(*) AS n FROM vaults v
          WHERE v.current_seq <> COALESCE((SELECT max(seq) FROM vault_commits WHERE vault_id = v.id), 0)`,
@@ -435,9 +478,12 @@ export async function restoreBackup(
          VALUES ($1, $2, 'server_restored', $3, now())`,
         [randomUUID(), account.rows[0]?.id ?? null, JSON.stringify({ restoreId })],
       );
-      await c.query(
-        `UPDATE ${GUARD_TABLE} SET state = 'review' WHERE id = 1 AND state = 'restoring'`,
+      const moved = await c.query(
+        `UPDATE ${GUARD_TABLE} SET state = 'review' WHERE id = 1 AND state = 'restoring' AND restore_id = $1`,
+        [restoreId],
       );
+      if (moved.rowCount !== 1)
+        throw new RestoreError('policy', 'the restore guard is not in the expected state');
       await c.query('COMMIT');
       return {
         restoreId,
@@ -488,9 +534,7 @@ export interface RestoreReview {
 }
 
 async function guard(c: pg.Client) {
-  const exists = await c.query<{ t: string | null }>(
-    `SELECT to_regclass('public.${GUARD_TABLE}') AS t`,
-  );
+  const exists = await c.query<{ t: string | null }>(`SELECT to_regclass('${GUARD_TABLE}') AS t`);
   if (!exists.rows[0]?.t)
     throw new RestoreError('review', 'this database was not restored with ruvee-admin restore');
   const row = await c.query<{

@@ -174,70 +174,126 @@ describe('REVIEW R7 (regression): a backup reads exactly the database that was c
   });
 });
 
-describe('REVIEW R8: SQL inside a restored dump (still the pre-fix behaviour)', () => {
-  let h: Harness;
+describe('REVIEW R8 (regression): SQL inside a restored dump cannot reach restore authority', () => {
   let key: TestBackupKey;
   let outDir: string;
+  let n = 0;
 
   beforeAll(async () => {
     process.env.DATABASE_URL = SERVER_URL;
-    vi.resetModules();
-    h = await startHarness();
     key = await testBackupKey();
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-review-r8-'));
   }, 60_000);
 
-  afterAll(async () => {
-    await h.close();
+  afterAll(() => {
     rmSync(outDir, { recursive: true, force: true });
     key.drop();
   });
 
-  it('R8: SQL inside a restored dump can open the guard itself (vulnerable)', async () => {
-    await query(
-      h.db.url,
-      `CREATE FUNCTION public.review_r8_hostile(x int) RETURNS boolean LANGUAGE plpgsql AS $$
-       BEGIN
-         IF to_regclass('public.ruvee_restore_guard') IS NOT NULL THEN
-           EXECUTE 'UPDATE public.ruvee_restore_guard SET state = ''open''';
-         END IF;
-         RETURN true;
-       END $$`,
-    );
-    await query(
-      h.db.url,
-      `CREATE TABLE public.review_r8_rows (x int CHECK (public.review_r8_hostile(x)))`,
-    );
-    await query(h.db.url, `INSERT INTO public.review_r8_rows VALUES (1)`);
-    const b = await createBackup({
-      databaseUrl: h.db.url,
-      outDir,
-      tools,
-      recipient: key.recipient,
-      syntheticTestOnly: true,
-      config,
-    });
+  /**
+   * A backup, made by the real tool, of a synthetic Ruvee database with `statements` added: what
+   * a compromised server could produce. Restored with its genuine digest, so provenance does not
+   * help; only the restore's own boundary can.
+   */
+  async function hostileRestore(statements: string[]) {
     process.env.DATABASE_URL = SERVER_URL;
+    const source = await createTempDatabase();
     const target = await createTempDatabase();
     try {
-      const result = await restoreBackup({
+      migrate(source.url);
+      for (const sql of statements) await query(source.url, sql);
+      const b = await createBackup({
+        databaseUrl: source.url,
+        outDir,
+        tools,
+        recipient: key.recipient,
+        syntheticTestOnly: true,
+        config,
+        now: () => new Date(Date.now() + 60_000 * ++n),
+      });
+      const outcome = await restoreBackup({
         manifestPath: b.manifestPath,
         identityPath: key.identityPath,
-        trustedDigest: false,
+        trustedDigest: b.digest,
         targetDatabaseUrl: target.url,
         tools,
         migrate,
         knownMigrations: MIGRATIONS,
-      });
-      expect('removed' in result).toBe(true);
-      const [guard] = await query<{ state: string }>(
-        target.url,
-        'SELECT state FROM ruvee_restore_guard',
+      }).then(
+        (r) => ({ ok: true as const, r }),
+        (e: unknown) => ({ ok: false as const, e: e as { stage?: string; message?: string } }),
       );
-      expect(guard?.state).toBe('open');
+      const [guard] = await query<{ state: string; loader_role: string }>(
+        target.url,
+        'SELECT state, loader_role FROM ruvee_control.restore_guard',
+      );
+      // This restore's own loader role (other suites may be restoring at the same time).
+      const [roles] = await query<{ n: string }>(
+        SERVER_URL,
+        `SELECT count(*) AS n FROM pg_roles WHERE rolname = $1`,
+        [guard?.loader_role ?? ''],
+      );
+      return { outcome, guard: guard?.state, loaderRoles: Number(roles?.n) };
     } finally {
       await target.drop();
-      process.env.DATABASE_URL = h.db.url;
+      await source.drop();
     }
+  }
+
+  const HOSTILE_FN = `CREATE FUNCTION public.review_r8_hostile(x int) RETURNS boolean LANGUAGE plpgsql AS $$
+     BEGIN
+       IF to_regclass('ruvee_control.restore_guard') IS NOT NULL THEN
+         EXECUTE 'UPDATE ruvee_control.restore_guard SET state = ''open''';
+       END IF;
+       RETURN true;
+     END $$`;
+
+  it('a CHECK constraint that opens the guard during LOAD fails: the loader has no access', async () => {
+    const r = await hostileRestore([
+      HOSTILE_FN,
+      `CREATE TABLE public.review_r8_rows (x int CHECK (public.review_r8_hostile(x)))`,
+      `INSERT INTO public.review_r8_rows VALUES (1)`,
+    ]);
+    expect(r.outcome.ok).toBe(false);
+    if (!r.outcome.ok) expect(r.outcome.e.stage).toBe('load');
+    expect(r.guard).toBe('restoring');
+    expect(r.loaderRoles).toBe(0);
+  });
+
+  it.each([
+    ['a function planted for later', [HOSTILE_FN]],
+    [
+      'a trigger on a Ruvee table',
+      [
+        `CREATE FUNCTION public.review_r8_t() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RETURN NEW; END $$`,
+        `CREATE TRIGGER review_r8 BEFORE INSERT ON public.sessions FOR EACH ROW EXECUTE FUNCTION public.review_r8_t()`,
+      ],
+    ],
+    ['a view', [`CREATE VIEW public.review_r8_view AS SELECT 1 AS x`]],
+    [
+      'a rule',
+      [`CREATE RULE review_r8_rule AS ON INSERT TO public.pairings DO ALSO NOTIFY review_r8`],
+    ],
+    [
+      'another schema',
+      [`CREATE SCHEMA review_r8_schema`, `CREATE TABLE review_r8_schema.t (x int)`],
+    ],
+    [
+      'a table shadowing the guard name in public',
+      [`CREATE TABLE public.restore_guard (id int, state text)`],
+    ],
+    ['a domain type', [`CREATE DOMAIN public.review_r8_domain AS int`]],
+    ['row security', [`ALTER TABLE public.accounts ENABLE ROW LEVEL SECURITY`]],
+  ])('refuses a dump containing %s, and leaves the guard closed', async (_label, statements) => {
+    const r = await hostileRestore(statements);
+    expect(r.outcome.ok).toBe(false);
+    if (!r.outcome.ok) {
+      expect(r.outcome.e.stage).toBe('load');
+      // Refused by the loader's privileges during LOAD (pg_restore fails) or by the object check
+      // after it; either way at LOAD, before anything could run as the application role.
+      expect(r.outcome.e.message).toMatch(/objects Ruvee never creates|pg_restore failed/);
+    }
+    expect(r.guard).toBe('restoring');
+    expect(r.loaderRoles).toBe(0);
   });
 });

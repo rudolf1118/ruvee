@@ -61,8 +61,8 @@ export class ReopenService {
     const hash = reopenCodeHash(reopenCode);
     if (!hash) return undefined;
     const [row] = await this.prisma.$queryRaw<CodeRow[]>`
-      SELECT c.id, c.restore_id, c.account_id FROM ruvee_reopen_codes c
-      JOIN ruvee_restore_guard g ON g.restore_id = c.restore_id AND g.state = 'reopening'
+      SELECT c.id, c.restore_id, c.account_id FROM ruvee_control.reopen_codes c
+      JOIN ruvee_control.restore_guard g ON g.restore_id = c.restore_id AND g.state = 'reopening'
       WHERE c.code_hash = ${hash} AND c.revoked_at IS NULL AND c.consumed_at IS NULL
         AND c.expires_at > now() AND c.failed_attempts < ${REOPEN_MAX_FAILURES}`;
     return row;
@@ -76,12 +76,12 @@ export class ReopenService {
     if ((await this.maintenance.state()) === 'reopening') {
       if (codeId)
         await this.prisma.$executeRaw`
-          UPDATE ruvee_reopen_codes SET failed_attempts = failed_attempts + 1,
+          UPDATE ruvee_control.reopen_codes SET failed_attempts = failed_attempts + 1,
             revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
           WHERE id = ${codeId}::uuid AND revoked_at IS NULL AND consumed_at IS NULL`;
       else
         await this.prisma.$executeRaw`
-          UPDATE ruvee_reopen_codes SET failed_attempts = failed_attempts + 1,
+          UPDATE ruvee_control.reopen_codes SET failed_attempts = failed_attempts + 1,
             revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
           WHERE revoked_at IS NULL AND consumed_at IS NULL AND expires_at > now()`;
       await this.events.record('reopen_failed', { accountId: accountId ?? null, ...client });
@@ -103,12 +103,12 @@ export class ReopenService {
     now: Date,
   ) {
     const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
-      SELECT state, restore_id FROM ruvee_restore_guard WHERE id = 1 FOR UPDATE`;
+      SELECT state, restore_id FROM ruvee_control.restore_guard WHERE id = 1 FOR UPDATE`;
     if (g?.state !== 'reopening' || g.restore_id !== code.restore_id)
       throw new ApiException('reopen_failed');
     const session = await this.sessions.createReopen(code.account_id, deviceId, tx, now);
     const consumed = await tx.$executeRaw`
-      UPDATE ruvee_reopen_codes SET consumed_at = now(), session_id = ${session.id}::uuid,
+      UPDATE ruvee_control.reopen_codes SET consumed_at = now(), session_id = ${session.id}::uuid,
         via = ${via}
       WHERE id = ${code.id}::uuid AND consumed_at IS NULL AND revoked_at IS NULL
         AND expires_at > now() AND failed_attempts < ${REOPEN_MAX_FAILURES}`;
@@ -180,7 +180,7 @@ export class ReopenService {
     if (device?.status !== 'active') return this.fail(client, pending.reopenCodeId, accountId);
     const code = { id: pending.reopenCodeId, account_id: accountId };
     const [row] = await this.prisma.$queryRaw<{ restore_id: string }[]>`
-      SELECT restore_id FROM ruvee_reopen_codes WHERE id = ${code.id}::uuid`;
+      SELECT restore_id FROM ruvee_control.reopen_codes WHERE id = ${code.id}::uuid`;
     if (!row) throw new ApiException('reopen_failed');
     const now = new Date();
     const session = await this.prisma.$transaction((tx) =>
@@ -314,9 +314,9 @@ export class ReopenService {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
-        SELECT state, restore_id FROM ruvee_restore_guard WHERE id = 1 FOR UPDATE`;
+        SELECT state, restore_id FROM ruvee_control.restore_guard WHERE id = 1 FOR UPDATE`;
       const [link] = await tx.$queryRaw<{ restore_id: string }[]>`
-        SELECT restore_id FROM ruvee_reopen_codes
+        SELECT restore_id FROM ruvee_control.reopen_codes
         WHERE session_id = ${session.sessionId}::uuid AND revoked_at IS NULL`;
       if (g?.state !== 'reopening' || link?.restore_id !== g.restore_id)
         throw new ApiException('reopen_failed');
@@ -346,9 +346,9 @@ export class ReopenService {
         where: { accountId: session.accountId, revokedAt: null },
         data: { revokedAt: now, revokeReason: 'reopened' },
       });
-      await tx.$executeRaw`UPDATE ruvee_reopen_codes SET revoked_at = now() WHERE revoked_at IS NULL`;
+      await tx.$executeRaw`UPDATE ruvee_control.reopen_codes SET revoked_at = now() WHERE revoked_at IS NULL`;
       await tx.$executeRaw`
-        UPDATE ruvee_restore_guard SET state = 'open', reopened_at = now()
+        UPDATE ruvee_control.restore_guard SET state = 'open', reopened_at = now()
         WHERE id = 1 AND state = 'reopening'`;
       await tx.device.update({
         where: { id: session.deviceId },

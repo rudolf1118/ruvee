@@ -118,7 +118,10 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
   it('is the whole database: every inventoried table, and never the restore guard', () => {
     for (const table of Object.keys(TABLE_INVENTORY))
       expect(sql, table).toMatch(new RegExp(`COPY public\\.${table} `));
-    expect(sql).not.toContain('ruvee_restore_guard');
+    // The restore tool's control schema (guard and reopening codes) is never in a backup.
+    expect(sql).not.toContain('ruvee_control');
+    expect(sql).not.toContain('restore_guard');
+    expect(sql).not.toContain('reopen_codes');
   });
 
   it('holds no plaintext vault secret, key, password or Recovery Key', () => {
