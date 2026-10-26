@@ -3,15 +3,20 @@ import { ApiException } from '../common/api-exception.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { RouteClass } from '../sessions/route-class.js';
 
-export type GuardState = 'none' | 'restoring' | 'review' | 'reopening' | 'open';
+export type GuardState = 'uninitialized' | 'restoring' | 'review' | 'reopening' | 'open';
+
+const RESTORE_STATES = new Set<GuardState>(['restoring', 'review', 'reopening', 'open']);
 
 /**
- * Maintenance mode of a restored installation (backup-restore.md §3.5, §3.13). The restore tool
- * creates `ruvee_control.restore_guard` before it loads anything; it is outside the Prisma schema and
- * never in a backup. No table means an installation that was never restored. `restoring` and
- * `review` keep every API request closed; `reopening` serves only the reopening endpoints; only
- * the reopening's completion (or, with no account, `restore-complete`) opens it. Once open, the
- * answer is cached: a database never goes from open back to closed.
+ * Whether this database may be served (backup-restore.md §3.5, §3.13; installation.ts). Only an
+ * explicit answer opens it: a fresh installation's `ruvee_control.installation` row (from
+ * `ruvee-admin init`), or a restore guard in `open`. Everything else is closed: no control
+ * schema (`uninitialized`), a guard table without its row or with an unknown state (an
+ * interrupted restore), a schema with neither table. `reopening` serves only the reopening.
+ *
+ * Only `open` is cached, because a database never goes from open back to closed. Every other
+ * answer is read again on the next request, so a database that becomes a restore target, or
+ * moves from `restoring` to `reopening`, is seen at once (review R14).
  */
 @Injectable()
 export class MaintenanceService {
@@ -19,39 +24,47 @@ export class MaintenanceService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  /** Fails closed: until the guard has been read and says open (or is absent), nothing is open. */
   async state(): Promise<GuardState> {
     if (this.open) return 'open';
     // Two statements: PostgreSQL resolves every table a statement names, even in a CASE branch
     // that is not taken.
-    const [{ present } = { present: false }] = await this.prisma.$queryRaw<{ present: boolean }[]>`
-      SELECT to_regclass('ruvee_control.restore_guard') IS NOT NULL AS present`;
-    const state = present
-      ? (
-          await this.prisma.$queryRaw<{ state: GuardState }[]>`
-            SELECT state FROM ruvee_control.restore_guard WHERE id = 1`
-        )[0]?.state
-      : 'none';
-    // A guard table without its row is an interrupted restore too.
-    const known: GuardState = state ?? 'restoring';
-    this.open = known === 'none' || known === 'open';
-    return known;
+    const [found] = await this.prisma.$queryRaw<
+      { schema: boolean; guard: boolean; installation: boolean }[]
+    >`
+      SELECT to_regnamespace('ruvee_control') IS NOT NULL AS schema,
+             to_regclass('ruvee_control.restore_guard') IS NOT NULL AS guard,
+             to_regclass('ruvee_control.installation') IS NOT NULL AS installation`;
+    let state: GuardState;
+    if (!found?.schema) state = 'uninitialized';
+    else if (found.guard) {
+      const [row] = await this.prisma.$queryRaw<{ state: string }[]>`
+        SELECT state FROM ruvee_control.restore_guard WHERE id = 1`;
+      state =
+        row && RESTORE_STATES.has(row.state as GuardState)
+          ? (row.state as GuardState)
+          : 'restoring';
+    } else if (found.installation) {
+      const [row] = await this.prisma.$queryRaw<{ origin: string }[]>`
+        SELECT origin FROM ruvee_control.installation WHERE id = 1`;
+      state = row?.origin === 'fresh' ? 'open' : 'uninitialized';
+    } else state = 'restoring';
+    if (state === 'open') this.open = true;
+    return state;
   }
 
   async isOpen(): Promise<boolean> {
-    const state = await this.state();
-    return state === 'none' || state === 'open';
+    return (await this.state()) === 'open';
   }
 
   /**
    * Throws the error a request for a handler of `routeClass` gets in the current state, if any.
-   * Default deny: in every state but `open` (or no guard), only `health` is served, and while
-   * reopening also `reopen`. The class comes from the matched handler (route-class.ts).
+   * Default deny: in every state but `open`, only `health` is served, and while reopening also
+   * `reopen`. The class comes from the matched handler (route-class.ts).
    */
   async gate(routeClass: RouteClass): Promise<void> {
     if (routeClass === 'health') return;
     const state = await this.state();
-    if (state === 'none' || state === 'open') return;
+    if (state === 'open') return;
     if (state === 'reopening') {
       if (routeClass === 'reopen') return;
       throw new ApiException('reopening');

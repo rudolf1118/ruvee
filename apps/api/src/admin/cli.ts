@@ -3,6 +3,8 @@
  * HTTP administration API. Output goes to this terminal only; nothing is logged.
  *
  *   ruvee-admin opaque-setup --out <path>   create the OPAQUE server setup file (mode 0600)
+ *   ruvee-admin init                        mark DATABASE_URL as a fresh installation (once, before
+ *                                           first use); a database without it is never served
  *   ruvee-admin bootstrap-token             print a single-use setup token valid for 60 minutes
  *   ruvee-admin backup --out <dir> --synthetic-test-only
  *                                           encrypted dump of DATABASE_URL to BACKUP_AGE_RECIPIENT
@@ -24,6 +26,8 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import * as opaque from '@serenity-kit/opaque';
 import { randomToken, sha256 } from '../common/secrets.js';
 import { PrismaClient } from '../generated/prisma/client.js';
+import { connectTo, DbTargetError, parseDbTarget } from './db-target.js';
+import { InstallationError, initInstallation } from './installation.js';
 import { pgToolsFromEnv } from './pg-tools.js';
 import {
   completeRestore,
@@ -276,8 +280,39 @@ async function bootstrapToken(): Promise<void> {
   }
 }
 
+/**
+ * A fresh installation is opened explicitly (predeployment-review R14): until `init`, the API
+ * serves nothing but health checks, so a database that was never set up, or a restore target,
+ * can never be mistaken for an open installation.
+ */
+async function init(): Promise<void> {
+  const url = process.env.DATABASE_URL;
+  if (!url) fail('DATABASE_URL is not set');
+  let c;
+  try {
+    c = await connectTo(parseDbTarget(url));
+  } catch (error) {
+    if (error instanceof DbTargetError) fail(error.message);
+    throw error;
+  }
+  try {
+    await initInstallation(c);
+  } catch (error) {
+    if (error instanceof InstallationError) fail(error.message);
+    throw error;
+  } finally {
+    await c.end();
+  }
+  process.stdout.write(
+    'Initialized as a fresh installation. The API now serves it; next: ruvee-admin bootstrap-token\n',
+  );
+}
+
 const [command, ...rest] = process.argv.slice(2);
 switch (command) {
+  case 'init':
+    await init();
+    break;
   case 'opaque-setup':
     await opaqueSetup(rest);
     break;
@@ -302,6 +337,6 @@ switch (command) {
     break;
   default:
     fail(
-      'commands: opaque-setup | bootstrap-token | backup | restore | restore-review | restore-complete | restore-reopen-code',
+      'commands: init | opaque-setup | bootstrap-token | backup | restore | restore-review | restore-complete | restore-reopen-code',
     );
 }

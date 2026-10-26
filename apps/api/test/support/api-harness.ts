@@ -9,7 +9,13 @@ import {
   startRegistration,
   type SyntheticAccount,
 } from './synthetic-client.js';
-import { createTempDatabase, migrate, query, type TempDatabase } from './temp-database.js';
+import {
+  createTempDatabase,
+  initFresh,
+  migrate,
+  query,
+  type TempDatabase,
+} from './temp-database.js';
 
 export const ORIGIN = 'http://127.0.0.1:3100';
 
@@ -50,7 +56,11 @@ export async function startHarness(options: { database?: TempDatabase } = {}): P
 }
 
 async function start(db: TempDatabase, fresh: boolean): Promise<Harness> {
-  if (fresh) migrate(db.url);
+  if (fresh) {
+    migrate(db.url);
+    // What the operator does once for a new installation (`ruvee-admin init`, review R14).
+    await initFresh(db.url);
+  }
   process.env.DATABASE_URL = db.url;
   const logs: string[] = [];
   const destination = new Writable({

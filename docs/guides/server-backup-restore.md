@@ -28,6 +28,13 @@ Requirements: the built API (`pnpm --filter @ruvee/api build`), the PostgreSQL c
 server's major version (`pg_dump`, `pg_restore` 18), or `RUVEE_PG_TOOLS_PREFIX` to run them
 inside the database container (README, "integration tests").
 
+## 1a. A new installation
+
+A new database is served only after you mark it, once, as a fresh installation: run migrations,
+then `DATABASE_URL=… pnpm --filter @ruvee/api admin init`. Until then the API answers
+`503 maintenance` to everything except health checks. `init` refuses a database that was
+restored (it opens only through its reopening, §5) or is already initialized.
+
 ## 2. Make the key pair (once, offline)
 
 Make the identity on a machine you trust, **not** on the server, with the maintained `age` tool

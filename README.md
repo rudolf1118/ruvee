@@ -52,6 +52,10 @@ pnpm dev                  # API on http://127.0.0.1:4000, web on http://127.0.0.
 PostgreSQL is published on loopback port 5433 (not 5432) to avoid clashing with a locally
 installed server. Change `POSTGRES_PORT` and `DATABASE_URL` together if you need another port.
 
+The API serves a database only once it is marked as a fresh installation (predeployment-review
+R14); until then every API request answers `503 maintenance`. Once per new database, after its
+migrations: `set -a; . ./.env; set +a; pnpm --filter @ruvee/api build && pnpm --filter @ruvee/api admin init`.
+
 ### Inspecting it
 
 - Web home page: <http://127.0.0.1:3100/>

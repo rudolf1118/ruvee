@@ -77,6 +77,17 @@ if (migrated.status !== 0) {
   await cleanup();
   process.exit(1);
 }
+// A new installation is opened explicitly (`ruvee-admin init`, review R14).
+const initialized = spawnSync('node', ['dist/admin/cli.js', 'init'], {
+  cwd: apiRoot,
+  env,
+  encoding: 'utf8',
+});
+if (initialized.status !== 0) {
+  console.error(initialized.stderr);
+  await cleanup();
+  process.exit(1);
+}
 mkdirSync(dir, { recursive: true, mode: 0o700 });
 const created = spawnSync('node', ['dist/admin/cli.js', 'opaque-setup', '--out', setupFile], {
   cwd: apiRoot,

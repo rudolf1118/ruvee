@@ -287,10 +287,18 @@ every backup, so a dump can never carry an "open" state into a restore.
 | REOPENING     | `reopening`, `review_completed_at`     | 503 except `/api/v1/reopen/*` | Only the host code plus snapshot-time credentials start it (§3.13)                                  |
 | OPEN          | `open`, `reopened_at`                  | normal                        | Reached only by completing the reopening (or, with no account, `restore-complete`)                  |
 
-The API (`MaintenanceService`, checked first in the global access guard) fails closed: no
-guard table means an ordinary, never-restored installation; a guard that is not `open`, or a
-guard table without its row, means maintenance. Until it has seen `open`, the API reads the guard
-on every request, so each transition takes effect without a restart. While `reopening`, only the
+The API (`MaintenanceService`, checked first in the global access guard) opens only on an
+explicit answer (predeployment-review R14, 2026-10-26):
+
+- no `ruvee_control` schema: **uninitialized**, `503 maintenance`;
+- `ruvee_control.installation` with `origin = 'fresh'` and no guard: a fresh installation,
+  marked once by `ruvee-admin init` (which refuses any database that already has a control
+  schema, so it can never skip a restore's reopening); open;
+- a guard: its state; a guard table without its row, an unknown state, or a control schema with
+  neither table (an interrupted PREPARE) means maintenance.
+
+Until it has seen `open`, the API reads this on every request and caches nothing, so each
+transition, including a database becoming a restore target, takes effect without a restart. While `reopening`, only the
 reopening routes answer (`503 reopening` elsewhere). Once it has seen `open` it stops asking: the
 guard can never go from `open` back to maintenance for the same database.
 

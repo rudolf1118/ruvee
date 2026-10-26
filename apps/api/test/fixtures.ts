@@ -15,7 +15,7 @@ import { Access } from '../src/sessions/access.decorator.js';
 
 /** MaintenanceService for unit tests without a database: an installation never restored. */
 export const neverRestored = {
-  state: () => Promise.resolve('none' as const),
+  state: () => Promise.resolve('open' as const),
   isOpen: () => Promise.resolve(true),
   gate: () => Promise.resolve(),
 };

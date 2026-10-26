@@ -38,7 +38,7 @@ describe('REVIEW R1 (regression): no path spelling bypasses the gate, CSRF or be
     cookie = await registerAccount(setup, account);
     // A restored installation waiting to be reopened, served by a new app process as after a
     // real restore. Restored sessions are revoked as APPLY POLICY does.
-    await query(setup.db.url, `CREATE SCHEMA ruvee_control`);
+    await query(setup.db.url, `CREATE SCHEMA IF NOT EXISTS ruvee_control`);
     await query(
       setup.db.url,
       `CREATE TABLE ruvee_control.restore_guard (id smallint PRIMARY KEY, state text NOT NULL)`,

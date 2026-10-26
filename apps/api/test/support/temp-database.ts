@@ -21,23 +21,34 @@ export const TEMP_DATABASE_NAME = /^ruvee_it_[0-9a-f]{12}$/;
  */
 const tracked = new Map<string, string>();
 
-function recordInLedger(name: string, serverUrl: string): void {
+/** Only the name: the run's teardown connects with its own DATABASE_URL, so no URL is stored. */
+function recordInLedger(name: string): void {
   const dir = process.env.RUVEE_IT_LEDGER_DIR;
   if (!dir) return;
-  appendFileSync(
-    join(dir, `${String(process.pid)}.ndjson`),
-    `${JSON.stringify({ name, serverUrl })}\n`,
-    {
-      mode: 0o600,
-    },
-  );
+  appendFileSync(join(dir, `${String(process.pid)}.txt`), `${name}\n`, { mode: 0o600 });
+}
+
+/**
+ * The server URL as this process first saw it. A harness later points DATABASE_URL at its own
+ * temporary database, so a URL recorded afterwards may name a database that is gone by now.
+ */
+const ORIGINAL_SERVER_URL = process.env.DATABASE_URL;
+
+/** A URL on the same server that connects through a database the tests did not create. */
+function maintenanceUrl(serverUrl: string): string {
+  const database = new URL(serverUrl).pathname.slice(1);
+  if (!TEMP_DATABASE_NAME.test(database)) return serverUrl;
+  const fallback = ORIGINAL_SERVER_URL;
+  if (!fallback || TEMP_DATABASE_NAME.test(new URL(fallback).pathname.slice(1)))
+    throw new Error('no non-temporary database to connect through');
+  return fallback;
 }
 
 /** Drops one database by its exact, checked name. */
 export async function dropDatabase(serverUrl: string, name: string): Promise<void> {
   if (!TEMP_DATABASE_NAME.test(name))
     throw new Error('refusing to drop a database the test did not create');
-  const client = new pg.Client({ connectionString: serverUrl });
+  const client = new pg.Client({ connectionString: maintenanceUrl(serverUrl) });
   await client.connect();
   try {
     await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
@@ -83,7 +94,7 @@ export async function createTempDatabase(): Promise<TempDatabase> {
   await admin.connect();
   try {
     // Recorded before it exists: a process killed between the two still has it in the ledger.
-    recordInLedger(name, serverUrl);
+    recordInLedger(name);
     tracked.set(name, serverUrl);
     await admin.query(`CREATE DATABASE "${name}"`);
   } finally {
@@ -97,6 +108,18 @@ export async function createTempDatabase(): Promise<TempDatabase> {
       tracked.delete(name);
     },
   };
+}
+
+/** `ruvee-admin init`'s effect: the database becomes a fresh installation the API serves. */
+export async function initFresh(url: string): Promise<void> {
+  const { initInstallation } = await import('../../src/admin/installation.js');
+  const client = new pg.Client({ connectionString: url });
+  await client.connect();
+  try {
+    await initInstallation(client);
+  } finally {
+    await client.end();
+  }
 }
 
 /** `prisma migrate deploy` against the given database; throws with Prisma's output on failure. */

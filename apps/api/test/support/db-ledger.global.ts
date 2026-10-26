@@ -11,13 +11,15 @@ import { dropDatabase, TEMP_DATABASE_NAME } from './temp-database.js';
  */
 export default function setup() {
   const dir = mkdtempSync(join(tmpdir(), 'ruvee-it-ledger-'));
+  // The main process never changes DATABASE_URL: its database is not a temporary one.
+  const serverUrl = process.env.DATABASE_URL;
   process.env.RUVEE_IT_LEDGER_DIR = dir;
   return async () => {
-    const entries = readdirSync(dir)
-      .filter((f) => f.endsWith('.ndjson'))
-      .flatMap((f) => readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean))
-      .map((line) => JSON.parse(line) as { name: string; serverUrl: string });
-    for (const { name, serverUrl } of entries)
+    if (!serverUrl) throw new Error('DATABASE_URL is not set');
+    const names = readdirSync(dir)
+      .filter((f) => f.endsWith('.txt'))
+      .flatMap((f) => readFileSync(join(dir, f), 'utf8').split('\n').filter(Boolean));
+    for (const name of new Set(names))
       if (TEMP_DATABASE_NAME.test(name)) await dropDatabase(serverUrl, name);
     rmSync(dir, { recursive: true, force: true });
   };

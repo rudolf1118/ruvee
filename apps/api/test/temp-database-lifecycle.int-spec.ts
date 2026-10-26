@@ -32,7 +32,9 @@ describe('temporary databases are dropped on failure paths', () => {
       const ledger = readdirSync(dir)
         .map((f) => readFileSync(join(dir, f), 'utf8'))
         .join('');
-      expect(ledger).toContain(`"name":"${db.name}"`);
+      expect(ledger.split('\n')).toContain(db.name);
+      // Names only: no URL, so no password, is written to the ledger.
+      expect(ledger).not.toContain('postgresql:');
     } finally {
       await db.drop();
     }

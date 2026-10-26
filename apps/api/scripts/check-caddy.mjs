@@ -138,7 +138,7 @@ try {
   u.pathname = `/${database}`;
   const db = new pg.Client({ connectionString: u.toString() });
   await db.connect();
-  await db.query('CREATE SCHEMA ruvee_control');
+  await db.query('CREATE SCHEMA IF NOT EXISTS ruvee_control');
   await db.query(
     'CREATE TABLE ruvee_control.restore_guard (id smallint PRIMARY KEY, state text NOT NULL)',
   );

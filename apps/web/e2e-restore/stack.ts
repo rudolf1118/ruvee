@@ -60,13 +60,15 @@ export class RestoreStack {
     return name;
   }
 
-  /** A fresh installation: database, migrations, OPAQUE setup, setup token, age key pair. */
+  /** A fresh installation: database, migrations, `init`, OPAQUE setup, setup token, age key pair. */
   async init(): Promise<void> {
     const name = this.newDatabase();
     spawnSync('node_modules/.bin/prisma', ['migrate', 'deploy'], {
       cwd: apiRoot,
       env: { ...process.env, DATABASE_URL: urlFor(name), PRISMA_HIDE_UPDATE_MESSAGE: '1' },
     });
+    // Opened explicitly, as an operator does once for a new installation (review R14).
+    run(['dist/admin/cli.js', 'init'], { DATABASE_URL: urlFor(name) });
     run(['dist/admin/cli.js', 'opaque-setup', '--out', this.setupFile]);
     const out = run(['dist/admin/cli.js', 'bootstrap-token'], { DATABASE_URL: urlFor(name) });
     this.bootstrapToken = /\n\s+([A-Za-z0-9_-]{43})\n/.exec(out)?.[1] ?? '';
