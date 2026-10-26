@@ -330,12 +330,21 @@ export class ReopenService {
     const via = session.via ?? 'password';
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
+      // The guard row first: `ruvee-admin restore-reopen-code` locks it too, so a host revocation
+      // either commits before this check (and is seen here) or waits for this transaction (R13).
       const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
         SELECT state, restore_id FROM ruvee_control.restore_guard WHERE id = 1 FOR UPDATE`;
+      // Re-checked under that lock: the session was authenticated before this transaction.
+      const [live] = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM sessions
+        WHERE id = ${session.sessionId}::uuid AND kind = 'reopen' AND revoked_at IS NULL
+          AND absolute_expires_at > now()
+        FOR UPDATE`;
       const [link] = await tx.$queryRaw<{ restore_id: string }[]>`
         SELECT restore_id FROM ruvee_control.reopen_codes
-        WHERE session_id = ${session.sessionId}::uuid AND revoked_at IS NULL`;
-      if (g?.state !== 'reopening' || link?.restore_id !== g.restore_id)
+        WHERE session_id = ${session.sessionId}::uuid AND revoked_at IS NULL
+        FOR UPDATE`;
+      if (g?.state !== 'reopening' || !live || link?.restore_id !== g.restore_id)
         throw new ApiException('reopen_failed');
       const updated = await tx.accountKeys.updateMany({
         where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },

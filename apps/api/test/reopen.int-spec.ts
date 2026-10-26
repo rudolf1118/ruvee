@@ -6,6 +6,7 @@ import {
   API_ERRORS,
   errorResponseSchema,
   loginStartResponseSchema,
+  recoveryCompleteRequestSchema,
   syncChangesResponseSchema,
 } from '@ruvee/contracts';
 import type request from 'supertest';
@@ -571,6 +572,71 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         await query(r.db.url, `SELECT details FROM security_events WHERE type = 'reopen_failed'`),
       );
       expect(text).not.toContain('RC1-');
+    });
+  });
+
+  describe('REVIEW R13 (regression): a host revocation and a completion never both win', () => {
+    let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
+
+    beforeEach(async () => {
+      r = await restoredAndReviewed();
+    }, 120_000);
+    afterEach(async () => {
+      await (r as typeof r | undefined)?.h.close();
+    });
+
+    /** A reopen session authenticated, and its completion body prepared, before anything else. */
+    async function readyToComplete() {
+      const started = await reopenWithKit(r.h, account, r.code);
+      expect(started.status, started.text).toBe(200);
+      const cookie = reopenCookie(started);
+      const material = await reopenMaterial(r.h, cookie);
+      const { body } = await reopenCompleteBody(
+        r.h,
+        account,
+        cookie,
+        material,
+        unwrapReopenMaterial(account, material, {}),
+        NEW_PASSWORD,
+      );
+      const { SessionService } = await import('../src/sessions/session.service.js');
+      const { ReopenService } = await import('../src/reopen/reopen.service.js');
+      const session = await r.h.app
+        .get(SessionService)
+        .authenticateReopen(cookie.slice(cookie.indexOf('=') + 1));
+      const complete = () =>
+        r.h.app.get(ReopenService).complete(session, recoveryCompleteRequestSchema.parse(body), {
+          ip: undefined,
+          userAgent: undefined,
+        });
+      return { complete };
+    }
+
+    it('refuses a completion whose session the host ended after it was authenticated', async () => {
+      const { complete } = await readyToComplete();
+      // The request is past authentication; then the host issues a new code (`restore-reopen-code`).
+      await issueReopenCode(r.db.url, { restoreId: r.restoreId });
+      await expect(complete()).rejects.toMatchObject({ code: 'reopen_failed' });
+      expect(await guardState(r.db.url)).toBe('reopening');
+      // The consumed code is revoked too, so nothing links that session to the restore any more.
+      expect((await codes(r.db.url)).filter((c) => !c.revoked)).toHaveLength(1);
+    });
+
+    it('serializes a completion and a new code: exactly one of them takes effect', async () => {
+      const { complete } = await readyToComplete();
+      const [completed, issued] = await Promise.allSettled([
+        complete(),
+        issueReopenCode(r.db.url, { restoreId: r.restoreId }),
+      ]);
+      const state = await guardState(r.db.url);
+      if (completed.status === 'fulfilled') {
+        // The completion won: open, and the host was told no code exists any more.
+        expect(issued.status).toBe('rejected');
+        expect(state).toBe('open');
+      } else {
+        expect(issued.status).toBe('fulfilled');
+        expect(state).toBe('reopening');
+      }
     });
   });
 });

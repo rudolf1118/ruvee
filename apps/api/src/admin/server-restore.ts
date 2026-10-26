@@ -676,17 +676,18 @@ export interface IssuedReopenCode {
 }
 
 /**
- * Issues the one usable reopening code: every earlier code of this restore is revoked and every
- * reopen session ended, in the same transaction. Runs inside an open transaction on `c`.
+ * Issues the one usable reopening code: every earlier code of this restore, consumed ones
+ * included, is revoked and every reopen session ended, in the same transaction. Runs inside an
+ * open transaction on `c` that holds the guard row's lock, which a reopening's completion takes
+ * first too: a completion either finished before this or sees its session ended (R13).
  */
 async function issueCode(
   c: pg.Client,
   restoreId: string,
   accountId: string,
 ): Promise<IssuedReopenCode> {
-  await c.query(
-    `UPDATE ${REOPEN_CODES_TABLE} SET revoked_at = now() WHERE revoked_at IS NULL AND consumed_at IS NULL`,
-  );
+  // A consumed code links the reopen session it created; revoking it ends that reopening.
+  await c.query(`UPDATE ${REOPEN_CODES_TABLE} SET revoked_at = now() WHERE revoked_at IS NULL`);
   await c.query(
     `UPDATE sessions SET revoked_at = now(), revoke_reason = 'reopened' WHERE kind = 'reopen' AND revoked_at IS NULL`,
   );
@@ -783,6 +784,14 @@ export async function issueReopenCode(
     if (g.restore_id !== options.restoreId)
       throw new RestoreError('complete', 'that is not this restore');
     return transaction(c, async () => {
+      // Locked and checked again inside the transaction: a reopening that completed meanwhile
+      // has opened the installation, and then no code is issued.
+      const locked = await c.query<{ state: string; restore_id: string }>(
+        `SELECT state, restore_id FROM ${GUARD_TABLE} WHERE id = 1 FOR UPDATE`,
+      );
+      const now = locked.rows[0];
+      if (now?.state !== 'reopening' || now.restore_id !== options.restoreId)
+        throw new RestoreError('complete', 'a reopening code exists only while reopening');
       const account = await c.query<{ id: string }>('SELECT id FROM accounts LIMIT 1');
       const accountId = account.rows[0]?.id;
       if (!accountId) throw new RestoreError('complete', 'the restored database has no account');
