@@ -56,7 +56,10 @@ A complete single-user web vault across several browsers, against the real API a
 - **Encrypted export** (D-13 option A): Security → Encrypted export makes a file of the vault's
   existing ciphertext that only the Recovery Kit typed at export opens; it is never uploaded.
   "Open an encrypted export" on the welcome screen opens one read-only, with no account, after
-  checking every part of it.
+  checking every part of it. **Restore into a new account** imports it into a fresh installation:
+  new account and keys through the normal setup, every item re-encrypted locally and uploaded as
+  new items, resuming after interruptions without duplicates
+  ([user guide](../guides/encrypted-export.md)).
 - **Sync**: every commit carries an encrypted manifest; pulls are verified (chain, digest,
   records at their revisions) before anything is applied; a failure makes the vault read-only.
   Offline edits queue encrypted and upload later; concurrent edits become explicit conflicts
@@ -68,12 +71,13 @@ A complete single-user web vault across several browsers, against the real API a
 | Check                                                                                                                                                                                                                                                                                                                                          | Result                          |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                                                                                                                                                             | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 33, vault 41, extension 27, crypto 60)                                                                                                                                                                                                                                                                  | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 33, vault 52, extension 27, crypto 60)                                                                                                                                                                                                                                                                  | Pass                            |
 | `pnpm test:integration` (52 and 3 todo; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                                                                                                                                | Pass                            |
 | `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                                                                                                                                                              | Pass                            |
 | `pnpm --filter @ruvee/web test:headers` (33: headers, CSP, OPAQUE and crypto probes, local fonts, three engines)                                                                                                                                                                                                                               | Pass                            |
 | `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                                                                                                                                                          | Pass                            |
 | `pnpm --filter @ruvee/extension test:extension` (Chromium, 9: pairing, exact-origin fill and refusals, proven worker restart and resume, auto-lock and expired unlock, `storage.session` refused to page scripts, stale fill after navigation, previous-password unlock, refresh-token reuse, logout, revoked extension reconnecting, capture) | Pass                            |
+| `pnpm --filter @ruvee/web test:import` (two installations, each with its own API and database: export from A, restore into a fresh B, unlock B with new credentials, check every item, A and the file unchanged, capture checks)                                                                                                               | Pass: Chromium, Firefox, WebKit |
 | `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` and kit rotation, activity; INV-01 and INV-16 capture), per engine                                                                                                                                       | Pass: Chromium, Firefox, WebKit |
 | Remote CI                                                                                                                                                                                                                                                                                                                                      | **Not run** (nothing pushed)    |
 | Safari, a real Caddy binary, phones, older laptops                                                                                                                                                                                                                                                                                             | **Not run**                     |
@@ -138,8 +142,8 @@ D-07, D-05, D-11 to D-15, D-18.
   beyond the page's matches, no fill into same-origin frames, no Firefox or Safari, no store
   packaging. A page navigating in the instant between the worker's last check and injection is
   covered only by the in-page origin check and its unit test.
-- **Not built:** server backup and restore (blocked on D-28), importing an export into a fresh
-  installation, fixed export vectors ([backup-restore.md](../architecture/backup-restore.md)), the pairing
+- **Not built:** server backup and restore (blocked on D-28), importing into a vault that already
+  holds items (merge), the pairing
   QR code, device labels (`DEVICE_LABEL` rule undecided), the password generator, cards and
   identities, SSE push, re-seeding, full key rotation, mobile.
 - **Restoring an older database copy today** brings back devices removed after it, with their
@@ -158,7 +162,7 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**Import an export into a fresh installation** (backup-restore.md §4.4 and M2 step 4: a new
-account with new keys, items re-encrypted through the pending queue) and fixed export vectors
-(E7); neither needs a new decision. **D-28** still blocks M1, server backup and restore. The
-independent review (D-19) still gates real data and now includes the export format.
+**D-28** blocks M1, server backup and restore; it is the next decision. Work that needs none:
+running the fixed export fixture in the browsers (E7), copy-to-clipboard in the extension, and
+preparing the independent review (D-19), which still gates real data and now includes the export
+format and the import.

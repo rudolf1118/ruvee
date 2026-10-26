@@ -60,10 +60,13 @@ export function SetupFlow({
   client,
   onCancel,
   onDone,
+  restoring = false,
 }: {
   client: VaultClient;
   onCancel: () => void;
   onDone: (vault: UnlockedVault) => void;
+  /** Set when this account is being created to restore an export into (backup-restore §4.4a). */
+  restoring?: boolean;
 }) {
   const [step, setStep] = useState<Step>('account');
   const [token, setToken] = useState('');
@@ -114,6 +117,12 @@ export function SetupFlow({
   if (step === 'account')
     return (
       <AuthCard title="Create your account" badge={<Steps current={step} />}>
+        {restoring ? (
+          <Notice tone="brand">
+            You are creating a new account to restore your export into. It gets its own password and
+            Recovery Kit; the export is imported right after you finish.
+          </Notice>
+        ) : null}
         <p className="text-body text-ink-muted">
           This server holds one account. To create it, you need the setup token from the server
           owner&apos;s terminal (

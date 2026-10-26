@@ -15,7 +15,8 @@
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:headers": "node scripts/build-diagnostics.mjs && playwright test -c playwright.headers.config.ts",
-    "test:vault": "playwright test -c playwright.vault.config.ts"
+    "test:vault": "playwright test -c playwright.vault.config.ts",
+    "test:import": "playwright test -c playwright.import.config.ts"
   },
   "dependencies": {
     "@ruvee/contracts": "workspace:*",

@@ -53,6 +53,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   exportOpen: (e, p: Parameters<VaultEngine['exportOpen']>[0]) => e.exportOpen(p),
   exportSecret: (e, p: Parameters<VaultEngine['exportSecret']>[0]) => e.exportSecret(p),
   exportClose: (e) => e.exportClose(),
+  importIntoEmptyVault: (e) => e.importIntoEmptyVault(),
   logout: (e) => e.logout(),
   wipe: (e) => {
     e.wipeMemory();

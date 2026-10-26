@@ -133,9 +133,10 @@ export function openExport(
   crypto: RuveeCrypto,
   text: string,
   recoveryKeyText: string,
+  limits: { readonly maxChars?: number } = {},
 ): OpenedExport {
   // Step 1: the schema, strictly.
-  if (text.length > EXPORT_MAX_CHARS) throw new VaultError('invalid_export');
+  if (text.length > (limits.maxChars ?? EXPORT_MAX_CHARS)) throw new VaultError('invalid_export');
   let raw: unknown;
   try {
     raw = JSON.parse(text);

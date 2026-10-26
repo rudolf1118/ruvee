@@ -10,7 +10,7 @@ import { DevelopmentNotice } from './auth-layout';
 import { Notice, PasswordField, TextField } from './fields';
 import { messageFor } from './messages';
 import { PLATFORM_NAMES } from './pairing';
-import { ExportSection } from './export';
+import { ExportSection, ImportSection } from './export';
 import { RecoveryKitPanel } from './recovery-kit';
 import { relativeTime } from './view-model';
 
@@ -353,7 +353,16 @@ function RevokeForm({
 }
 
 /** Master password change (authentication.md §9) and Secret Key replacement (D-24). */
-export function SecurityPanel({ client, onClose }: { client: VaultClient; onClose: () => void }) {
+export function SecurityPanel({
+  client,
+  onClose,
+  canImport,
+}: {
+  client: VaultClient;
+  onClose: () => void;
+  /** The vault has never held an item and no import was started (backup-restore.md §4.4a). */
+  canImport: boolean;
+}) {
   return (
     <Panel title="Security" onClose={onClose}>
       <ChangePasswordSection client={client} onClose={onClose} />
@@ -363,6 +372,12 @@ export function SecurityPanel({ client, onClose }: { client: VaultClient; onClos
       <RecoveryKitSection client={client} />
       <hr className="border-line" />
       <ExportSection client={client} />
+      {canImport ? (
+        <>
+          <hr className="border-line" />
+          <ImportSection client={client} />
+        </>
+      ) : null}
     </Panel>
   );
 }

@@ -68,6 +68,13 @@ export interface SyncStatus {
   readonly integrity?: string;
   /** The Recovery Kit was used at this time and this device has not acknowledged it yet. */
   readonly recoveryUsedAtMs?: number;
+  /** An import into this vault (backup-restore.md §4.4a). */
+  readonly import?: {
+    readonly state: 'uploading' | 'complete';
+    readonly total: number;
+    readonly uploaded: number;
+    readonly sourceAsOfMs: number;
+  };
 }
 
 export type DevicePhase =
@@ -130,6 +137,8 @@ export type VaultErrorCode =
   | 'previous_password_required'
   | 'invalid_export'
   | 'unsynced_changes'
+  | 'import_in_progress'
+  | 'vault_not_empty'
   | 'integrity'
   | 'internal';
 
@@ -191,6 +200,10 @@ export interface ExportView {
   /** Authenticated by the export's manifest. */
   readonly asOfMs: number;
   readonly authorDeviceId: string;
+  /** The export's manifest `seq`: which snapshot of the source vault this is. */
+  readonly seq: number;
+  /** Deleted items in the export: deletion markers with no content, never imported. */
+  readonly deletedCount: number;
   readonly items: readonly ItemDetail[];
 }
 
@@ -257,6 +270,7 @@ export interface VaultMethods {
   exportOpen(params: { text: string; recoveryKey: string }): ExportView;
   exportSecret(params: { id: string }): string;
   exportClose(): true;
+  importIntoEmptyVault(): SyncStatus;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;

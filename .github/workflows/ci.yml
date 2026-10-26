@@ -117,6 +117,8 @@ jobs:
       # Through turbo, so the Prisma client and the workspace packages are built first.
       - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
       - run: pnpm --filter @ruvee/web test:vault
+      # Export from one installation, restore into a second, fresh one (two stacks, two databases).
+      - run: pnpm --filter @ruvee/web test:import
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

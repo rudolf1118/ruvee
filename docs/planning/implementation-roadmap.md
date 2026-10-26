@@ -241,7 +241,7 @@ The current state, commands and gaps are kept in [status.md](status.md). In shor
 
 ## Next bounded task
 
-Owner decisions D-28 and D-13 for backup and restore ([backup-restore.md](../architecture/backup-restore.md)), then server backup (M1) and the encrypted export (M2). See [status.md](status.md#next-task).
+Owner decision D-28, then server backup and restore (M1). The encrypted export and its import into a fresh installation (M2) are implemented locally ([backup-restore.md](../architecture/backup-restore.md)). See [status.md](status.md#next-task).
 
 ## Changes after architecture validation
 

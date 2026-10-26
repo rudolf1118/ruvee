@@ -19,6 +19,7 @@
     "e2e/**/*.ts",
     "e2e-headers/**/*.ts",
     "e2e-vault/**/*.ts",
+    "e2e-import/**/*.ts",
     "*.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"

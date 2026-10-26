@@ -59,6 +59,10 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return "That file isn't a Ruvee export, or it is damaged or incomplete.";
     case 'unsynced_changes':
       return 'Some changes are still waiting to sync or are in conflict. Resolve them, then try again.';
+    case 'import_in_progress':
+      return 'An import is still uploading. Keep this tab open or unlock again later; you can edit once it is complete.';
+    case 'vault_not_empty':
+      return 'You can import only into a vault that has never held an item, and only once. Nothing was changed.';
     case 'integrity':
       return "The server's copy of your keys didn't pass Ruvee's checks. Nothing was changed.";
     case 'internal':

@@ -5,12 +5,14 @@
  *   `AK`, KDF salt and profile, and the encrypted keyset
  * - `records`: item records exactly as received or committed
  * - `meta`: the newest verified manifest envelope
- * - `local`: `LOCAL_RECORD` envelopes (checkpoint, pending queue, conflict drafts)
+ * - `local`: `LOCAL_RECORD` envelopes (checkpoint, pending queue, conflict drafts, import state)
+ * - `imports`: item records of an import, already encrypted under this vault's keys, waiting to
+ *   be uploaded (backup-restore.md §4.4a)
  */
 
 const DB_NAME = 'ruvee';
-const DB_VERSION = 1;
-export const STORES = ['device', 'records', 'meta', 'local'] as const;
+const DB_VERSION = 2;
+export const STORES = ['device', 'records', 'meta', 'local', 'imports'] as const;
 type StoreName = (typeof STORES)[number];
 
 export interface DeviceRecord {
@@ -41,6 +43,13 @@ export interface StoredRecord {
   readonly revision: number;
   /** Null for a tombstone. */
   readonly record: Uint8Array | null;
+}
+
+/** One imported item, encrypted for this vault at revision 1 under a fresh item id. */
+export interface QueuedImport {
+  readonly itemId: string;
+  readonly order: number;
+  readonly record: Uint8Array;
 }
 
 export interface StoredManifest {
@@ -75,12 +84,15 @@ export class DeviceStore {
 
   static async open(factory: IDBFactory = indexedDB): Promise<DeviceStore> {
     const req = factory.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
+    req.onupgradeneeded = (event) => {
       const db = req.result;
-      db.createObjectStore('device');
-      db.createObjectStore('records', { keyPath: 'itemId' });
-      db.createObjectStore('meta');
-      db.createObjectStore('local');
+      if (event.oldVersion < 1) {
+        db.createObjectStore('device');
+        db.createObjectStore('records', { keyPath: 'itemId' });
+        db.createObjectStore('meta');
+        db.createObjectStore('local');
+      }
+      if (event.oldVersion < 2) db.createObjectStore('imports', { keyPath: 'order' });
     };
     return new DeviceStore(await promised(req));
   }
@@ -107,6 +119,15 @@ export class DeviceStore {
     return (await promised(this.store('records').getAll())) as StoredRecord[];
   }
 
+  /** The first `limit` queued import items, in queue order. */
+  async imports(limit: number): Promise<QueuedImport[]> {
+    return (await promised(this.store('imports').getAll(null, limit))) as QueuedImport[];
+  }
+
+  async importsCount(): Promise<number> {
+    return promised(this.store('imports').count());
+  }
+
   async manifest(): Promise<StoredManifest | undefined> {
     return (await promised(this.store('meta').get('manifest'))) as StoredManifest | undefined;
   }
@@ -124,11 +145,14 @@ export class DeviceStore {
     records?: readonly StoredRecord[];
     manifest?: StoredManifest;
     local?: Readonly<Record<string, Uint8Array | null>>;
+    imports?: { readonly put?: readonly QueuedImport[]; readonly remove?: readonly number[] };
   }): Promise<void> {
     const tx = this.db.transaction(STORES, 'readwrite');
     if (change.device) tx.objectStore('device').put(change.device, 'self');
     for (const record of change.records ?? []) tx.objectStore('records').put(record);
     if (change.manifest) tx.objectStore('meta').put(change.manifest, 'manifest');
+    for (const row of change.imports?.put ?? []) tx.objectStore('imports').put(row);
+    for (const order of change.imports?.remove ?? []) tx.objectStore('imports').delete(order);
     for (const [name, envelope] of Object.entries(change.local ?? {})) {
       if (envelope === null) tx.objectStore('local').delete(name);
       else tx.objectStore('local').put(envelope, name);

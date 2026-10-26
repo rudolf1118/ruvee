@@ -243,16 +243,64 @@ Any failure fails the whole import; nothing partial is shown or stored.
 
 - **Read-only, on a clean device, no server:** steps 1 to 6 in the web app's worker, in memory
   only; locking or closing discards it. No account, no network.
-- **Into a fresh installation:** a new account is created with **new** keys (`AK`, `SK`, `VK`, a
-  new Recovery Kit, a new password), and every item is decrypted in the worker and re-encrypted
-  as a new item through the normal commit path, queued in the encrypted local pending queue so an
-  interrupted import resumes. The old account's keys are never reused, so no old copy of the old
-  `SK`, wraps or sessions carries over.
+- **Into a fresh installation** (implemented; §4.4a): a new account is created with **new** keys
+  (`AK`, `SK`, `VK`, a new Recovery Kit, a new password), and every item is decrypted in the
+  worker and re-encrypted as a new item under a fresh id, queued as ciphertext and uploaded
+  through the normal commit path, so an interrupted import resumes. The old account's keys are
+  never reused, so no old copy of the old `SK`, wraps or sessions carries over.
 - **Into the existing account:** not in M2. (Merging needs a conflict design; restoring deleted
   items belongs with version history, Phase 7.)
 
 Sessions, devices, pairings and recovery attempts are not in an export at all; a restore starts
 with one new device and no history.
+
+### 4.4a Import into a fresh installation: state machine
+
+Portable import restores **vault contents** into a **new account**. It is not an operational
+server restore (§3): no account, device, session, OPAQUE record, security event or recovery
+state of the source is carried over, and the source's manifest chain is not reused.
+
+```
+ OPENED ──(Continue)──► SETTING_UP ──(setup finished, vault empty)──► QUEUED ──► UPLOADING ──► COMPLETE
+   │                        │                                                       │
+ cancel: nothing         cancel: an empty new account                          interrupted: resumes
+ created                 (log in or recover; import later from Security)        at the next unlock
+```
+
+| State          | Where it lives                                                                                                                                                                                                         | What exists                                                                                                                                       | On cancel or failure                                                                                                                                                                                                                   |
+| -------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **OPENED**     | Worker memory only                                                                                                                                                                                                     | The export, fully verified (§4.3); a preview                                                                                                      | Close: nothing was created anywhere                                                                                                                                                                                                    |
+| **SETTING_UP** | Worker memory; the server during `register/finish`                                                                                                                                                                     | The existing setup flow: bootstrap token, new username and password, **new** Recovery Kit that must be typed back (D-06)                          | Before `register/finish`: nothing on the server. If the browser stops after the server accepted it, an empty account exists; the user logs in or recovers it with the new kit and imports from Security (the "empty vault" path below) |
+| **QUEUED**     | One IndexedDB transaction: an encrypted `import` local record (counts, source date; no plaintext) and an `imports` store of item records **already re-encrypted** under the new keys, each with a fresh random item id | All items, as ciphertext, on this device                                                                                                          | Atomic: either every item is queued or none is                                                                                                                                                                                         |
+| **UPLOADING**  | The existing pending queue and commit path (sync-protocol §4, §7)                                                                                                                                                      | Batches of at most 100 items or 256 KiB move from `imports` into the pending queue; an item leaves `imports` only after it is in the synced state | Offline, closed tab, browser restart: the next unlock continues. New items cannot be added meanwhile, so the import is the only writer                                                                                                 |
+| **COMPLETE**   | The `import` record marked complete                                                                                                                                                                                    | Every queued item is on the server and in this device's verified state                                                                            | —                                                                                                                                                                                                                                      |
+
+Guarantees it relies on, all existing:
+
+- **No duplicates on retry:** each destination item id is fixed when it is queued and is created
+  with base revision 0. A commit retried after a lost response reuses its commit id, and the
+  server refuses a second creation of an existing id (`revision_conflict`); the client then sees
+  its own record (sync-protocol §6, "recognises its own commit").
+- **Never "complete" while partial:** completion requires an empty `imports` store, an empty
+  pending queue and no commit in flight, after a verified sync.
+- **New history:** the new vault's chain starts at its own genesis; every imported item is a new
+  item at revision 1 in a normal commit. The source manifest only authenticated the file (§4.3).
+- **No plaintext at rest:** bodies are decrypted and re-encrypted in the worker; the queue holds
+  only item records. There are no temporary files.
+
+**The empty-vault path.** Import is allowed into the account this device is unlocked in only
+when that vault has never held an item (no live item, no tombstone, nothing pending) and no
+import was started before. This is how an interrupted account creation resumes, and it is not a
+merge. A vault that already holds items, including a partial import whose local queue was lost
+(browser data cleared mid-upload), is refused: the user can compare with the export opened
+read-only, or import into another fresh installation. Nothing is deleted automatically.
+
+**What is imported** (item schema 1 has no references between items, attachments or folders):
+type, title, login username, password, URLs and notes, note text, tags, favorite, trash state and
+its time, and the created and updated times. Items in Trash stay in Trash. Deleted items in the
+export (tombstones) are deletion markers with no content; they are counted in the preview and
+not imported. Format version 1 cannot hold an item the importer does not support: an item that
+does not decode makes the whole file fail (§4.3 step 5), so nothing is dropped silently.
 
 ### 4.5 Consistency, versioning, interruption
 
@@ -345,10 +393,12 @@ Each test creates its own `ruvee_it_*` / `ruvee_e2e_*` database and synthetic ac
 
 **M2 (D-13 approved for development; independent review of §4 still required)**
 
-Status 2026-10-26: steps 1 to 3 and the E1 to E4, E6 tests are implemented (`export-file.ts`,
-`exportVault`/`exportOpen` in the engine, Security → Encrypted export, "Open an encrypted export"
-on the welcome screen, `vault-engine.test.ts` and the web vault e2e). Step 4 (import into a fresh
-installation), E5 and E7 (fixed vectors) are not done.
+Status 2026-10-26: steps 1 to 5 are implemented. Export, read-only opening, and import into a
+fresh installation (§4.4a): `export-file.ts`, the engine's `exportVault`, `exportOpen` and
+`importIntoEmptyVault`, Security → Encrypted export and Import, the welcome screen's restore
+path, `import.test.ts`, the fixed fixture in `packages/vault/test/fixtures`, and the
+`test:import` browser suite (two installations). E7 holds in Node only (the fixed fixture); the
+browsers are covered by fresh exports, not the fixed file.
 
 1. Export builder and verifier in `packages/vault` (pure, over `@ruvee/crypto`), with fixed synthetic vectors (E7). Depends on D-13.
 2. Web: Security → "Export an encrypted copy": step-up, sync, Recovery Key entry, download. Depends on 1.

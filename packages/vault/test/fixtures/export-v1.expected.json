@@ -1,0 +1,56 @@
+{
+  "comment": "Hand-written. The items the fixture export was generated from, and what an import must reproduce exactly. Synthetic data only.",
+  "asOfMs": 1793000004000,
+  "deletedCount": 1,
+  "items": [
+    {
+      "type": "login",
+      "title": "Synthetic Mail",
+      "username": "owner@mail.example",
+      "password": "synthetic-fixture-mail-7c2",
+      "urls": ["https://mail.example"],
+      "notes": "",
+      "tags": ["work"],
+      "favorite": true,
+      "trashedAtMs": null,
+      "createdAtMs": 1793000000000,
+      "updatedAtMs": 1793000000000
+    },
+    {
+      "type": "login",
+      "title": "Synthetic Bank (old)",
+      "username": "owner",
+      "password": "synthetic-fixture-bank-19a",
+      "urls": ["https://bank.example"],
+      "notes": "",
+      "tags": [],
+      "favorite": false,
+      "trashedAtMs": 1793000003000,
+      "createdAtMs": 1793000001000,
+      "updatedAtMs": 1793000003000
+    },
+    {
+      "type": "note",
+      "title": "Synthetic Wi-Fi",
+      "noteText": "synthetic fixture note 4e8\nsecond line",
+      "tags": ["home"],
+      "favorite": false,
+      "trashedAtMs": null,
+      "createdAtMs": 1793000002000,
+      "updatedAtMs": 1793000002000
+    },
+    {
+      "type": "login",
+      "title": "Synthetic Café ✓",
+      "username": "zoë@mail.example",
+      "password": "synthetic-ñ-pässwörd-3f1",
+      "urls": ["https://café.example", "https://second.example/login"],
+      "notes": "synthetic fixture notes line",
+      "tags": ["personal", "unicode"],
+      "favorite": false,
+      "trashedAtMs": null,
+      "createdAtMs": 1793000002500,
+      "updatedAtMs": 1793000002500
+    }
+  ]
+}

@@ -3,7 +3,8 @@
 import '@/vault/zod-config';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DevicePhase, ItemDetail, ItemSummary, SyncStatus, UnlockedVault } from '@ruvee/vault';
-import { VaultClient } from '@/vault/client';
+import { VaultClient, VaultClientError } from '@/vault/client';
+import { messageFor } from './messages';
 import { DevicesIcon, InfoIcon, LogoutIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';
 import { VaultShell } from '../vault/vault-shell';
@@ -40,7 +41,8 @@ type Screen =
   | { name: 'locked'; username: string; notice?: string }
   | { name: 'recovery'; username?: string; back: Screen }
   | { name: 'export-viewer' }
-  | { name: 'unlocked'; vault: UnlockedVault };
+  | { name: 'restore-setup' }
+  | { name: 'unlocked'; vault: UnlockedVault; startImport?: boolean };
 
 function supported(): boolean {
   return (
@@ -148,6 +150,24 @@ export function VaultApp() {
           onClose={() => {
             setScreen({ name: 'welcome' });
           }}
+          onRestore={() => {
+            // The opened export stays in the worker for the import after setup.
+            setScreen({ name: 'restore-setup' });
+          }}
+        />
+      );
+    case 'restore-setup':
+      return (
+        <SetupFlow
+          client={client}
+          restoring
+          onCancel={() => {
+            void client.call('exportClose');
+            setScreen({ name: 'welcome' });
+          }}
+          onDone={(vault) => {
+            setScreen({ name: 'unlocked', vault, startImport: true });
+          }}
         />
       );
     case 'recovery':
@@ -217,6 +237,7 @@ export function VaultApp() {
           key={screen.vault.deviceId}
           client={client}
           vault={screen.vault}
+          startImport={screen.startImport ?? false}
           onLock={(notice) => {
             void lock(screen.vault.username, notice);
           }}
@@ -230,10 +251,12 @@ export function VaultApp() {
 function UnlockedApp({
   client,
   vault,
+  startImport,
   onLock,
 }: {
   client: VaultClient;
   vault: UnlockedVault;
+  startImport: boolean;
   onLock: (notice?: string) => void;
 }) {
   const [items, setItems] = useState<readonly ItemSummary[]>(vault.items);
@@ -304,9 +327,35 @@ function UnlockedApp({
     };
   }, [syncNow]);
 
+  // After "Restore into a new account": the export opened before setup is imported now.
+  const [importError, setImportError] = useState<string | null>(null);
+  const importStarted = useRef(false);
+  useEffect(() => {
+    if (!startImport || importStarted.current) return;
+    importStarted.current = true;
+    client.call('importIntoEmptyVault').then(setStatus, (e: unknown) => {
+      setImportError(
+        e instanceof VaultClientError
+          ? messageFor(e.code, e.retryAfterSeconds)
+          : messageFor('internal'),
+      );
+    });
+  }, [client, startImport]);
+
   const views = useMemo(() => items.map(toView), [items]);
   const [dismissed, setDismissed] = useState<readonly string[]>([]);
-  const notices = vaultNotices(vault, status).filter((n) => !dismissed.includes(n.id));
+  const notices = [
+    ...vaultNotices(vault, status),
+    ...(importError
+      ? [
+          {
+            id: 'import-error',
+            tone: 'caution' as const,
+            text: `The import did not start. ${importError}`,
+          },
+        ]
+      : []),
+  ].filter((n) => !dismissed.includes(n.id));
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const readOnly = status.state === 'integrity_error';
 
@@ -453,6 +502,8 @@ function UnlockedApp({
                 ) : (
                   <SecurityPanel
                     client={client}
+                    // A hint only: the worker refuses any vault that ever held an item.
+                    canImport={items.length === 0 && status.import === undefined}
                     onClose={() => {
                       setPanel(null);
                     }}
@@ -520,6 +571,18 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       id: 'secret-key-updated',
       tone: 'brand',
       text: 'Your Secret Key was replaced on another device. This device now uses the new one.',
+    });
+  if (status.import?.state === 'uploading')
+    out.push({
+      id: `import-uploading-${String(status.import.uploaded)}`,
+      tone: 'caution',
+      text: `Importing your export: ${String(status.import.uploaded)} of ${String(status.import.total)} items are on the server. It continues by itself while this tab is open, and after the next unlock if it stops.`,
+    });
+  if (status.import?.state === 'complete')
+    out.push({
+      id: 'import-complete',
+      tone: 'brand',
+      text: `Import complete: all ${String(status.import.total)} items from the export of ${new Date(status.import.sourceAsOfMs).toLocaleString()} are in this vault.`,
     });
   if (vault.sessionProblem === 'login_failed')
     out.push({

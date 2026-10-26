@@ -38,7 +38,7 @@ import type {
 } from './protocol.js';
 import { ApiError, NetworkError, type Api } from './api.js';
 import { fromB64, fromUtf8, toB64, utf8 } from './bytes.js';
-import type { DeviceRecord, DeviceStore, EnrolledKeys } from './store.js';
+import type { DeviceRecord, DeviceStore, EnrolledKeys, QueuedImport } from './store.js';
 import { buildExport, openExport, type OpenedExport } from './export-file.js';
 import { VaultError } from './vault-error.js';
 
@@ -157,7 +157,30 @@ interface Session {
   /** When the Recovery Kit was used, if this device has not acknowledged it (§3 step 2). */
   recoveryNotice: number | undefined;
   recoveryAcknowledgedMs: number;
+  /** An import into this vault (backup-restore.md §4.4a), if one was ever started here. */
+  importState: ImportRecord | undefined;
+  /** Queue position of each imported item handed to the pending queue, by item id. */
+  importOrders: Map<string, number>;
+  /** Items still in the `imports` store; refreshed whenever it changes. */
+  importRemaining: number;
 }
+
+const importRecordSchema = z.strictObject({
+  v: z.literal(1),
+  state: z.enum(['uploading', 'complete']),
+  total: z.int().min(0),
+  /** The export's authenticated date and `seq`: what was restored, for the user. */
+  sourceAsOfMs: z.int().min(0),
+  sourceSeq: z.int().min(1),
+  startedAtMs: z.int().min(0),
+  completedAtMs: z.int().min(0).nullable(),
+});
+type ImportRecord = z.infer<typeof importRecordSchema>;
+
+/** One upload batch from the import queue: at most a commit's mutations, and small enough that
+ * the pending queue stays far below the 1 MiB local-record limit. */
+const IMPORT_BATCH_ITEMS = MAX_MUTATIONS_PER_COMMIT;
+const IMPORT_BATCH_BYTES = 256 * 1024;
 
 interface PendingSetup {
   readonly username: string;
@@ -1006,6 +1029,9 @@ export class VaultEngine {
       state: 'syncing',
       integrity: undefined,
       recoveryNotice: undefined,
+      importState: undefined,
+      importOrders: new Map(),
+      importRemaining: 0,
       recoveryAcknowledgedMs: 0,
     };
   }
@@ -1110,6 +1136,11 @@ export class VaultEngine {
       session.recoveryAcknowledgedMs = z
         .strictObject({ recoveryAcknowledgedMs: z.int().min(0) })
         .parse(notices).recoveryAcknowledgedMs;
+    const imported = open('import', await store.local('import'));
+    if (imported !== undefined) {
+      session.importState = importRecordSchema.parse(imported);
+      session.importRemaining = await store.importsCount();
+    }
     const conflicts = open('conflicts', await store.local('conflicts'));
     if (conflicts !== undefined)
       for (const c of conflictsSchema.parse(conflicts))
@@ -1332,6 +1363,8 @@ export class VaultEngine {
   private writable(): Session {
     const session = this.requireSession();
     if (session.state === 'integrity_error') throw new VaultError('read_only');
+    // The import is the only writer until it is complete (backup-restore.md §4.4a).
+    if (session.importState?.state === 'uploading') throw new VaultError('import_in_progress');
     return session;
   }
 
@@ -2537,6 +2570,8 @@ export class VaultEngine {
     return {
       asOfMs: opened.asOfMs,
       authorDeviceId: opened.authorDeviceId,
+      seq: opened.seq,
+      deletedCount: opened.tombstones,
       items: [...opened.items].map(([id, item]) => detailOf(id, item.body, false, null)),
     };
   }
@@ -2551,6 +2586,118 @@ export class VaultEngine {
   exportClose(): true {
     this.opened = undefined;
     return true;
+  }
+
+  // ---- Import into a fresh installation (backup-restore.md §4.4a) ----
+
+  /**
+   * QUEUED: re-encrypts every item of the export opened in this worker as a new item of this
+   * vault, and queues them all in one transaction with the import record. Allowed only into a
+   * vault that has never held an item, with no import started before: this is not a merge. Then
+   * uploads through the normal commit path until complete or interrupted.
+   */
+  importIntoEmptyVault(): Promise<SyncStatus> {
+    return this.exclusive(async () => {
+      const session = this.writable();
+      const opened = this.opened;
+      if (!opened) throw new VaultError('not_found');
+      if (session.importState) throw new VaultError('vault_not_empty');
+      await this.syncNow();
+      if (session.state === 'offline') throw new VaultError('offline');
+      if (session.state !== 'synced') throw new VaultError('unsynced_changes');
+      if (
+        session.synced.size > 0 ||
+        session.pending.length > 0 ||
+        session.inflight ||
+        session.conflicts.size > 0
+      )
+        throw new VaultError('vault_not_empty');
+      const { crypto } = this.deps;
+      const rows: QueuedImport[] = [];
+      for (const { body } of opened.items.values()) {
+        // A fresh destination id; the body (content and its meaningful metadata) is unchanged.
+        const itemId = crypto.generateUuid();
+        const encoded = encodeItemBody(body);
+        const record = this.sealBody(session, itemId, 1, encoded);
+        encoded.fill(0);
+        rows.push({ itemId, order: rows.length, record });
+      }
+      const now = this.deps.now();
+      const state: ImportRecord = {
+        v: 1,
+        state: rows.length === 0 ? 'complete' : 'uploading',
+        total: rows.length,
+        sourceAsOfMs: opened.asOfMs,
+        sourceSeq: opened.seq,
+        startedAtMs: now,
+        completedAtMs: rows.length === 0 ? now : null,
+      };
+      await this.deps.store.apply({
+        imports: { put: rows },
+        local: { import: this.sealLocal(session, 'import', state) },
+      });
+      session.importState = state;
+      session.importRemaining = rows.length;
+      // The export's plaintext is no longer needed in memory.
+      this.opened = undefined;
+      await this.syncNow();
+      return this.status(session);
+    });
+  }
+
+  /**
+   * UPLOADING: moves the next batch from the queue into the pending queue when it is empty.
+   * Items already in the synced state (uploaded before a crash) leave the queue instead.
+   */
+  private async feedImport(session: Session): Promise<void> {
+    if (session.importState?.state !== 'uploading') return;
+    const { store } = this.deps;
+    const rows = await store.imports(IMPORT_BATCH_ITEMS);
+    const done = rows.filter((r) => session.synced.has(r.itemId));
+    if (done.length > 0) {
+      await store.apply({ imports: { remove: done.map((r) => r.order) } });
+      session.importRemaining = await store.importsCount();
+    }
+    const batch: QueuedImport[] = [];
+    let bytes = 0;
+    for (const r of rows) {
+      if (session.synced.has(r.itemId)) continue;
+      if (batch.length > 0 && bytes + r.record.length > IMPORT_BATCH_BYTES) break;
+      batch.push(r);
+      bytes += r.record.length;
+    }
+    if (batch.length === 0) {
+      if (session.importRemaining === 0) await this.finishImport(session);
+      return;
+    }
+    for (const r of batch) {
+      session.importOrders.set(r.itemId, r.order);
+      session.pending.push({ itemId: r.itemId, baseRevision: 0, record: r.record });
+    }
+    await this.persistLocal({ pending: true });
+  }
+
+  private takeImportOrders(session: Session, mutations: readonly PendingMutation[]): number[] {
+    const orders: number[] = [];
+    for (const m of mutations) {
+      const order = session.importOrders.get(m.itemId);
+      if (order === undefined) continue;
+      orders.push(order);
+      session.importOrders.delete(m.itemId);
+    }
+    return orders;
+  }
+
+  /** COMPLETE only with nothing queued, pending or in flight, after a verified state. */
+  private async finishImport(session: Session): Promise<void> {
+    const current = session.importState;
+    if (current?.state !== 'uploading') return;
+    if (session.pending.length > 0 || session.inflight) return;
+    if ((await this.deps.store.importsCount()) !== 0) return;
+    const state: ImportRecord = { ...current, state: 'complete', completedAtMs: this.deps.now() };
+    await this.deps.store.apply({ local: { import: this.sealLocal(session, 'import', state) } });
+    session.importState = state;
+    session.importRemaining = 0;
   }
 
   /** A failed online call: a revoked device wipes itself (INV-15); anything else is reported. */
@@ -2582,6 +2729,14 @@ export class VaultEngine {
     try {
       await this.pull(session);
       if (!readOnly(session)) await this.push(session);
+      // An import uploads in many commits; keep going while each round makes progress.
+      while (!readOnly(session) && session.importState?.state === 'uploading') {
+        const before = session.importRemaining;
+        await this.push(session);
+        await this.feedImport(session);
+        const stalled = session.importRemaining >= before && session.pending.length === 0;
+        if (stalled) break;
+      }
       await this.checkRecoveryNotice(session);
       if (!readOnly(session)) {
         session.state = session.pending.length > 0 || session.inflight ? 'pending' : 'synced';
@@ -2720,6 +2875,7 @@ export class VaultEngine {
   private async push(session: Session): Promise<void> {
     for (let round = 0; round < MAX_PUSH_ROUNDS; round++) {
       if (!session.inflight) {
+        if (session.pending.length === 0) await this.feedImport(session);
         const genesis = session.checkpoint.seq === 0;
         if (session.pending.length === 0 && !genesis) return;
         const mutations = session.pending.slice(0, MAX_MUTATIONS_PER_COMMIT);
@@ -2767,7 +2923,10 @@ export class VaultEngine {
             }),
             pending: this.sealLocal(session, 'pending', this.pendingJson(session)),
           },
+          // Imported items leave the queue in the same transaction that records them as synced.
+          imports: { remove: this.takeImportOrders(session, inflight.mutations) },
         });
+        session.importRemaining = await this.deps.store.importsCount();
         await this.rebasePending(session);
         this.emitItems();
       } catch (error) {
@@ -2818,7 +2977,23 @@ export class VaultEngine {
       lastChange: session.lastChange,
       ...(session.integrity ? { integrity: session.integrity } : {}),
       ...(session.recoveryNotice !== undefined ? { recoveryUsedAtMs: session.recoveryNotice } : {}),
+      ...(session.importState
+        ? {
+            import: {
+              state: session.importState.state,
+              total: session.importState.total,
+              uploaded: session.importState.total - this.importOutstanding(session),
+              sourceAsOfMs: session.importState.sourceAsOfMs,
+            },
+          }
+        : {}),
     };
+  }
+
+  /** Imported items not yet confirmed: still queued, or handed to a commit not yet applied. */
+  private importOutstanding(session: Session): number {
+    if (session.importState?.state !== 'uploading') return 0;
+    return session.importRemaining;
   }
 
   private emitStatus(session: Session): void {

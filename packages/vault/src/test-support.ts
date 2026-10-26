@@ -26,6 +26,10 @@ export class FakeServer {
   manifests: { seq: number; manifest: string }[] = [];
   commits = new Map<string, { hash: string; seq: number }>();
   offline = false;
+  /** Commits the server still accepts before it becomes unreachable; undefined is unlimited. */
+  commitBudget: number | undefined;
+  /** The next commit is applied, but its response never reaches the client. */
+  loseNextCommitResponse = false;
   sessionValid = true;
   /** Every request body the server received, for capture checks. */
   received: string[] = [];
@@ -194,7 +198,16 @@ export class FakeServer {
       commit: (body) => {
         this.check(body);
         requireActive();
-        return Promise.resolve(this.applyCommit(body));
+        if (this.commitBudget !== undefined) {
+          if (this.commitBudget <= 0) throw new NetworkError('offline');
+          this.commitBudget--;
+        }
+        const result = this.applyCommit(body);
+        if (this.loseNextCommitResponse) {
+          this.loseNextCommitResponse = false;
+          throw new NetworkError('offline');
+        }
+        return Promise.resolve(result);
       },
       account: () => {
         this.check();
