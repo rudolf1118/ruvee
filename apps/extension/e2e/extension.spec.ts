@@ -28,6 +28,21 @@ const OTHER_PORT = 'http://127.0.0.1:3192/login';
 const FORM = `<!doctype html><title>Synthetic login</title>
 <form><label>Email <input id="user" type="email"></label>
 <label>Password <input id="pw" type="password"></label><button>Sign in</button></form>`;
+/**
+ * Review R18: password fields on the saved origin that the user cannot see. Each one would have
+ * been filled before: hidden by an ancestor, outside the page, clipped to nothing, covered, tiny.
+ */
+const HIDDEN_FIELDS = `<!doctype html><title>Synthetic hidden fields</title>
+<style>body{margin:0} .cover{position:absolute;left:0;top:200px;width:320px;height:40px;background:#fff}</style>
+<form>
+<div style="opacity:0"><input id="faded-user" type="email"><input id="faded" type="password"></div>
+<div style="position:absolute;left:-9999px;top:0"><input id="away" type="password"></div>
+<div style="width:0;height:0;overflow:hidden"><input id="clipped" type="password"></div>
+<input id="covered" type="password" style="position:absolute;left:10px;top:205px">
+<div class="cover"></div>
+<input id="tiny" type="password" style="width:1px;height:1px;padding:0;border:0">
+</form>`;
+const HIDDEN_PAGE = `${new URL(LOGIN_PAGE).origin}/hidden`;
 
 const extensionDir = new URL('../dist-test/', import.meta.url).pathname;
 const popupUrl = (tab?: number) =>
@@ -68,7 +83,11 @@ test.beforeAll(async () => {
   worker = context.serviceWorkers()[0] ?? (await context.waitForEvent('serviceworker'));
   for (const url of [LOGIN_PAGE, OTHER_PORT])
     await context.route(`${new URL(url).origin}/**`, (route) =>
-      route.fulfill({ status: 200, contentType: 'text/html', body: FORM }),
+      route.fulfill({
+        status: 200,
+        contentType: 'text/html',
+        body: new URL(route.request().url()).pathname === '/hidden' ? HIDDEN_FIELDS : FORM,
+      }),
     );
 });
 
@@ -292,6 +311,158 @@ test('a fill requested for a page that has since navigated away fails closed', a
   await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
   await expect(popup.getByText(/^Filled\./)).toBeVisible();
   await expect(site.locator('#pw')).toHaveValue(ITEM_PASSWORD);
+});
+
+test('R18: on the saved origin, fields the user cannot see are never filled', async () => {
+  await site.goto(HIDDEN_PAGE);
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
+  await expect(popup.getByText('No visible password field on this page.')).toBeVisible();
+  for (const id of ['faded-user', 'faded', 'away', 'clipped', 'covered', 'tiny'])
+    await expect(site.locator(`#${id}`), id).toHaveValue('');
+  await site.goto(LOGIN_PAGE);
+});
+
+test('R19: a lock that arrives while an unlock is still running wins', async () => {
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByRole('button', { name: 'Lock' }).click();
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible();
+  // The lock is sent after the unlock, at several delays, so some land while it still runs.
+  const rounds = await popup.evaluate(async (password) => {
+    const send = <T>(m: unknown) => chrome.runtime.sendMessage(m) as Promise<T>;
+    const results: { unlock: { ok: boolean; code: string | undefined }; unlocked: boolean }[] = [];
+    for (const delay of [0, 10, 25, 50, 100, 150, 200, 300]) {
+      const unlocking = send<{ ok: boolean; code?: string }>({
+        kind: 'vault',
+        method: 'unlock',
+        params: { password },
+      });
+      await new Promise((resolve) => setTimeout(resolve, delay));
+      await send({ kind: 'lock' });
+      const reply = await unlocking;
+      const status = await send<{ result: { unlocked: boolean } }>({ kind: 'status' });
+      results.push({
+        unlock: { ok: reply.ok, code: reply.code },
+        unlocked: status.result.unlocked,
+      });
+    }
+    return results;
+  }, MASTER);
+  // Whatever the order, a lock sent after the unlock leaves the extension locked. Before: an
+  // unlock the lock overtook finished afterwards and stored AK back.
+  for (const round of rounds) expect(round.unlocked).toBe(false);
+  expect(await sessionKeys(worker)).not.toContain('ak');
+  // And the race was really exercised: at least one unlock was overtaken and reported it.
+  expect(rounds.some((r) => !r.unlock.ok && r.unlock.code === 'locked')).toBe(true);
+  await unlock(MASTER);
+});
+
+test('service worker stopped mid-operation: an unlock completes once or not at all; a fill is never replayed', async () => {
+  const extensionDevice = async () =>
+    (
+      await sql<{ id: string }>(
+        `SELECT id FROM devices WHERE platform = 'extension' AND status = 'active'`,
+      )
+    )[0]?.id ?? '';
+  const liveSessions = async () =>
+    sql<{ proven: boolean }>(
+      `SELECT proven_at IS NOT NULL AS proven FROM sessions
+         WHERE device_id = '${await extensionDevice()}' AND revoked_at IS NULL AND kind = 'token'`,
+    );
+
+  // ---- An unlock, stopped while it runs ----
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByRole('button', { name: 'Lock' }).click();
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible();
+  await popup.evaluate((password) => {
+    void chrome.runtime
+      .sendMessage({ kind: 'vault', method: 'unlock', params: { password } })
+      .catch(() => undefined);
+  }, MASTER);
+  await popup.waitForTimeout(400);
+  await stopWorker();
+  await popup.goto(popupUrl(siteTab));
+  const status = await popup.evaluate(
+    async () =>
+      ((await chrome.runtime.sendMessage({ kind: 'status' })) as { result: { unlocked: boolean } })
+        .result,
+  );
+  // Either it finished before the stop (and is fully unlocked) or it left nothing behind.
+  expect((await sessionKeys(worker)).includes('ak')).toBe(status.unlocked);
+  if (!status.unlocked) await unlock(MASTER);
+  else
+    await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible({
+      timeout: 30_000,
+    });
+  // However the stop fell, the extension ends with one live session, and it is proven.
+  expect(await liveSessions()).toEqual([{ proven: true }]);
+
+  // ---- A fill, stopped while it runs; the tab then navigates away ----
+  await site.goto(LOGIN_PAGE);
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+  const itemId = await firstItemId(popup, siteTab);
+  await popup.evaluate(
+    ([tabId, id]) => {
+      void chrome.runtime.sendMessage({ kind: 'fill', tabId, itemId: id }).catch(() => undefined);
+    },
+    [siteTab, itemId] as const,
+  );
+  await stopWorker();
+  const filled = await site.locator('#pw').inputValue();
+  // Filled once, completely, or not at all.
+  expect([ITEM_PASSWORD, '']).toContain(filled);
+  await site.goto(OTHER_PORT);
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByText('No login is saved for exactly this address.')).toBeVisible({
+    timeout: 30_000,
+  });
+  await popup.waitForTimeout(1_500);
+  // The restarted worker kept no pending fill: nothing reaches the new page, or a reload.
+  await expect(site.locator('#pw')).toHaveValue('');
+  await site.goto(LOGIN_PAGE);
+  await popup.waitForTimeout(1_000);
+  await expect(site.locator('#pw')).toHaveValue('');
+  // Nothing but the unlock state and the access token survives in session storage.
+  expect((await sessionKeys(worker)).sort()).toEqual(['accessToken', 'ak', 'lastActivityMs']);
+});
+
+test('a password reaches only the page field it fills: no popup reply, page message or markup', async () => {
+  await site.goto(LOGIN_PAGE);
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+  // Every reply the popup receives from the worker, and every message the page sees.
+  await popup.evaluate(() => {
+    const replies: string[] = [];
+    (globalThis as { ruveeReplies?: string[] }).ruveeReplies = replies;
+    const original: (m: unknown) => Promise<unknown> = chrome.runtime.sendMessage;
+    const send = (m: unknown) => original.call(chrome.runtime, m);
+    (chrome.runtime as { sendMessage: unknown }).sendMessage = async (m: unknown) => {
+      const reply = await send(m);
+      replies.push(JSON.stringify(reply));
+      return reply;
+    };
+  });
+  await site.evaluate(() => {
+    const seen: string[] = [];
+    (globalThis as { ruveeSeen?: string[] }).ruveeSeen = seen;
+    addEventListener('message', (e) => seen.push(JSON.stringify(e.data)));
+  });
+  await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
+  await expect(popup.getByText(/^Filled\./)).toBeVisible();
+  await expect(site.locator('#pw')).toHaveValue(ITEM_PASSWORD);
+  const replies = await popup.evaluate(
+    () => (globalThis as { ruveeReplies?: string[] }).ruveeReplies ?? [],
+  );
+  expect(replies.length).toBeGreaterThan(0);
+  for (const reply of replies) expect(reply).not.toContain(ITEM_PASSWORD);
+  const page = await site.evaluate(() => ({
+    seen: (globalThis as { ruveeSeen?: string[] }).ruveeSeen ?? [],
+    markup: document.documentElement.outerHTML,
+  }));
+  expect(page.seen.join('\n')).not.toContain(ITEM_PASSWORD);
+  expect(page.markup).not.toContain(ITEM_PASSWORD);
+  expect(await popup.content()).not.toContain(ITEM_PASSWORD);
 });
 
 test('previous-password unlock after the password and SK both changed elsewhere', async () => {
