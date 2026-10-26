@@ -10,13 +10,37 @@ export function fillPage(expectedOrigin: string, username: string, password: str
   if (window.location.origin !== expectedOrigin) return 'origin_changed';
   if (window.top !== window) return 'not_top_frame';
 
+  // Review R18: a field is filled only if the user can see it. Its own style is not enough: an
+  // ancestor can hide it (opacity, visibility, display), move it off screen, clip it to nothing
+  // or cover it. Kept inline: the function is serialized and must not use module constants.
+  const MIN_OPACITY = 0.5;
+  const MIN_SIZE = 8;
+  const onScreen = (box: DOMRect) => {
+    const x = box.left + box.width / 2;
+    const y = box.top + box.height / 2;
+    return x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
+  };
   const visible = (el: HTMLInputElement) => {
     if (el.disabled || el.readOnly) return false;
-    const style = window.getComputedStyle(el);
-    if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0)
-      return false;
-    const box = el.getBoundingClientRect();
-    return box.width > 0 && box.height > 0;
+    let opacity = 1;
+    for (let node: Element | null = el; node; node = node.parentElement) {
+      const style = window.getComputedStyle(node);
+      if (style.display === 'none' || style.visibility === 'hidden') return false;
+      if (style.visibility === 'collapse') return false;
+      opacity *= style.opacity === '' ? 1 : Number(style.opacity);
+    }
+    if (!(opacity >= MIN_OPACITY)) return false;
+    let box = el.getBoundingClientRect();
+    if (box.width < MIN_SIZE || box.height < MIN_SIZE) return false;
+    // A field below the fold is scrolled to; one placed outside the page stays outside.
+    if (!onScreen(box)) {
+      el.scrollIntoView({ block: 'center', inline: 'center' });
+      box = el.getBoundingClientRect();
+      if (!onScreen(box)) return false;
+    }
+    // The topmost element at its centre must be the field: not clipped away, not covered.
+    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+    return hit !== null && (hit === el || el.contains(hit));
   };
   const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
   const passwordField = inputs.find((el) => el.type === 'password');
