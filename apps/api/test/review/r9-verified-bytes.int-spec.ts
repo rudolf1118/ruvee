@@ -8,9 +8,11 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pgToolsFromEnv } from '../../src/admin/pg-tools.js';
+import { parseDbTarget } from '../../src/admin/db-target.js';
+import { pgToolsFromEnv, type PgTools } from '../../src/admin/pg-tools.js';
 import {
   createBackup,
   knownMigrations,
@@ -265,5 +267,171 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
     } finally {
       await target.drop();
     }
+  });
+
+  describe('REVIEW R15 (regression): LOAD never hands pg_restore an unverified complete archive', () => {
+    /**
+     * A genuine set whose dump is larger than `forged`'s in both plaintext and ciphertext, so a
+     * forged dump swapped into staging decrypts completely and fails only at the final hash
+     * comparison: the case where the whole forged archive reaches pg_restore first.
+     */
+    let padded: BackupResult;
+
+    beforeAll(async () => {
+      await query(
+        h.db.url,
+        `INSERT INTO security_events (id, type, user_agent, details)
+         SELECT gen_random_uuid(), 'login_failed', md5(random()::text) || md5(random()::text), '{}'
+         FROM generate_series(1, 4000)`,
+      );
+      padded = await createBackup({
+        databaseUrl: h.db.url,
+        outDir: dir(),
+        tools,
+        recipient: key.recipient,
+        syntheticTestOnly: true,
+        config,
+        now: () => new Date(Date.now() + 10_000),
+      });
+      expect(padded.manifest.files.dump.size).toBeGreaterThan(forged.manifest.files.dump.size);
+    }, 60_000);
+
+    async function loadForged(
+      toolsFor: (targetUrl: string) => PgTools & { ended: () => Promise<void> },
+    ) {
+      let message = '';
+      const root = dir();
+      const p = copyOf(padded);
+      process.env.DATABASE_URL = SERVER_URL;
+      const target = await createTempDatabase();
+      const restoreTools = toolsFor(target.url);
+      try {
+        const outcome = await Promise.race([
+          restoreBackup({
+            manifestPath: p.manifest,
+            identityPath: key.identityPath,
+            trustedDigest: padded.digest,
+            targetDatabaseUrl: target.url,
+            tools: restoreTools,
+            migrate,
+            knownMigrations: MIGRATIONS,
+            stagingRoot: root,
+            beforeLoad: () => {
+              const [staging] = readdirSync(root);
+              // After VERIFY: a validly encrypted dump of other content (R9's same-user case).
+              copyFileSync(forged.dumpPath, join(root, staging ?? '', 'dump.age'));
+            },
+          }).then(
+            () => 'restored',
+            (e: unknown) => {
+              message = (e as { message?: string }).message ?? '';
+              return (e as { stage?: string }).stage ?? 'error';
+            },
+          ),
+          new Promise<string>((resolve) => {
+            setTimeout(() => {
+              resolve('hung');
+            }, 15_000);
+          }),
+        ]);
+        // Wait for the pg_restore that outlived its client to finish whatever it was given.
+        await restoreTools.ended();
+        const [tables] = await query<{ n: string }>(
+          target.url,
+          `SELECT count(*) AS n FROM pg_tables WHERE schemaname = 'public'`,
+        );
+        return { outcome, message, publicTables: Number(tables?.n) };
+      } finally {
+        await target.drop();
+      }
+    }
+
+    it('leaves nothing committed when pg_restore sees a clean end of input on failure', async () => {
+      // What killing the `docker exec` client does: the pg_restore inside the container is not
+      // killed; what was already handed to the client reaches it, then its input ends. Modelled
+      // for any tool setup by ending instead of killing. It connects as the admin role here, so
+      // the loader role being dropped after the failure cannot be what stops it.
+      const r = await loadForged((targetUrl) => {
+        let done: Promise<void> = Promise.resolve();
+        return {
+          ...tools,
+          restore() {
+            const run = tools.restore(parseDbTarget(targetUrl));
+            done = run.done.catch(() => undefined);
+            const stdin = run.stdin;
+            stdin.destroy = () => stdin;
+            return {
+              ...run,
+              kill: () => {
+                stdin.end();
+              },
+            };
+          },
+          ended: () => done,
+        };
+      });
+      expect(r.outcome, r.message).toBe('load');
+      expect(r.message).toMatch(/does not match its metadata/);
+      // Before the fix the whole forged archive had been written by the time its hash failed,
+      // so pg_restore committed it behind the still-closed guard.
+      expect(r.publicTables).toBe(0);
+    }, 60_000);
+
+    it('fails LOAD, instead of waiting forever, when pg_restore exits without reading', async () => {
+      const exitsEarly: PgTools = {
+        ...tools,
+        restore() {
+          // Reads nothing, so a write blocks once the pipe is full; then exits 0 while it does.
+          const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 500)'], {
+            stdio: ['pipe', 'ignore', 'ignore'],
+          });
+          const done = new Promise<void>((resolve, reject) => {
+            child.on('close', (code) => {
+              if (code === 0) resolve();
+              else reject(new Error(`exit ${String(code)}`));
+            });
+          });
+          return {
+            stdin: child.stdin,
+            done,
+            kill: () => {
+              child.kill('SIGKILL');
+            },
+          };
+        },
+      };
+      const p = copyOf(padded);
+      process.env.DATABASE_URL = SERVER_URL;
+      const target = await createTempDatabase();
+      try {
+        const outcome = await Promise.race([
+          restoreBackup({
+            manifestPath: p.manifest,
+            identityPath: key.identityPath,
+            trustedDigest: padded.digest,
+            targetDatabaseUrl: target.url,
+            tools: exitsEarly,
+            migrate,
+            knownMigrations: MIGRATIONS,
+          }).then(
+            () => 'restored',
+            (e: unknown) => (e as { stage?: string }).stage ?? 'error',
+          ),
+          new Promise<string>((resolve) => {
+            setTimeout(() => {
+              resolve('hung');
+            }, 15_000);
+          }),
+        ]);
+        expect(outcome).toBe('load');
+        const [guard] = await query<{ state: string }>(
+          target.url,
+          'SELECT state FROM ruvee_control.restore_guard',
+        );
+        expect(guard?.state).toBe('restoring');
+      } finally {
+        await target.drop();
+      }
+    }, 40_000);
   });
 });

@@ -26,7 +26,12 @@ have the setup file; that is why the three are kept apart.
 
 Requirements: the built API (`pnpm --filter @ruvee/api build`), the PostgreSQL client tools of the
 server's major version (`pg_dump`, `pg_restore` 18), or `RUVEE_PG_TOOLS_PREFIX` to run them
-inside the database container (README, "integration tests").
+inside the database container (README, "integration tests"). Prefer the
+native tools on a real host: with the prefix, stopping the command (or a crash) ends only the
+`docker exec` client, and the `pg_restore` inside the container keeps running until its input
+ends. The restore never gives it a complete unverified archive (the last part is held back until
+the dump verified, review R15), so it rolls back, and the database stays closed either way; still
+drop such a target and restore into a new one.
 
 ## 1a. A new installation
 

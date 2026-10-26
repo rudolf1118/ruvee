@@ -314,8 +314,12 @@ export interface RestoreResult {
 
 /**
  * LOAD: decrypts the dump again straight into `pg_restore`. Its input ends only after the last
- * chunk authenticated and the plaintext's SHA-256 and size matched; on any failure `pg_restore`
- * is killed before its input is closed, so it never sees a clean end of a bad dump. Whatever
+ * chunk authenticated and the plaintext's SHA-256 and size matched. The last chunk is held back
+ * until then (review R15): whatever else happens, `pg_restore` never receives a complete archive
+ * that was not verified, so even a clean end of input, as when the `docker exec` client of
+ * RUVEE_PG_TOOLS_PREFIX is killed and the `pg_restore` inside the container keeps running, leaves
+ * it a truncated archive that it rolls back. On any failure `pg_restore` is killed. A tool that
+ * exits before reading its whole input fails LOAD instead of leaving it waiting. Whatever
  * happens, the guard is still `restoring`: nothing here can make the installation openable.
  */
 async function load(
@@ -326,21 +330,34 @@ async function load(
   const run = tools.restore(target);
   // A pg_restore that exits early makes writes fail; `run.done` reports why.
   run.stdin.on('error', () => undefined);
+  const exited = run.done.then(
+    () => {
+      throw new RestoreError('load', 'pg_restore ended before it read the whole dump');
+    },
+    (error: unknown) => {
+      throw error;
+    },
+  );
+  exited.catch(() => undefined);
+  const write = async (chunk: Buffer) => {
+    if (run.stdin.write(chunk)) return;
+    // Waits for room in the pipe, or for pg_restore to end, whichever comes first.
+    await Promise.race([new Promise<void>((resolve) => run.stdin.once('drain', resolve)), exited]);
+  };
+  let held: Buffer | undefined;
   try {
     // Inside the handler: a staged file whose header no longer decrypts fails as LOAD too, with
     // pg_restore killed first.
     const { plaintext, tap, cipher } = await backup.decryptDump();
     for await (const chunk of plaintext as AsyncIterable<Buffer>) {
-      if (!run.stdin.write(chunk))
-        await new Promise<void>((resolve, reject) => {
-          run.stdin.once('drain', resolve);
-          run.done.catch(reject);
-        });
+      if (held) await write(held);
+      held = chunk;
     }
     // The input ends only if this pass read exactly the ciphertext VERIFY checked, and it
     // decrypted to exactly the plaintext the metadata names (R9).
     if (!passMatches(backup, tap, cipher))
       throw new RestoreError('load', 'the decrypted dump does not match its metadata');
+    if (held) await write(held);
   } catch (error) {
     run.kill();
     run.stdin.destroy();
