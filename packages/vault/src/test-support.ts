@@ -20,6 +20,17 @@ interface ServerItem {
   updatedSeq: number;
 }
 
+export interface FakeServerState {
+  account: RegisterFinishRequest | undefined;
+  items: Map<string, ServerItem>;
+  manifests: { seq: number; manifest: string }[];
+  commits: Map<string, { hash: string; seq: number }>;
+  devices: Map<string, 'pending' | 'active' | 'revoked'>;
+  rowVersion: number;
+  passwordTag: string | undefined;
+  lastRecoveryAt: string | null;
+}
+
 export class FakeServer {
   account: RegisterFinishRequest | undefined;
   items = new Map<string, ServerItem>();
@@ -60,6 +71,33 @@ export class FakeServer {
       state: 'open' | 'requested' | 'approved';
     }
   >();
+
+  /** A consistent copy of everything the server stores, like a database backup. */
+  snapshot(): FakeServerState {
+    return structuredClone({
+      account: this.account,
+      items: this.items,
+      manifests: this.manifests,
+      commits: this.commits,
+      devices: this.devices,
+      rowVersion: this.rowVersion,
+      passwordTag: this.passwordTag,
+      lastRecoveryAt: this.lastRecoveryAt,
+    });
+  }
+
+  /** Puts a snapshot back, as restoring that backup would. Sessions are clients' cookie jars here. */
+  restore(state: FakeServerState): void {
+    const copy = structuredClone(state);
+    this.account = copy.account;
+    this.items = copy.items;
+    this.manifests = copy.manifests;
+    this.commits = copy.commits;
+    this.devices = copy.devices;
+    this.rowVersion = copy.rowVersion;
+    this.passwordTag = copy.passwordTag;
+    this.lastRecoveryAt = copy.lastRecoveryAt;
+  }
 
   get currentSeq(): number {
     return this.manifests.length;

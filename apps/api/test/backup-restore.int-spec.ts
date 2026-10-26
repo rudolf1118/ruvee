@@ -3,6 +3,7 @@ import {
   errorResponseSchema,
   loginStartResponseSchema,
   sessionResponseSchema,
+  tokenPairSchema,
 } from '@ruvee/contracts';
 import type request from 'supertest';
 import { ThrottleService } from '../src/auth/throttle.service.js';
@@ -28,7 +29,7 @@ function expectError(res: request.Response, code: keyof typeof API_ERRORS) {
 }
 
 /**
- * What restoring an older copy of the database brings back today (backup-restore.md §3.4). These
+ * What restoring an older copy of the database brings back today (backup-restore.md §3.7). These
  * tests describe the current behaviour on purpose: they are the evidence for D-28, which decides
  * what a restore must undo. They use the format-neutral snapshot scaffolding, not a backup format.
  */
@@ -119,8 +120,78 @@ describe('restoring an older database copy (characterization, input to D-28)', (
     expect(restored[0]?.n).toBe(before[0]?.n);
   });
 
-  // The behaviour M1 must have once D-28 is decided (backup-restore.md §3.4 and §6).
-  it.todo('after a restore, every cookie and token session is ended (D-28)');
-  it.todo('after a restore, open pairings and recovery sessions are gone (D-28)');
+  it('brings back a refresh token that was rotated after the copy, and forgets the newer one', async () => {
+    const EXT = {
+      Origin: 'chrome-extension://abcdefghijklmnopabcdefghijklmnop',
+      'X-Ruvee-Request': '1',
+    };
+    const client = startLogin(SYNTHETIC_PASSWORD);
+    const start = loginStartResponseSchema.parse(
+      (
+        await h
+          .http()
+          .post('/api/v1/auth/login/start')
+          .set(EXT)
+          .send({
+            username: account.username,
+            startLoginRequest: client.startLoginRequest,
+            platform: 'extension',
+          })
+          .expect(200)
+      ).body,
+    );
+    const finished = finishLogin(client.clientLoginState, start.loginResponse);
+    if (!finished) throw new Error('login failed');
+    const first = tokenPairSchema.parse(
+      sessionResponseSchema.parse(
+        (
+          await h
+            .http()
+            .post('/api/v1/auth/login/finish')
+            .set(EXT)
+            .send({ loginId: start.loginId, finishLoginRequest: finished.finishLoginRequest })
+            .expect(200)
+        ).body,
+      ).tokens,
+    );
+    await takeSnapshot(h.db.url);
+    const refresh = (refreshToken: string) =>
+      h.http().post('/api/v1/auth/refresh').set(EXT).send({ refreshToken });
+    const second = tokenPairSchema.parse((await refresh(first.refreshToken).expect(200)).body);
+
+    await restoreSnapshot(h.db.url);
+    // The rotation never happened as far as the restored server knows.
+    expectError(await refresh(second.refreshToken), 'unauthenticated');
+    expect((await refresh(first.refreshToken)).status).toBe(200);
+  });
+
+  it('brings back a recovery session that was ended after the copy', async () => {
+    const rk = account.crypto.parseRecoveryKey(account.recoveryKeyText);
+    const { recoveryAuthKey } = account.crypto.deriveRecoveryKeys(rk);
+    const started = await h
+      .post('/api/v1/recovery/start', {
+        username: account.username,
+        recoveryAuthKey: Buffer.from(recoveryAuthKey).toString('base64url'),
+        device: { id: account.crypto.generateUuid(), platform: 'web' },
+      })
+      .expect(200);
+    const cookie =
+      (started.headers['set-cookie'] as unknown as string[])
+        .find((c) => c.startsWith('__Host-ruvee_recovery='))
+        ?.split(';')[0] ?? '';
+    await takeSnapshot(h.db.url);
+    await query(
+      h.db.url,
+      `UPDATE sessions SET revoked_at = now(), revoke_reason = 'user'
+       WHERE kind = 'recovery' AND revoked_at IS NULL`,
+    );
+    expectError(await h.get('/api/v1/recovery/material', cookie), 'unauthenticated');
+    await restoreSnapshot(h.db.url);
+    await h.get('/api/v1/recovery/material', cookie).expect(200);
+  });
+
+  // The behaviour M1 must have once D-28 is decided (backup-restore.md §3.6 and §6).
+  it.todo('after a restore, every cookie, token and recovery session is ended (D-28)');
+  it.todo('after a restore, open pairings and unused setup tokens are gone (D-28)');
   it.todo('after a restore, a server_restored event and a device review are required (D-28)');
 });

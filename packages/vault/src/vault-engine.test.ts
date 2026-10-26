@@ -668,6 +668,50 @@ describe('vault engine', () => {
   });
 });
 
+describe('clients after a server restore (characterization, input to D-28)', () => {
+  it('a device ahead of the snapshot stops read-only; one at the snapshot keeps syncing', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const b = await secondDevice(server, a);
+    await a.engine.save({ draft: login('Before the backup') });
+    await a.engine.sync();
+    await b.engine.sync();
+    const backup = server.snapshot();
+    await a.engine.save({ draft: login('After the backup') });
+    expect((await a.engine.sync()).state).toBe('synced');
+
+    server.restore(backup);
+    // A verified a newer manifest than the server now has (INV-07): nothing is applied.
+    const ahead = await a.engine.sync();
+    expect(ahead).toMatchObject({ state: 'integrity_error', integrity: 'server_behind' });
+    expect(
+      a.engine
+        .items()
+        .map((i) => i.title)
+        .sort(),
+    ).toEqual(['After the backup', 'Before the backup']);
+    expect(await code(a.engine.save({ draft: login('Blocked') }))).toBe('read_only');
+    // B never saw the newer state, so the restored server looks current to it.
+    expect((await b.engine.sync()).state).toBe('synced');
+    expect(b.engine.items().map((i) => i.title)).toEqual(['Before the backup']);
+    // The change made after the backup exists only on A.
+    expect([...server.items.values()].filter((i) => i.record !== null)).toHaveLength(1);
+  });
+
+  it('a device holding a keyset newer than the snapshot stops at its next online unlock', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    const backup = server.snapshot();
+    await a.engine.rotateSecretKey({ password: PASSWORD });
+    server.restore(backup);
+    const reopened = await device(server, a.factory, a.api);
+    const unlocked = await reopened.engine.unlock({ password: PASSWORD });
+    // The server's keyset version went backwards (INV-09); the newer SK stays on this device.
+    expect(unlocked.sync).toMatchObject({ state: 'integrity_error', integrity: 'keyset_rollback' });
+    expect(server.account?.keys.keysetVersion).toBe(1);
+  });
+});
+
 describe('portable encrypted export (backup-restore.md §4, D-13 option A)', () => {
   async function exported() {
     const server = new FakeServer();

@@ -14,8 +14,8 @@ evidence for the specific behaviour it exercises, not proof that an invariant ho
 | Suite                                                 | Command                                                                                          | Result on 2026-10-26                                            |
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
 | Format, lint, types                                   | `pnpm format:check && pnpm lint && pnpm typecheck`                                               | Pass                                                            |
-| Unit                                                  | `pnpm test`                                                                                      | contracts 34, API 68, web 33, vault 52, extension 27, crypto 60 |
-| Integration (real PostgreSQL)                         | `DATABASE_URL=… pnpm test:integration`                                                           | 52 passed, 3 todo (D-28 placeholders)                           |
+| Unit                                                  | `pnpm test`                                                                                      | contracts 34, API 70, web 33, vault 54, extension 27, crypto 60 |
+| Integration (real PostgreSQL)                         | `DATABASE_URL=… pnpm test:integration`                                                           | 55 passed, 3 todo (D-28 placeholders)                           |
 | Crypto in browsers                                    | `pnpm --filter @ruvee/crypto test:browsers`                                                      | 24 checks × 6 contexts                                          |
 | Headers, CSP, OPAQUE, local fonts                     | `pnpm --filter @ruvee/web test:headers`                                                          | 33, three engines                                               |
 | Design preview                                        | `pnpm --filter @ruvee/web test:e2e`                                                              | 8 (no network needed since the fonts are local)                 |
@@ -154,6 +154,28 @@ Choices made while building that a reviewer should confirm. None weakens an inva
   Devices ends it at once.
 - **Backups:** a restored database copy brings back removed devices and their sessions
   (`backup-restore.int-spec.ts`); the proposed rule is D-28 ([backup-restore.md](../architecture/backup-restore.md)).
+
+## 4a. Server restore: risks found while preparing M1 (D-28 open)
+
+Characterization tests show what restoring an older database copy does **today**, with no restore
+policy (`apps/api/test/backup-restore*.int-spec.ts`, `packages/vault/src/vault-engine.test.ts`
+"clients after a server restore"):
+
+| Risk                                                                                                                                  | Evidence                                        | Proposed handling ([backup-restore.md §3.6](../architecture/backup-restore.md#36-recommended-v1-restore-policy-d-28-option-a-as-specified)) |
+| ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| A device removed after the snapshot is active again, with its old session                                                             | Tested                                          | Sessions ended; the owner removes it again (as lost, rotating `SK`)                                                                         |
+| A refresh token rotated after the snapshot works again; the newer one is unknown                                                      | Tested                                          | Every session and so every token family ended                                                                                               |
+| A recovery session ended after the snapshot works again                                                                               | Tested                                          | Ended with every session                                                                                                                    |
+| A snapshot taken before the account existed reopens registration to the holder of its setup token                                     | Tested                                          | Unused setup tokens deleted                                                                                                                 |
+| Security events after the snapshot vanish                                                                                             | Tested                                          | A `server_restored` event; older logs are the operator's                                                                                    |
+| A password, `SK` or Recovery Kit replaced after the snapshot is the old one again on the server; ending sessions does not change that | Reasoned (§3.4, §3.7); `keyset_rollback` tested | Clients stop; the owner repeats each change                                                                                                 |
+| Devices ahead of the snapshot cannot export without the server                                                                        | Code (`exportVault` needs an online step-up)    | Offline encrypted export from the local verified copy                                                                                       |
+| A device added after the snapshot becomes an orphan pending device                                                                    | Code (`loginFinish` for an unknown device id)   | Start over on this device, pair again                                                                                                       |
+| An interrupted restore could be served half-loaded                                                                                    | Design                                          | New database only, completion marker, API refuses without it                                                                                |
+| Old dumps keep old wraps forever                                                                                                      | Design (account-recovery.md §5)                 | Retention guidance; full rotation (Phase 4)                                                                                                 |
+
+For the reviewer: the policy must not be read as making stale decryption or recovery material
+current. It only ends authentication state; key material is repeated by the owner (§3.4).
 
 ## 5. Scope for the independent review
 

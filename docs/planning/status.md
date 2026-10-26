@@ -71,8 +71,8 @@ A complete single-user web vault across several browsers, against the real API a
 | Check                                                                                                                                                                                                                                                                                                                                          | Result                          |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                                                                                                                                                             | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 33, vault 52, extension 27, crypto 60)                                                                                                                                                                                                                                                                  | Pass                            |
-| `pnpm test:integration` (52 and 3 todo; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                                                                                                                                | Pass                            |
+| `pnpm test` (contracts 34, API 70, web 33, vault 54, extension 27, crypto 60)                                                                                                                                                                                                                                                                  | Pass                            |
+| `pnpm test:integration` (55 and 3 todo; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                                                                                                                                | Pass                            |
 | `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                                                                                                                                                              | Pass                            |
 | `pnpm --filter @ruvee/web test:headers` (33: headers, CSP, OPAQUE and crypto probes, local fonts, three engines)                                                                                                                                                                                                                               | Pass                            |
 | `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                                                                                                                                                          | Pass                            |
@@ -162,7 +162,9 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**D-28** blocks M1, server backup and restore; it is the next decision. Work that needs none:
-running the fixed export fixture in the browsers (E7), copy-to-clipboard in the extension, and
-preparing the independent review (D-19), which still gates real data and now includes the export
-format and the import.
+**D-28 needs the owner's decision.** The server backup and restore design is ready
+([backup-restore.md §3](../architecture/backup-restore.md#3-operational-server-backup-milestone-m1)):
+what is backed up, custody, the restore state machine, the recommended policy (§3.6), what happens
+to each change made after the snapshot, the owner's runbook, acceptance tests R1 to R14, and the
+missing mechanisms. Characterization tests already show why the policy is needed. Once D-28 is
+approved, M1 is the six steps of §8.

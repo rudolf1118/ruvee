@@ -2,7 +2,7 @@
 
 Status: **Proposed (2026-10-26).** **D-13 option A was approved by the owner for development on
 2026-10-26**, and the export (§4) is implemented to that design; the restore rules for server
-backups (§3.4) are still blocked on **D-28**. ADR: [ADR-0010](../adr/0010-backup-and-portable-export.md). Not
+backups (§3.6) are still blocked on **D-28**. ADR: [ADR-0010](../adr/0010-backup-and-portable-export.md). Not
 independently reviewed (D-19).
 
 ## 1. What the repository already requires
@@ -70,103 +70,191 @@ export restores _the vault's contents_ without the service.
 
 ## 3. Operational server backup (milestone M1)
 
-### 3.1 Included
+Decision-ready design, revision of 2026-10-26. **D-28 is not approved**; nothing here is
+implemented except the inventory (`apps/api/src/admin/backup-inventory.ts`) and test scaffolding.
 
-- A logical dump of the Ruvee database (`pg_dump --format=custom`) and a sidecar file
-  `<name>.json` with: format `ruvee-server-backup/1`, the dump's SHA-256, its size, the
-  `_prisma_migrations` row of the newest applied migration, the Ruvee version, and the creation
-  time. Nothing in the sidecar is secret.
-- Everything in the database: `accounts`, `opaque_credentials` (OPAQUE records), `account_keys`
-  (`AK_WRAP_PASSWORD`, `AK_WRAP_RECOVERY`, `SHA-256(RAK)`, keyset envelope, `salt_pw`, profile,
-  `keyset_version`, `row_version`), `devices`, `sessions` and `refresh_tokens` (hashes only),
-  `pairings`, `vaults`, `vault_items`, `vault_commits` (with each commit's manifest), `security_events`,
-  `auth_throttle`, `bootstrap_tokens` (hashes).
+### 3.1 What is backed up
 
-**Not included:** the OPAQUE server setup file (INV-21; it is a separate secret with its own
-offline copy, [authentication.md §Server secrets](../security/authentication.md#server-secrets)),
-`.env`, TLS keys, and anything on client devices.
+`CONFIG_INVENTORY` and `TABLE_INVENTORY` in `apps/api/src/admin/backup-inventory.ts` are the
+machine-checked version of this list: a test fails when a table or configuration variable is
+added without a classification.
 
-### 3.2 Secrets needed to restore, and who holds them
+| Input                        | What it is                                                                                                                                                                                                                                             | Kept where                                                                            | Secret?                                                                                     | On restore                                 |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- | ------------------------------------------ |
+| **Database dump**            | `pg_dump --format=custom` of all 13 tables: accounts, OPAQUE records, `AK` wraps, `SHA-256(RAK)`, keyset, devices (with encrypted labels), session and token **hashes**, pairings, items, commits and manifests, events, throttles, setup-token hashes | Operator; encrypted at rest; at least one copy off the server                         | Yes: OPAQUE records allow offline password guessing **together with** the setup file (V-01) | Loaded into a new, empty database          |
+| **Sidecar** `<dump>.json`    | Format `ruvee-server-backup/1`, dump SHA-256 and size, newest migration, Ruvee version, snapshot time, and the configuration marked `sidecar`: `PUBLIC_ORIGIN`, `SESSION_COOKIE_SECURE`, `EXTENSION_ORIGINS`                                           | With the dump                                                                         | No                                                                                          | Checked first; its configuration is reused |
+| **OPAQUE server setup file** | The server's OPAQUE key material (INV-21)                                                                                                                                                                                                              | Operator; **offline and apart from every dump**, made once when the server was set up | Yes: with a dump it allows offline guessing and server impersonation (T-03)                 | Placed at `OPAQUE_SERVER_SETUP_FILE`       |
+| Host configuration           | `DATABASE_URL` (new password), ports, proxy address, log level                                                                                                                                                                                         | Chosen on the new host                                                                | `DATABASE_URL` yes                                                                          | Written anew; never copied                 |
+| Attachments                  | Do not exist yet (Phase 7)                                                                                                                                                                                                                             | —                                                                                     | —                                                                                           | —                                          |
+| Release files                | The web export, `deploy/Caddyfile`                                                                                                                                                                                                                     | Part of the Ruvee release                                                             | No                                                                                          | Installed from the same or a newer release |
+| TLS certificates             | Issued for the host                                                                                                                                                                                                                                    | —                                                                                     | Yes                                                                                         | Issued again                               |
 
-| Secret                               | Holder                                     | Needed for                                                                      |
-| ------------------------------------ | ------------------------------------------ | ------------------------------------------------------------------------------- |
-| The dump file                        | Operator; stored apart from the setup file | Everything                                                                      |
-| OPAQUE server setup file             | Operator; offline, separate copy           | Logins. Without it, each user re-registers through Recovery Kit recovery (R-13) |
-| Password and `SK`, as of backup time | User and enrolled devices                  | Opening the vault after logging in                                              |
-| Recovery Kit, as of backup time      | User                                       | Recovery if the setup file is lost, or the password changed after the backup    |
+Nothing on a client device is in a server backup, and the server never holds anything that opens
+the vault (INV-18).
 
-The dump alone is ciphertext plus OPAQUE records. Dump **plus** setup file allows offline password
-guessing (V-01), so they must never be stored together, and a whole-disk backup that holds both
-is protected like the server itself. Encrypting the dump at rest is D-29 (recommended, not
-blocking).
+### 3.2 Encryption, custody, retention, off-server copies (D-29, not blocking)
 
-### 3.3 Consistency, integrity, versioning, interruption
+- **Dump at rest:** encrypted by the operator: either encrypted storage, or `age` to a recipient
+  key whose private half the owner holds offline. M1's tool writes a plain dump and leaves this to
+  the operator (D-29 option A); a built-in `age` step can follow.
+- **Custody:** the owner holds three separate things: the dump's storage key, the setup file's
+  offline copy, and their Recovery Kit. No two are stored together.
+- **Off-server copies:** at least one dump and the setup file kept off the host; a backup on the
+  same disk protects against nothing but mistakes.
+- **Retention:** suggested 7 daily, 4 weekly, 6 monthly. Every dump keeps the password and
+  recovery wraps of its day: an old dump plus an old Recovery Kit (or old password) opens the
+  vault as of that day (account-recovery.md §5). After a suspected compromise, delete dumps older
+  than the next full key rotation (Phase 4).
 
-- **Consistency:** `pg_dump` reads one repeatable-read snapshot, so items, manifests and commits
-  are mutually consistent (a commit is one transaction, sync-protocol §4.2). No API downtime is
-  needed.
-- **Integrity:** `restore` checks the sidecar's SHA-256 and size before touching anything, then
-  runs `pg_restore` into a **new, empty** database. It refuses a database that has any Ruvee
-  table. A failed or interrupted restore leaves only that new database, which is dropped; the
-  running database is never modified.
-- **Versioning:** the sidecar records the newest migration. Restoring needs the same or a newer
-  Ruvee version; `prisma migrate deploy` then applies any newer migrations. An older Ruvee refuses
-  a dump from a newer schema.
-- **Interrupted backup:** the dump is written to `<name>.partial` and renamed only after the
-  sidecar is written; a run that stops leaves no file that looks complete.
+### 3.3 Consistent snapshot and integrity
 
-### 3.4 What a restore must undo (D-28, blocking M1)
+- One `pg_dump` run reads one repeatable-read snapshot: commits, manifests and items are
+  mutually consistent (each commit is one transaction). No downtime is needed.
+- The dump is written as `<name>.partial`, its SHA-256 computed, the sidecar written, then the
+  dump renamed. An interrupted run leaves no complete-looking file.
+- `restore` checks the sidecar's format, SHA-256 and size, and that the dump's schema is not newer
+  than the running Ruvee, **before** creating anything.
+- After loading, `restore` checks what it can without keys: every manifest envelope is the
+  documented size and purpose, `vaults.current_seq` equals the newest commit's `seq`, and every
+  item revision is within the commit history. It cannot check ciphertext; clients do that on
+  their first sync (INV-07).
 
-A restored database is the server _as it was_. The characterization tests in
-`apps/api/test/backup-restore.int-spec.ts` show what that means today: **a device removed after
-the backup is active again, with its old session**, and every security event since the backup
-is gone. Proposed rules, applied by `restore` before the API serves anything:
+### 3.4 Authentication versus decryption
 
-1. **Sessions:** revoke every `cookie`, `token` and `recovery` session (reason `restored`).
-   Every device signs in again; stolen cookies or tokens from before the backup stop working.
-2. **Pairings and login states:** delete open pairings. (Login and step-up states are in memory
-   and do not survive a restart anyway.)
-3. **Devices:** keep them as they were at backup time, but record a `server_restored` event with
-   the backup time, and make the web app show, once, on the next sign-in: the date the server was
-   restored to, the devices list for review, and that devices removed after that date are listed
-   again and must be removed again (as lost, which rotates `SK`, if that was the reason).
-4. **Recovery:** `AK_WRAP_RECOVERY` and the verifier are those of backup time. A Recovery Kit
-   rotated after the backup works again, and the newer one does not (account-recovery.md §5's
-   caveat in the other direction). The notice says so, and offers making a new kit.
-5. **Keys:** a password change, `SK` rotation or Recovery Kit rotation made after the backup is
-   undone on the server. Devices that made or adopted it hold a newer keyset or wrap. They see a
-   keyset rollback (INV-09) or a manifest rollback (INV-07) and stop, read-only, as designed.
+A restore changes what the **server** knows. It cannot change what any **device** holds.
 
-What a restore **cannot** do: bring back changes made after the backup (they survive only on
-devices that synced them, until re-seeding exists, M3), know which devices were removed after
-the backup, or remove copies anyone made before.
+- **Authentication** (OPAQUE record, sessions, tokens, device rows, throttles) is restored as it
+  was, and the restore policy can change it: ending sessions, deleting pairings.
+- **Decryption material** (`AK_WRAP_PASSWORD`, `AK_WRAP_RECOVERY` and `SHA-256(RAK)`, the keyset
+  and its `SK`) is also restored as it was. Ending sessions does **not** make it current again: a
+  password, `SK` or Recovery Kit replaced after the snapshot is replaced only on the devices that
+  hold the newer state, and on the server it is the old one again until the owner repeats the
+  change.
+- **Device trust** is cryptographic: an enrolled device holds `SK` and its own wrap of `AK`.
+  Deleting sessions makes it sign in again; it does not un-enroll it, and it does not re-enroll a
+  device the restored server never heard of.
 
-### 3.5 Restoring
+### 3.5 Restore state machine
 
-- **Onto a clean machine:** install the same or a newer Ruvee, create an empty database, run
-  `ruvee-admin restore <dump>`, put the setup file where `OPAQUE_SERVER_SETUP_FILE` points, start
-  the API. With the setup file, users log in with their password as of backup time. Without it,
-  each user recovers with the Recovery Kit as of backup time, which re-registers OPAQUE.
-- **Into a fresh installation** (a new server that never ran Ruvee): the same; the restored
-  `bootstrap_tokens` are already used, so registration stays closed.
-- **Devices ahead of the backup** stop with "the server is behind this device" until re-seeding
-  (M3) exists. Today that shows as the read-only integrity state.
+```
+ VERIFY ──► PREPARE ──► LOAD ──► MIGRATE ──► APPLY POLICY ──► CHECK ──► READY ──► SERVING
+   │           │          │         │             │              │         │
+   └───────────┴──────────┴─────────┴─────────────┴──────────────┘         └ first API start
+     any failure: stop; drop only the database this run created; the old database,
+     the dump and the setup file are never modified
+```
 
-### 3.6 Rollback limitations
+| State        | Does                                                                                 | Fails safely because                                     |
+| ------------ | ------------------------------------------------------------------------------------ | -------------------------------------------------------- |
+| VERIFY       | Sidecar format, SHA-256, size, schema version; setup file present and readable       | Nothing exists yet                                       |
+| PREPARE      | Creates a **new, empty** database named by the operator; refuses one with any table  | Only that database exists                                |
+| LOAD         | `pg_restore` into it                                                                 | Partial loads stay in the new database, which is dropped |
+| MIGRATE      | `prisma migrate deploy` to the running version                                       | Same                                                     |
+| APPLY POLICY | The D-28 rules (§3.6) in **one transaction**                                         | All or nothing                                           |
+| CHECK        | §3.3 structural checks; a marker row `restore_completed` written last                | A run without the marker is incomplete by definition     |
+| READY        | Prints what was restored (snapshot time, counts) and the owner's next steps          | —                                                        |
+| SERVING      | The API refuses to start on a database whose newest restore has no completion marker | An interrupted restore can never be served               |
 
-Restoring is a rollback by definition. Clients with a checkpoint detect it (INV-07, INV-09); a
-device without one (newly paired after the restore, or recovered) cannot tell an older state
-from a current one (R-07). Restoring **more than once**, or to an older dump than a previous
-restore, repeats all of the above.
+Re-running a failed restore starts again from VERIFY with a new database name.
 
-### 3.7 If a required secret is lost
+### 3.6 Recommended V1 restore policy (D-28 option A, as specified)
 
-- **Dump lost:** nothing to restore; devices keep their local copies and could re-seed a new
-  server (M3).
-- **Setup file lost:** logins fail; each user recovers with the Recovery Kit as of backup time.
-- **That Recovery Kit lost too:** a device whose local copy still opens with the password can
-  keep reading offline and, once re-seeding exists, rebuild the server. With no such device the
-  vault is permanently lost. No operator action can help (INV-18).
+Applied in APPLY POLICY, before the API serves anything:
+
+1. **Every session ends:** all `cookie`, `token` and `recovery` sessions are revoked (new revoke
+   reason `restored`). Refresh tokens belong to those sessions and stop working with them. Access
+   tokens are session hashes and stop too. (Login and step-up states are in memory and are gone
+   with the old process.) Proven necessary: without this, a refresh token rotated after the
+   snapshot, and a recovery session ended after it, work again
+   (`backup-restore.int-spec.ts`).
+2. **Pairings are deleted.** A pairing in progress at snapshot time is gone; it is restarted.
+3. **Unused setup tokens are deleted.** Proven necessary: restoring a copy taken before the
+   account existed otherwise reopens registration to whoever held that token
+   (`backup-restore-early.int-spec.ts`).
+4. **A `server_restored` event** records the snapshot time, and `GET /account` returns
+   `lastRestoredAt` and `restoredToAt` (as it returns `lastRecoveryAt`), so every client can say
+   plainly what happened. Clients use it only for wording; it cannot be trusted for security.
+5. **Nothing else changes:** devices, OPAQUE record, wraps, keyset, items and throttles stay as
+   in the snapshot. In particular no device is revoked or re-enabled automatically: the server
+   cannot know what happened after the snapshot.
+6. **Clients** (small changes):
+   - show "This server was restored to <time>" with what it means for this device, instead of
+     the generic integrity message, when `server_behind`, `keyset_rollback`, a wrap that no
+     longer opens, or an unknown device coincides with a restore notice;
+   - offer **Start over on this device**: wipe the local store (after offering the export below)
+     and log in again, then pair from a device that is in step with the server, or recover with the Recovery
+     Kit as of the snapshot;
+   - allow an **encrypted export of the local copy** when the server is unreachable or behind,
+     confirmed by the master password against the local wrap instead of an online step-up, so the
+     newest data can be kept before starting over. (Today `exportVault` needs the server.)
+
+### 3.7 Changes made after the snapshot
+
+| After the snapshot…           | The restored server                                                                                                          | Devices that saw the change                                       | Owner action                                                                                                                |
+| ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| Items changed                 | Has the older items                                                                                                          | Stop read-only (`server_behind`, INV-07)                          | Export the newer copy locally, start over, re-enter what is missing                                                         |
+| A device was removed          | Lists it as active again; its session is ended (rule 1) but it can sign in again if it knows the password as of the snapshot | —                                                                 | **Remove it again**; as lost if it was lost, which rotates `SK` again (D-24)                                                |
+| A device was added            | Has never heard of it                                                                                                        | Signs in as a new pending device; cannot sync                     | Start over on it and pair again                                                                                             |
+| Password changed              | Accepts only the **old** password for login                                                                                  | Unlock locally with the new one, but cannot sign in               | Sign in with the old password once (from any device, or recover), then change it again                                      |
+| `SK` rotated                  | Has the old keyset and the wrap under the old `SK`                                                                           | Stop at the next online unlock (`keyset_rollback`, INV-09)        | Start over on them, then **replace `SK` again**: the old `SK`, which a lost device may hold, is current again on the server |
+| Recovery Kit replaced         | Accepts only the **old** kit                                                                                                 | —                                                                 | **Make a new kit again**; the old kit works again until then                                                                |
+| Recovery started or completed | The recovery is undone; a recovery session open at snapshot time is ended (rule 1)                                           | The recovering device holds newer wraps: as for a password change | As for a password change and a new kit                                                                                      |
+| Pairing in progress           | Deleted (rule 2)                                                                                                             | The joining device waits, then times out                          | Pair again                                                                                                                  |
+| Sessions, refresh tokens      | Ended (rule 1)                                                                                                               | Sign in again                                                     | —                                                                                                                           |
+| Security events               | Lost, except `server_restored`                                                                                               | —                                                                 | Keep the old server's logs if any survive                                                                                   |
+
+### 3.8 How existing clients detect the older history
+
+- **Checkpoint ahead of the server** → `server_behind` (sync-protocol §5 check 4): nothing is
+  applied; the vault stays readable and read-only. Tested
+  (`vault-engine.test.ts` "a device ahead of the snapshot stops read-only").
+- **Keyset newer than the server's** → `keyset_rollback` at the next online unlock. Tested.
+- **Checkpoint at or behind the snapshot, same chain** → syncs normally; the restore is invisible
+  to it. Tested.
+- **A device ahead, after the restored server accepted new commits from another device** → the
+  chain at its checkpoint differs: `history_rewritten`, read-only.
+- **Unknown device id** (added after the snapshot) → its sign-in creates a new pending device;
+  the client reports that it could not sign in.
+- **A device without any checkpoint** (new, or recovered after the restore) cannot tell an older
+  state from a newer one (R-07).
+
+### 3.9 What the backup alone cannot repair or revoke
+
+- Changes made after the snapshot: they exist only on devices, until re-seeding (M3) or manual
+  re-entry.
+- Revocations, password changes, `SK` rotations and Recovery Kit replacements made after the
+  snapshot: undone on the server; they must be repeated. Until they are, an old password, an old
+  kit and an old `SK` work again against this server.
+- Anything any device or person already copied: wraps, records, keys (cryptographic-design §6.4).
+- Every older dump still opens with the credentials of its own day.
+- The history of security events after the snapshot.
+
+### 3.10 What the owner does during a real restore
+
+1. Stop the old server if it still runs, so no device writes to it.
+2. If the old server is gone and a device is ahead of the newest dump, make an encrypted export
+   on that device first (§3.6 client change), or decide that the snapshot is enough.
+3. On a clean host: install the same or a newer Ruvee, create an empty database, put the setup
+   file's offline copy in place, and write `.env` from the sidecar's values and new host values.
+4. Run `ruvee-admin restore <dump>`; read its summary.
+5. Start the API and Caddy at the **same** `PUBLIC_ORIGIN`.
+6. On each device, sign in with the password **as of the snapshot**. Devices in step continue;
+   others offer **Start over on this device**, then pair or recover.
+7. Repeat every security change made after the snapshot: remove devices again (as lost where it
+   applies), change the password again, replace `SK` again, make a new Recovery Kit again.
+8. Re-enter changes made after the snapshot from the local export, opened read-only.
+
+**Lost for good:** vault changes after the snapshot that were on no device; security events after
+the snapshot. **Must be redone:** device enrolments, the security changes in step 7.
+
+### 3.11 Missing mechanisms (the M1 implementation)
+
+- `ruvee-admin backup` and `ruvee-admin restore` (none exist; the CLI has `opaque-setup` and
+  `bootstrap-token`), and the CI image's PostgreSQL 18 client tools.
+- Revoke reason `restored`, event type `server_restored` with an allow-listed snapshot time, a
+  `restore_completed` marker and the API's refusal to start without it (migration with down).
+- `GET /account`: `lastRestoredAt`, `restoredToAt`.
+- Client: the restore notice, **Start over on this device**, and the offline encrypted export.
 
 ## 4. Portable encrypted export (milestone M2)
 
@@ -344,22 +432,26 @@ M1 does **not** include re-seeding (M3, Phase 4 design) or any export.
 
 Each test creates its own `ruvee_it_*` / `ruvee_e2e_*` database and synthetic accounts.
 
-**M1, server backup**
+**M1, server backup** (after D-28). The characterization tests already in the repository
+(`backup-restore*.int-spec.ts`, `vault-engine.test.ts` "clients after a server restore") show
+today's behaviour and become the "before" half of R4 to R8.
 
-| ID  | Test                                                                         | Expected                                                                              |
-| --- | ---------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| R1  | Back up while a client commits in a loop                                     | The restored chain verifies end to end; no half commit                                |
-| R2  | Restore the dump into a fresh database; log in with the backup-time password | Login works; the device opens its vault and syncs                                     |
-| R3  | Restore without the setup file                                               | Login fails; Recovery Kit (backup-time) recovery succeeds and re-registers OPAQUE     |
-| R4  | Sessions and refresh tokens taken before the backup                          | All refused after restore (D-28 rule 1)                                               |
-| R5  | A device removed after the backup                                            | Listed again; flagged in the one-time review; its old session refused                 |
-| R6  | Password changed after the backup                                            | Only the old password logs in; a device with the new local wrap still unlocks offline |
-| R7  | `SK` rotated after the backup                                                | A device holding the newer keyset stops with a keyset rollback (INV-09), read-only    |
-| R8  | Commits made after the backup                                                | Devices ahead see "server behind"/rollback (INV-07), nothing applied                  |
-| R9  | Recovery Kit rotated after the backup                                        | The old kit recovers; the new one does not; the notice says so                        |
-| R10 | Corrupted dump, wrong SHA-256, truncated file, newer schema                  | Restore refuses before changing anything                                              |
-| R11 | Restore interrupted (process killed)                                         | The running database is untouched; the partial one is dropped                         |
-| R12 | Scan the dump and sidecar                                                    | No OPAQUE setup, no plaintext, no raw token (INV-01, INV-13, INV-21)                  |
+| ID  | Test                                                                                                             | Expected                                                                                         |
+| --- | ---------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| R1  | Back up while a client commits in a loop                                                                         | The restored chain verifies end to end; no half commit                                           |
+| R2  | Restore into a fresh database; sign in with the snapshot-time password                                           | Login works; a device in step syncs                                                              |
+| R3  | Restore without the setup file                                                                                   | Login fails; Recovery Kit (snapshot-time) recovery succeeds                                      |
+| R4  | Cookie, access, refresh and recovery tokens from before the snapshot, including a refresh token rotated after it | All refused (rule 1)                                                                             |
+| R5  | A pairing open at snapshot time; an unused setup token                                                           | Gone (rules 2, 3); registration stays closed                                                     |
+| R6  | A device removed after the snapshot                                                                              | Listed again; signs in only with the snapshot-time password; the review shows it                 |
+| R7  | Password changed after the snapshot                                                                              | Only the old password signs in; the device with the new wrap unlocks offline and sees the notice |
+| R8  | `SK` rotated after the snapshot                                                                                  | The device with the newer keyset stops (`keyset_rollback`) and offers Start over                 |
+| R9  | Items changed after the snapshot                                                                                 | The device ahead stops (`server_behind`); its offline export holds the newer items               |
+| R10 | Recovery Kit replaced after the snapshot                                                                         | The old kit recovers, the new one does not; the notice says so                                   |
+| R11 | Corrupted dump, wrong SHA-256, truncated file, newer schema, missing setup file                                  | Refused in VERIFY; nothing created                                                               |
+| R12 | Restore killed in each state                                                                                     | The old database untouched; the new one has no completion marker and the API refuses it          |
+| R13 | Scan dump and sidecar                                                                                            | No OPAQUE setup, no plaintext, no raw token (INV-01, INV-13, INV-21)                             |
+| R14 | Browser: devices A (ahead) and B (in step) against a restored server                                             | B continues; A shows the restore notice, exports, starts over and pairs from B                   |
 
 **M2, portable export** (after D-13)
 
@@ -378,18 +470,21 @@ Each test creates its own `ruvee_it_*` / `ruvee_e2e_*` database and synthetic ac
 | ID       | Decision                              | Options                                                                                                                                                                                                                                                                                                                                   | Recommended           | User-visible consequence                                                                                                                                                                                                                                                                               |
 | -------- | ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | **D-13** | Portable export format                | **A.** Container of existing envelopes; `AK` wrapped under the Recovery Key typed at export (§4). **B.** A, plus an export passphrase: `AK` also wrapped under an Argon2id key from a new passphrase (new purpose `0x09`). **C.** Encrypt the export with the established `age` format (passphrase or X25519 recipient) over A's content. | **A**                 | To make or open an export, you need your Recovery Kit. Without it the export is useless. With B, a passphrase opens the file, so a stolen file can be guessed offline at one Argon2id per try. C adds a second library and, in passphrase mode, the same weakness, for no gain over A's existing AEAD. |
-| **D-28** | What restoring a server backup undoes | **A.** End every session, delete pairings, record `server_restored`, one-time device review (§3.4). **B.** Restore as is. **C.** A, plus re-applying revocations from a journal kept outside the database.                                                                                                                                | **A**                 | After a restore every device signs in again and you review your devices; a device you removed after the backup date must be removed again. With B, a removed device's old session works again. C needs extra infrastructure.                                                                           |
+| **D-28** | What restoring a server backup undoes | **A.** As specified in §3.6: end every session (cookie, token, recovery), delete pairings and unused setup tokens, record `server_restored`, change nothing else on the server, and the three client changes. **B.** Restore as is. **C.** A, plus re-applying revocations from a journal kept outside the database.                      | **A**                 | After a restore every device signs in again and you review your devices; a device you removed after the backup date must be removed again. With B, a removed device's old session works again. C needs extra infrastructure.                                                                           |
 | D-29     | Encrypting dump files at rest         | **A.** The guide requires encrypted storage, apart from the setup file; Ruvee does not encrypt. **B.** `ruvee-admin backup` encrypts with `age` to an operator key.                                                                                                                                                                       | **A** for M1, B later | With A you choose where dumps are kept and must keep them apart from the setup file. Not blocking.                                                                                                                                                                                                     |
 
 ## 8. Implementation plan
 
-**M1 (after D-28)**
+**M1 (after D-28)**, in order; each step depends on the ones before it:
 
-1. `apps/api/src/admin/backup.ts`: `ruvee-admin backup --out <dir>` (pg_dump, `.partial`, sidecar). Depends on: nothing new.
-2. `ruvee-admin restore <dump> --database-url <empty db>`: checks, `pg_restore`, `migrate deploy`, D-28 rules in one transaction. Depends on 1, D-28.
-3. Revoke reason `restored` and event type `server_restored` (migration with down); the web app's one-time restore notice and device review. Depends on 2.
-4. Tests R1 to R12, building on `test/support/backup-snapshot.ts` and real `pg_dump` (CI installs the PostgreSQL 18 client). Depends on 1 to 3.
-5. Operator guide: where to keep dumps and the setup file, restore steps, what users will see. Depends on 1 to 3.
+1. Migration: revoke reason `restored`, event `server_restored`, restore marker (with down).
+2. `ruvee-admin backup --out <dir>`: `pg_dump`, `.partial`, SHA-256, sidecar.
+3. `ruvee-admin restore <dump> --database-url <empty db>`: the §3.5 states and the §3.6 server
+   rules; the API's start-up check for the marker.
+4. `GET /account` restore fields; web and extension restore notice; Start over; offline
+   encrypted export.
+5. Tests R1 to R14; CI installs the PostgreSQL 18 client.
+6. Operator guide (§3.10 as a runbook), linked from the README.
 
 **M2 (D-13 approved for development; independent review of §4 still required)**
 
