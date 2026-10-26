@@ -1,3 +1,4 @@
+import { gzipSync } from 'node:zlib';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import {
   API_ERRORS,
@@ -170,6 +171,23 @@ describe('HTTP behaviour', () => {
         .set('Content-Encoding', 'gzip')
         .send(JSON.stringify(validBody));
       expectError(res, 'unsupported_media_type');
+    });
+
+    it('refuses a gzip body with trailing bytes and keeps serving (GHSA-27r3-jxmh-p828)', async () => {
+      // The advisory's payload: one valid compressed frame, then trailing bytes. With
+      // `inflate: false` no decompression stream is ever created, so nothing can throw later.
+      const payload = Buffer.concat([
+        gzipSync(Buffer.from(JSON.stringify(validBody))),
+        Buffer.from('trailing bytes after the gzip frame'),
+      ]);
+      const res = await http()
+        .post('/test-only/echo')
+        .set('Content-Type', 'application/json')
+        .set('Content-Encoding', 'gzip')
+        .send(payload);
+      expectError(res, 'unsupported_media_type');
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await http().get('/health/live').expect(200);
     });
 
     it('accepts a body at the size limit and rejects one byte more', async () => {
