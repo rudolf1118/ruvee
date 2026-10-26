@@ -13,7 +13,11 @@ import {
   DatabaseHealthService,
   type DependencyStatus,
 } from '../src/database/database-health.service.js';
+import { MaintenanceService } from '../src/maintenance/maintenance.service.js';
 import { createTestApp } from './create-test-app.js';
+import { neverRestored } from './fixtures.js';
+// Every routed write passes the CSRF checks first, test-only routes included (review R1).
+import { WRITE_HEADERS } from './support/api-harness.js';
 import { SENTINEL, TestOnlyController } from './fixtures.js';
 
 const blob = Buffer.alloc(32, 7).toString('base64url');
@@ -40,7 +44,11 @@ describe('HTTP behaviour', () => {
       override: (builder) =>
         builder
           .overrideProvider(DatabaseHealthService)
-          .useValue({ check: () => Promise.resolve(databaseStatus) }),
+          .useValue({ check: () => Promise.resolve(databaseStatus) })
+          // No database here: an ordinary, never-restored installation. The gate itself is
+          // tested against a real database (review/r1-path-case.int-spec.ts, reopen.int-spec.ts).
+          .overrideProvider(MaintenanceService)
+          .useValue(neverRestored),
     });
   });
 
@@ -113,7 +121,11 @@ describe('HTTP behaviour', () => {
 
   describe('request bodies', () => {
     it('accepts a valid JSON body', async () => {
-      const res = await http().post('/test-only/echo').send(validBody).expect(200);
+      const res = await http()
+        .post('/test-only/echo')
+        .set(WRITE_HEADERS)
+        .send(validBody)
+        .expect(200);
       expect(res.body).toEqual({ fields: ['blob', 'label'] });
       expect(res.headers['cache-control']).toBe('no-store');
     });
@@ -121,6 +133,7 @@ describe('HTTP behaviour', () => {
     it('accepts an explicit UTF-8 charset', async () => {
       await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json; charset=UTF-8')
         .send(JSON.stringify(validBody))
         .expect(200);
@@ -129,6 +142,7 @@ describe('HTTP behaviour', () => {
     it('rejects malformed JSON without quoting it', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .send(`{"label": "${SENTINEL}", "blob": ${SENTINEL}`);
       expectError(res, 'malformed_json');
@@ -137,6 +151,7 @@ describe('HTTP behaviour', () => {
     it('rejects JSON that is not an object or array', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .send(`"${SENTINEL}"`);
       expectError(res, 'malformed_json');
@@ -151,6 +166,7 @@ describe('HTTP behaviour', () => {
     ])('rejects the content type %s', async (contentType, payload) => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', contentType)
         .send(payload);
       expectError(res, 'unsupported_media_type');
@@ -159,6 +175,7 @@ describe('HTTP behaviour', () => {
     it('rejects a body without a content type', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', '')
         .send(Buffer.from(JSON.stringify(validBody)));
       expectError(res, 'unsupported_media_type');
@@ -167,6 +184,7 @@ describe('HTTP behaviour', () => {
     it('rejects compressed bodies', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .set('Content-Encoding', 'gzip')
         .send(JSON.stringify(validBody));
@@ -182,6 +200,7 @@ describe('HTTP behaviour', () => {
       ]);
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .set('Content-Encoding', 'gzip')
         .send(payload);
@@ -196,11 +215,13 @@ describe('HTTP behaviour', () => {
       expect(Buffer.byteLength(exact)).toBe(MAX_REQUEST_BODY_BYTES);
       await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .send(exact)
         .expect(200);
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .send(`${exact} `);
       expectError(res, 'payload_too_large');
@@ -209,18 +230,23 @@ describe('HTTP behaviour', () => {
     it('rejects an oversized body that contains a secret', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .send({ ...validBody, label: SENTINEL.repeat(4096) });
       expectError(res, 'payload_too_large');
     });
 
     it('rejects a missing body', async () => {
-      const body = expectError(await http().post('/test-only/echo'), 'invalid_request');
+      const body = expectError(
+        await http().post('/test-only/echo').set(WRITE_HEADERS),
+        'invalid_request',
+      );
       expect(body).toMatchObject({ details: { issues: [{ path: [], code: 'invalid_type' }] } });
     });
 
     it('reports invalid fields by path and code only', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .send({ label: SENTINEL.repeat(2), blob: `${SENTINEL}==`, options: { count: 11 } });
       const body = expectError(res, 'invalid_request');
       expect(body).toMatchObject({
@@ -237,6 +263,7 @@ describe('HTTP behaviour', () => {
     it('rejects unknown fields without naming them', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .send({ ...validBody, password: SENTINEL, [SENTINEL]: 1, options: { count: 1, x: 2 } });
       const body = expectError(res, 'invalid_request');
       expect(body.error === 'invalid_request' && body.details?.issues).toHaveLength(2);
@@ -254,6 +281,7 @@ describe('HTTP behaviour', () => {
     it('rejects a __proto__ key as an unknown field', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'application/json')
         .send(`{"label":"ok","blob":"${blob}","__proto__":{"admin":true}}`);
       expectError(res, 'invalid_request');
@@ -263,6 +291,7 @@ describe('HTTP behaviour', () => {
       const short = Buffer.alloc(31).toString('base64url');
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .send({ ...validBody, blob: short });
       expect(expectError(res, 'invalid_request')).toMatchObject({
         details: { issues: [{ path: ['blob'], code: 'too_small' }] },
@@ -272,6 +301,7 @@ describe('HTTP behaviour', () => {
     it('bounds array lengths', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .send({ ...validBody, tags: ['a', 'b', 'c', 'd', 'e'] });
       expect(expectError(res, 'invalid_request')).toMatchObject({
         details: { issues: [{ path: ['tags'], code: 'too_big' }] },
@@ -298,6 +328,7 @@ describe('HTTP behaviour', () => {
     it('gives requests rejected before routing a request id too', async () => {
       const res = await http()
         .post('/test-only/echo')
+        .set(WRITE_HEADERS)
         .set('Content-Type', 'text/plain')
         .set('x-request-id', 'trace-415')
         .send('x');

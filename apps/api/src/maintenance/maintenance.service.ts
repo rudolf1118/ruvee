@@ -1,11 +1,9 @@
 import { Injectable } from '@nestjs/common';
 import { ApiException } from '../common/api-exception.js';
 import { PrismaService } from '../database/prisma.service.js';
+import type { RouteClass } from '../sessions/route-class.js';
 
 export type GuardState = 'none' | 'restoring' | 'review' | 'reopening' | 'open';
-
-/** The only routes a restored installation serves while it waits to be reopened (§3.13). */
-export const REOPEN_PREFIX = '/api/v1/reopen/';
 
 /**
  * Maintenance mode of a restored installation (backup-restore.md §3.5, §3.13). The restore tool
@@ -45,13 +43,17 @@ export class MaintenanceService {
     return state === 'none' || state === 'open';
   }
 
-  /** Throws the error a request on `path` gets in the current state, if any. */
-  async gate(path: string): Promise<void> {
-    if (!path.startsWith('/api/')) return;
+  /**
+   * Throws the error a request for a handler of `routeClass` gets in the current state, if any.
+   * Default deny: in every state but `open` (or no guard), only `health` is served, and while
+   * reopening also `reopen`. The class comes from the matched handler (route-class.ts).
+   */
+  async gate(routeClass: RouteClass): Promise<void> {
+    if (routeClass === 'health') return;
     const state = await this.state();
     if (state === 'none' || state === 'open') return;
     if (state === 'reopening') {
-      if (path.startsWith(REOPEN_PREFIX)) return;
+      if (routeClass === 'reopen') return;
       throw new ApiException('reopening');
     }
     throw new ApiException('maintenance');

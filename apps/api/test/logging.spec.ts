@@ -2,7 +2,10 @@ import { Writable } from 'node:stream';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import request from 'supertest';
 import { LOG_DESTINATION, UNMATCHED_ROUTE } from '../src/logging/logger-options.js';
-import { SENTINEL, TestOnlyController } from './fixtures.js';
+import { neverRestored, SENTINEL, TestOnlyController } from './fixtures.js';
+
+/** Every routed write passes the CSRF checks first, test-only routes included (review R1). */
+const WRITE_HEADERS = { Origin: 'http://127.0.0.1:3100', 'X-Ruvee-Request': '1' };
 
 // The configuration is read when the app module is imported, so it is imported after this.
 vi.stubEnv('LOG_LEVEL', 'trace');
@@ -34,9 +37,16 @@ describe('logs', () => {
       },
     });
     const { createTestApp } = await import('./create-test-app.js');
+    const { MaintenanceService } = await import('../src/maintenance/maintenance.service.js');
     app = await createTestApp({
       controllers: [TestOnlyController],
-      override: (builder) => builder.overrideProvider(LOG_DESTINATION).useValue(destination),
+      override: (builder) =>
+        builder
+          .overrideProvider(LOG_DESTINATION)
+          .useValue(destination)
+          // No database here; see http.spec.ts.
+          .overrideProvider(MaintenanceService)
+          .useValue(neverRestored),
     });
 
     const secretHeaders = {
@@ -44,10 +54,18 @@ describe('logs', () => {
       Cookie: `__Host-ruvee_session=${SENTINEL}`,
       'X-Ruvee-Token': SENTINEL,
     };
+    // A cookie and a bearer token together are refused before any handler (review R1), so the
+    // handler-error request carries the cookie and custom header, and the bearer token goes on a
+    // request the guard refuses: neither may appear in a log line.
+    const { Authorization, ...cookieHeaders } = secretHeaders;
     await http()
       .get(`/test-only/items/${SENTINEL}?token=${SENTINEL}`)
-      .set(secretHeaders)
+      .set(cookieHeaders)
       .set('x-request-id', 'log-item');
+    await http()
+      .get(`/test-only/items/${SENTINEL}`)
+      .set({ Authorization })
+      .set('x-request-id', 'log-bearer');
     await http().get('/test-only/crash').set('x-request-id', 'log-crash');
     await http().get('/test-only/bad-request').set('x-request-id', 'log-bad');
     await http().get('/test-only/forbidden').set('x-request-id', 'log-forbidden');
@@ -55,20 +73,24 @@ describe('logs', () => {
     await http().get('/nope').set('x-request-id', `${SENTINEL} invalid`);
     await http()
       .post('/test-only/echo')
+      .set(WRITE_HEADERS)
       .set(secretHeaders)
       .set('Content-Type', 'application/json')
       .set('x-request-id', 'log-malformed')
       .send(`{"password": ${SENTINEL}`);
     await http()
       .post('/test-only/echo')
+      .set(WRITE_HEADERS)
       .set('x-request-id', 'log-too-large')
       .send({ password: SENTINEL.repeat(4096) });
     await http()
       .post('/test-only/echo')
+      .set(WRITE_HEADERS)
       .set('x-request-id', 'log-unknown-field')
       .send({ label: 'ok', blob: SENTINEL, password: SENTINEL, [SENTINEL]: SENTINEL });
     await http()
       .post('/test-only/echo')
+      .set(WRITE_HEADERS)
       .set('Content-Type', 'text/plain')
       .set('x-request-id', 'log-415')
       .send(`password=${SENTINEL}`);

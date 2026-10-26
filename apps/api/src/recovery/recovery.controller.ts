@@ -17,11 +17,13 @@ import type { ClientContext } from '../auth/auth.service.js';
 import { ContractValidationPipe } from '../common/contract-validation.pipe.js';
 import type { Env } from '../config/env.js';
 import { Access, CurrentSession } from '../sessions/access.decorator.js';
+import { RouteClassOf } from '../sessions/route-class.js';
 import { clientIp, userAgent } from '../sessions/client-info.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { RecoveryService } from './recovery.service.js';
 
 @Controller('api/v1/recovery')
+@RouteClassOf('recovery')
 export class RecoveryController {
   private readonly trustedProxy: string | undefined;
 

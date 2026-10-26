@@ -3,8 +3,10 @@ import type { LivenessResponse, ReadinessResponse } from '@ruvee/contracts';
 import type { Response } from 'express';
 import { DatabaseHealthService } from '../database/database-health.service.js';
 import { Access } from '../sessions/access.decorator.js';
+import { RouteClassOf } from '../sessions/route-class.js';
 
 @Controller('health')
+@RouteClassOf('health')
 @Access('none')
 export class HealthController {
   constructor(private readonly database: DatabaseHealthService) {}

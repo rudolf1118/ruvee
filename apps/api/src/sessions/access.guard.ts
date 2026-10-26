@@ -6,7 +6,8 @@ import { ApiException } from '../common/api-exception.js';
 import type { Env } from '../config/env.js';
 import { ACCESS_METADATA, type AccessLevel, type RequestWithSession } from './access.decorator.js';
 import { readCookie } from './client-info.js';
-import { MaintenanceService, REOPEN_PREFIX } from '../maintenance/maintenance.service.js';
+import { MaintenanceService } from '../maintenance/maintenance.service.js';
+import { ROUTE_CLASS_METADATA, type RouteClass } from './route-class.js';
 import { SessionService, STEP_UP_MS } from './session.service.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
@@ -44,50 +45,62 @@ export class AccessGuard implements CanActivate {
     ]);
     if (level === undefined) throw new ApiException('internal_error');
 
+    const routeClass =
+      this.reflector.getAllAndOverride<RouteClass | undefined>(ROUTE_CLASS_METADATA, [
+        context.getHandler(),
+        context.getClass(),
+      ]) ?? 'api';
     const req = context.switchToHttp().getRequest<RequestWithSession>();
     // A restored installation in review serves nothing at all, whatever the credentials, and
     // while it waits to be reopened only the reopening endpoints: restored cookies, tokens and
-    // passwords cannot open it (backup-restore.md §3.6 rules 3, 4; §3.13).
-    await this.maintenance.gate(req.path);
+    // passwords cannot open it (backup-restore.md §3.6 rules 3, 4; §3.13). Decided by the matched
+    // handler, not the URL (predeployment-review R1).
+    await this.maintenance.gate(routeClass);
+    if (routeClass === 'health') {
+      if (level !== 'none') throw new ApiException('internal_error');
+      return true;
+    }
+    // Every other route: the cookie-xor-bearer rule and the CSRF checks apply, whatever its path.
     let bearer: string | undefined;
-    if (req.path.startsWith('/api/')) {
-      if (req.headers.authorization !== undefined) {
-        if (readCookie(req, this.sessions.cookieName) !== undefined)
-          throw new ApiException('invalid_request');
-        bearer = BEARER.exec(req.headers.authorization)?.[1];
-        if (bearer === undefined) throw new ApiException('unauthenticated');
-      } else if (!SAFE_METHODS.has(req.method)) {
-        // A listed extension may call the unauthenticated endpoints, but never with a cookie:
-        // it fetches with `credentials: 'omit'`, so a cookie here means someone else's request.
-        const cookie =
-          readCookie(req, this.sessions.cookieName) ??
-          readCookie(req, this.sessions.recoveryCookieName) ??
-          readCookie(req, this.sessions.reopenCookieName);
-        const origin = req.headers.origin;
-        const originOk =
-          origin === this.publicOrigin ||
-          (cookie === undefined &&
-            level === 'none' &&
-            origin !== undefined &&
-            this.extensionOrigins.has(origin));
-        if (!originOk || req.headers[CSRF_HEADER] !== CSRF_HEADER_VALUE)
-          throw new ApiException('csrf_rejected');
-      }
+    if (req.headers.authorization !== undefined) {
+      if (readCookie(req, this.sessions.cookieName) !== undefined)
+        throw new ApiException('invalid_request');
+      bearer = BEARER.exec(req.headers.authorization)?.[1];
+      if (bearer === undefined) throw new ApiException('unauthenticated');
+    } else if (!SAFE_METHODS.has(req.method)) {
+      // A listed extension may call the unauthenticated endpoints, but never with a cookie:
+      // it fetches with `credentials: 'omit'`, so a cookie here means someone else's request.
+      const cookie =
+        readCookie(req, this.sessions.cookieName) ??
+        readCookie(req, this.sessions.recoveryCookieName) ??
+        readCookie(req, this.sessions.reopenCookieName);
+      const origin = req.headers.origin;
+      const originOk =
+        origin === this.publicOrigin ||
+        (cookie === undefined &&
+          level === 'none' &&
+          origin !== undefined &&
+          this.extensionOrigins.has(origin));
+      if (!originOk || req.headers[CSRF_HEADER] !== CSRF_HEADER_VALUE)
+        throw new ApiException('csrf_rejected');
     }
     if (level === 'none') return true;
     if (level === 'recovery') {
-      if (!req.path.startsWith('/api/v1/recovery/')) throw new ApiException('internal_error');
+      if (routeClass !== 'recovery') throw new ApiException('internal_error');
       if (bearer !== undefined) throw new ApiException('unauthenticated');
       req.ruveeSession = await this.sessions.authenticateRecovery(
         readCookie(req, this.sessions.recoveryCookieName),
       );
       return true;
     }
+    // The recovery and reopen controllers accept only their own session kinds.
+    if (routeClass === 'recovery' || (routeClass === 'reopen' && level !== 'reopen'))
+      throw new ApiException('internal_error');
 
     if (level === 'reopen') {
       // Only the reopening endpoints, only with the reopen cookie: never a bearer token, and a
       // reopen session is never accepted anywhere else (backup-restore.md §3.13).
-      if (!req.path.startsWith(REOPEN_PREFIX)) throw new ApiException('internal_error');
+      if (routeClass !== 'reopen') throw new ApiException('internal_error');
       if (bearer !== undefined) throw new ApiException('unauthenticated');
       req.ruveeSession = await this.sessions.authenticateReopen(
         readCookie(req, this.sessions.reopenCookieName),

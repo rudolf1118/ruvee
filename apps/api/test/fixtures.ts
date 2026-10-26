@@ -13,6 +13,13 @@ import { z } from 'zod';
 import { ContractValidationPipe } from '../src/common/contract-validation.pipe.js';
 import { Access } from '../src/sessions/access.decorator.js';
 
+/** MaintenanceService for unit tests without a database: an installation never restored. */
+export const neverRestored = {
+  state: () => Promise.resolve('none' as const),
+  isOpen: () => Promise.resolve(true),
+  gate: () => Promise.resolve(),
+};
+
 /** Synthetic secret. It must never appear in a response or a log line. */
 export const SENTINEL = 'SENTINEL-7f3a9c-not-a-real-secret';
 

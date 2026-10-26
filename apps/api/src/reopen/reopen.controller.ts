@@ -22,6 +22,7 @@ import type { ClientContext } from '../auth/auth.service.js';
 import { ContractValidationPipe } from '../common/contract-validation.pipe.js';
 import type { Env } from '../config/env.js';
 import { Access, CurrentSession } from '../sessions/access.decorator.js';
+import { RouteClassOf } from '../sessions/route-class.js';
 import { clientIp, userAgent } from '../sessions/client-info.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { ReopenService } from './reopen.service.js';
@@ -32,6 +33,7 @@ import { ReopenService } from './reopen.service.js';
  * session has its own cookie and never receives a normal one until completion.
  */
 @Controller('api/v1/reopen')
+@RouteClassOf('reopen')
 export class ReopenController {
   private readonly trustedProxy: string | undefined;
 
