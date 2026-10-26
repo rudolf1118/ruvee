@@ -21,6 +21,7 @@ next milestone; it is not an independent review and not approval to store real s
 | [0008](0008-session-model.md)                 | Cookie sessions for web, rotating tokens elsewhere      | Proposed                              |
 | [0009](0009-web-client-trust.md)              | The web app trusts its server; say so                   | Proposed                              |
 | [0010](0010-backup-and-portable-export.md)    | Server backups; portable exports as envelope containers | Proposed (D-13 A approved; D-28 open) |
+| [0011](0011-device-proof-of-possession.md)    | Device proof of possession with per-device Ed25519 keys | Proposed (D-31 A selected)            |
 
 New ADRs copy the structure of an existing one and take the next number. An ADR is never edited
 to reverse its decision; a new ADR supersedes it.
