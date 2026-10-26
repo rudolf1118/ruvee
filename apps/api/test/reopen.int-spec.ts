@@ -496,6 +496,22 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         [deviceId],
       );
       expect(device).toEqual({ status: 'active', enrolled_via: 'recovery' });
+      // D-31 §8: the new browser's own key is the one enrolled; AK's verification key and the
+      // snapshot device's key are unchanged (the old device's private key was never needed).
+      const keysAfter = await query<{ id: string; public_key: Buffer | null }>(
+        r.db.url,
+        'SELECT id, public_key FROM devices WHERE id = ANY($1::uuid[])',
+        [[deviceId, account.deviceId]],
+      );
+      const keyOf = (id: string) =>
+        b64(keysAfter.find((d) => d.id === id)?.public_key ?? new Uint8Array());
+      expect(keyOf(deviceId)).toBe(b64(deviceKey.publicKey));
+      expect(keyOf(account.deviceId)).toBe(b64(account.deviceKey.publicKey));
+      const [avpk] = await query<{ ak_verify_key: Buffer }>(
+        r.db.url,
+        'SELECT ak_verify_key FROM account_keys',
+      );
+      expect(b64(avpk?.ak_verify_key ?? new Uint8Array())).toBe(b64(account.akVerifyKey));
       // The old kit is retired, the new one recovers.
       const kit = (text: string) =>
         account.crypto.deriveRecoveryKeys(account.crypto.parseRecoveryKey(text)).recoveryAuthKey;

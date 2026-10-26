@@ -23,6 +23,13 @@ import type { AuthenticatedSession } from '../sessions/session.service.js';
 import type { Bytes } from '../common/secrets.js';
 
 /** Sessions, device revocation (device-enrollment §6) and password change (authentication §9). */
+/** Tier 3+ of device-proof.md §7: operations that replace key material prove AK as well. */
+const NEEDS_ACCOUNT_KEY_PROOF: ReadonlySet<ProofOperation> = new Set([
+  'password_change',
+  'secret_key_rotate',
+  'recovery_key_rotate',
+]);
+
 @Injectable()
 export class AccountSecurityService {
   constructor(
@@ -48,8 +55,13 @@ export class AccountSecurityService {
       this.prisma.accountKeys.findUniqueOrThrow({ where: { accountId: session.accountId } }),
     ]);
     const nonce = fromBase64url(body.nonce);
-    const wantsAccountKey = body.proof.accountKey !== undefined;
-    if (!device.publicKey || (wantsAccountKey && !keys.akVerifyKey))
+    // device-proof.md §7: which operations also need AK's proof is fixed here, by operation,
+    // never inferred from what the request happens to carry.
+    const wantsAccountKey = NEEDS_ACCOUNT_KEY_PROOF.has(operation);
+    if (
+      !device.publicKey ||
+      (wantsAccountKey && (!keys.akVerifyKey || body.proof.accountKey === undefined))
+    )
       throw new ApiException('device_proof_failed');
     await this.proofs.verifyBound(
       {

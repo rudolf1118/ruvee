@@ -27,7 +27,12 @@ import {
 import type { Request, Response } from 'express';
 import { ContractValidationPipe } from '../common/contract-validation.pipe.js';
 import type { Env } from '../config/env.js';
-import { Access, AllowBeforeProof, CurrentSession } from '../sessions/access.decorator.js';
+import {
+  Access,
+  AllowBeforeProof,
+  CurrentSession,
+  ExtensionMayCall,
+} from '../sessions/access.decorator.js';
 import { clientIp, userAgent } from '../sessions/client-info.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { AuthService, type ClientContext } from './auth.service.js';
@@ -74,6 +79,7 @@ export class AuthController {
   @Post('login/start')
   @HttpCode(200)
   @Access('none')
+  @ExtensionMayCall()
   loginStart(
     @Body(new ContractValidationPipe(loginStartRequestSchema)) body: LoginStartRequest,
     @Req() req: Request,
@@ -84,6 +90,7 @@ export class AuthController {
   @Post('login/finish')
   @HttpCode(200)
   @Access('none')
+  @ExtensionMayCall()
   async loginFinish(
     @Body(new ContractValidationPipe(loginFinishRequestSchema)) body: LoginFinishRequest,
     @Req() req: Request,
@@ -99,6 +106,7 @@ export class AuthController {
   @Post('refresh')
   @HttpCode(200)
   @Access('none')
+  @ExtensionMayCall()
   refresh(
     @Body(new ContractValidationPipe(refreshRequestSchema)) body: RefreshRequest,
     @Req() req: Request,

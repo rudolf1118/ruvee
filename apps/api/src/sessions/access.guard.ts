@@ -8,6 +8,7 @@ import type { Env } from '../config/env.js';
 import {
   ACCESS_METADATA,
   BEFORE_PROOF_METADATA,
+  EXTENSION_METADATA,
   type AccessLevel,
   type RequestWithSession,
 } from './access.decorator.js';
@@ -105,8 +106,9 @@ export class AccessGuard implements CanActivate {
       bearer = BEARER.exec(req.headers.authorization)?.[1];
       if (bearer === undefined) throw new ApiException('unauthenticated');
     } else if (!SAFE_METHODS.has(req.method)) {
-      // A listed extension may call the unauthenticated endpoints, but never with a cookie:
-      // it fetches with `credentials: 'omit'`, so a cookie here means someone else's request.
+      // A listed extension may call the unauthenticated endpoints it uses (login and refresh,
+      // marked on the handler; review R23), but never with a cookie: it fetches with
+      // `credentials: 'omit'`, so a cookie here means someone else's request.
       const cookie =
         readCookie(req, this.sessions.cookieName) ??
         readCookie(req, this.sessions.recoveryCookieName) ??
@@ -117,7 +119,11 @@ export class AccessGuard implements CanActivate {
         (cookie === undefined &&
           level === 'none' &&
           origin !== undefined &&
-          this.extensionOrigins.has(origin));
+          this.extensionOrigins.has(origin) &&
+          this.reflector.getAllAndOverride<boolean | undefined>(EXTENSION_METADATA, [
+            context.getHandler(),
+            context.getClass(),
+          ]) === true);
       if (!originOk || req.headers[CSRF_HEADER] !== CSRF_HEADER_VALUE)
         throw new ApiException('csrf_rejected');
     }

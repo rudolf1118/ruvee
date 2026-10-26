@@ -52,6 +52,10 @@ export class PairingService {
     const now = new Date();
     const pairingId = fromBase64url(pairingIdText);
     return this.prisma.$transaction(async (tx) => {
+      // Review R21: count, check and insert as one step per account. At READ COMMITTED two
+      // creates could both count below the limit and both insert; the account row lock makes
+      // the next create wait for this one's commit, and see its pairing and its hourly count.
+      await tx.$queryRaw`SELECT 1 FROM accounts WHERE id = ${session.accountId}::uuid FOR UPDATE`;
       await tx.pairing.deleteMany({
         where: { accountId: session.accountId, expiresAt: { lte: now } },
       });

@@ -249,6 +249,12 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
     );
     expect(b64(enrolled?.public_key ?? new Uint8Array())).toBe(b64(deviceKey.publicKey));
     expect(sessionResponseSchema.parse(done.body).proven).toBe(true);
+    // AK's verification key is the account's own, unchanged: only AK could prove it (§8).
+    const [avpk] = await query<{ ak_verify_key: Buffer }>(
+      h.db.url,
+      'SELECT ak_verify_key FROM account_keys',
+    );
+    expect(b64(avpk?.ak_verify_key ?? new Uint8Array())).toBe(b64(account.akVerifyKey));
     expect(await login(SYNTHETIC_PASSWORD)).toBeUndefined();
     expect(await login(NEW_PASSWORD)).toBeDefined();
     // The old kit no longer works against this server.

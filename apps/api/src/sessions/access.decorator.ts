@@ -28,6 +28,15 @@ export const BEFORE_PROOF_METADATA = 'ruvee:before-proof';
  */
 export const AllowBeforeProof = () => SetMetadata(BEFORE_PROOF_METADATA, true);
 
+export const EXTENSION_METADATA = 'ruvee:extension';
+
+/**
+ * An unauthenticated handler the browser extension calls (authentication.md §6): only these
+ * accept a request from an origin in `EXTENSION_ORIGINS`. Every other one, registration,
+ * recovery and reopening included, needs `PUBLIC_ORIGIN` (review R23).
+ */
+export const ExtensionMayCall = () => SetMetadata(EXTENSION_METADATA, true);
+
 export interface RequestWithSession extends Request {
   ruveeSession?: AuthenticatedSession;
 }

@@ -86,24 +86,29 @@ export class ProofService implements OnModuleInit {
   ): Promise<ProofNonceResponse> {
     const nonce = new Uint8Array(randomBytes(32));
     const expiresAt = new Date(now.getTime() + PROOF_NONCE_TTL_MS);
-    await this.prisma.proofNonce.deleteMany({
-      where: {
-        sessionId: session.sessionId,
-        operation: PROOF_OPERATIONS[operation],
-        consumedAt: null,
-      },
-    });
-    await this.prisma.proofNonce.create({
-      data: {
-        id: randomUUID(),
-        accountId: session.accountId,
-        deviceId: session.deviceId,
-        sessionId: session.sessionId,
-        operation: PROOF_OPERATIONS[operation],
-        nonceHash: sha256(nonce),
-        createdAt: now,
-        expiresAt,
-      },
+    // Replace and insert under the session row's lock, so concurrent requests for one session
+    // and operation leave exactly one open nonce (the last one issued), never two.
+    await this.prisma.$transaction(async (tx) => {
+      await tx.$queryRaw`SELECT 1 FROM sessions WHERE id = ${session.sessionId}::uuid FOR UPDATE`;
+      await tx.proofNonce.deleteMany({
+        where: {
+          sessionId: session.sessionId,
+          operation: PROOF_OPERATIONS[operation],
+          consumedAt: null,
+        },
+      });
+      await tx.proofNonce.create({
+        data: {
+          id: randomUUID(),
+          accountId: session.accountId,
+          deviceId: session.deviceId,
+          sessionId: session.sessionId,
+          operation: PROOF_OPERATIONS[operation],
+          nonceHash: sha256(nonce),
+          createdAt: now,
+          expiresAt,
+        },
+      });
     });
     return {
       nonce: toBase64url(nonce),
