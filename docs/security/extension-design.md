@@ -18,9 +18,11 @@ automatic fill on page load, no saving of new logins from forms, no passkeys, no
 | Web pages, other extensions              | Hostile   | Nothing. No `externally_connectable`, no `web_accessible_resources`, no long-lived content script.                                   |
 
 Extension pages and the service worker share the extension origin; that is the boundary that
-matters. Any message whose `sender.id` is not this extension, or that comes from a content-script
-context (`sender.tab` set), is dropped before parsing. Messages are validated against a schema like
-API responses are.
+matters. Any message whose `sender.id` is not this extension, or whose `sender.origin` is not the
+extension's own origin, is dropped before parsing. That excludes content scripts and other
+extensions, whose origin is the page's or their own; `sender.tab` is not used, because an extension
+page opened in a tab (the popup as a page, the options page) has it set too. Messages are validated
+against a schema like API responses are.
 
 The extension CSP is the MV3 default plus WebAssembly:
 `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`. No remote code (MV3 forbids it), no
@@ -89,7 +91,7 @@ there.
 | ---- | ---------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | E-01 | A page triggers a fill without the user, or for another origin   | A5       | Fill needs a user action in extension UI; the origin comes from `chrome.tabs`; exact origin match; re-check before injecting (§4).                              |
 | E-02 | A page frames a login page, or hides fields, to harvest a fill   | A5       | Top frame only; visible, enabled fields only; no autofill on load. Clickjacking of the popup is impossible because the popup is extension UI, not page content. |
-| E-03 | A page or another extension sends messages to the service worker | A5, A8   | No `externally_connectable`; drop messages with a foreign `sender.id` or a `sender.tab`; schema validation.                                                     |
+| E-03 | A page or another extension sends messages to the service worker | A5, A8   | No `externally_connectable`; drop messages with a foreign `sender.id` or `sender.origin`; schema validation.                                                    |
 | E-04 | A content script reads the vault (T-20)                          | A5       | There is no persistent content script; the injected function receives one credential and returns a boolean.                                                     |
 | E-05 | A stolen browser profile while the browser runs                  | A7, A8   | Auto-lock (D-10) clears `AK` from `chrome.storage.session`; at rest the store needs the password, as on the web (T-22).                                         |
 | E-06 | A malicious extension update or build                            | A10      | Store signing and review are outside Ruvee's control (R-12). Pinned dependencies, reproducible build script, no remote code.                                    |
