@@ -758,8 +758,10 @@ export class FakeServer {
         this.devices.set(device, 'active');
         this.devicePublicKeys.set(device, body.devicePublicKey);
         this.akVerifyKey ??= body.akVerifyKey;
-        // Every other session ends: one generation counter shared by all clients.
+        // Every other session ends: one generation counter shared by all clients. The new one is
+        // valid, as the real server's is.
         this.generation++;
+        this.sessionValid = true;
         newSession(device, true);
         return {
           accountId: account.accountId,

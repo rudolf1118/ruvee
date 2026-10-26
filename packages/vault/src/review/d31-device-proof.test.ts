@@ -2,6 +2,7 @@
 import { initRuveeCrypto, type RuveeCrypto } from '@ruvee/crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import type { ItemDraft } from '../protocol.js';
+import { NetworkError } from '../api.js';
 import { DeviceStore } from '../store.js';
 import { FakeServer, fakeOpaque } from '../test-support.js';
 import { VaultEngine, VaultError } from '../vault-engine.js';
@@ -169,5 +170,131 @@ describe('D-31 device proof in the engine', () => {
     // A new pending device, ready to pair again; the approved row can never be proven.
     if (phase.phase !== 'pending') throw new Error(`expected pending, got ${phase.phase}`);
     expect(server.devices.get(phase.deviceId)).toBe('pending');
+  });
+
+  it('migrates two pre-D-31 devices in turn, each kit rotated, each pending edit kept', async () => {
+    const { server, a, kit } = await account();
+    await a.engine.save({ draft: note('Shared') });
+    await a.engine.sync();
+    const b = await device(server);
+    await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
+    const started = await a.engine.pairingStart();
+    await b.engine.pairingJoin({ code: started.code });
+    await a.engine.pairingStatus({ pairingId: started.pairingId });
+    await b.engine.pairingWait();
+    await a.engine.pairingApprove({ pairingId: started.pairingId });
+    await b.engine.pairingWait();
+    await b.engine.sync();
+    // Each device makes an edit the server never sees, then both are locked.
+    server.offline = true;
+    await a.engine.save({ draft: note('Pending on A') });
+    await b.engine.save({ draft: note('Pending on B') });
+    await Promise.all([a.engine.idle(), b.engine.idle()]);
+    a.engine.wipeMemory();
+    b.engine.wipeMemory();
+    server.offline = false;
+    // As after the migration: no device key anywhere, and no AVPK for the account.
+    server.devicePublicKeys.clear();
+    server.akVerifyKey = undefined;
+    await a.store.apply({ local: { 'device-key': null } });
+    await b.store.apply({ local: { 'device-key': null } });
+    server.sessionValid = false;
+
+    const migrate = async (
+      from: { factory: IDBFactory },
+      recoveryKey: string,
+    ): Promise<{ kit: string; kept: unknown }> => {
+      const d = await device(server, from.factory);
+      await d.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey });
+      const next = await d.engine.recoverySetPassword({ password: PASSWORD });
+      await d.engine.recoveryVerifyKit({ recoveryKey: next.recoveryKey });
+      const done = await d.engine.recoveryFinish();
+      expect(done.sync.state).toBe('synced');
+      d.engine.wipeMemory();
+      return { kit: next.recoveryKey, kept: done.recovered?.keptLocal };
+    };
+    const first = await migrate(a, kit);
+    expect(first.kept).toEqual({ pending: 1, conflicts: 0 });
+    const avpk = server.akVerifyKey;
+    expect(avpk).toBeDefined();
+    // The first kit was rotated away: B must use the one A's migration printed.
+    const stale = await device(server, b.factory);
+    expect(
+      await code(stale.engine.recoveryBegin({ username: 'synthetic-user', recoveryKey: kit })),
+    ).toBe('recovery_failed');
+    const second = await migrate(b, first.kit);
+    expect(second.kept).toEqual({ pending: 1, conflicts: 0 });
+    // Both devices now hold keys the server knows; the account's AVPK did not change.
+    expect([...server.devicePublicKeys.keys()].sort()).toEqual([...server.devices.keys()].sort());
+    expect(server.akVerifyKey).toBe(avpk);
+    // A unlocks with its own local wrap and proves itself with its own key; every edit is there.
+    const again = await device(server, a.factory);
+    const view = await again.engine.unlock({ password: PASSWORD });
+    expect(view.sessionProblem).toBeUndefined();
+    expect(view.items.map((i) => i.title).sort()).toEqual([
+      'Pending on A',
+      'Pending on B',
+      'Shared',
+    ]);
+  });
+
+  it('logout and lock leave only the sealed device key; nothing can sign until the next unlock', async () => {
+    const { a } = await account();
+    const held = (a.engine as unknown as { session: { deviceKey: { secretKey: Uint8Array } } })
+      .session.deviceKey.secretKey;
+    await a.engine.logout();
+    // Zeroed in memory, and the engine has no session to sign for.
+    expect(held.every((x) => x === 0)).toBe(true);
+    expect(
+      await code(
+        a.engine.changePassword({ currentPassword: PASSWORD, newPassword: 'x'.repeat(20) }),
+      ),
+    ).toBe('locked');
+    // The sealed record stays: this browser is still the same enrolled device.
+    expect(await a.store.local('device-key')).toBeDefined();
+  });
+
+  it('a session proof whose reply was lost ends in one proven session, not a second proof', async () => {
+    const { server, a } = await account();
+    a.engine.wipeMemory();
+    // A login that carried no proof leaves a pre-proof session (the local wrap did not open).
+    let stripProof = true;
+    let lost = true;
+    const base = server.api();
+    const api = new Proxy(base, {
+      get(target, key, receiver) {
+        const value = Reflect.get(target, key, receiver) as unknown;
+        if (typeof value !== 'function') return value;
+        const method = value as (...args: unknown[]) => Promise<unknown>;
+        if (key === 'loginFinish')
+          return (body: { deviceProof?: string }) => {
+            const { deviceProof, ...rest } = body;
+            return method.call(target, stripProof ? rest : { ...rest, deviceProof });
+          };
+        if (key === 'sessionProof')
+          return async (body: unknown) => {
+            await method.call(target, body);
+            if (lost) {
+              lost = false;
+              // Applied by the server; the reply never arrives.
+              throw new NetworkError('offline');
+            }
+          };
+        return method.bind(target);
+      },
+    });
+    server.sessionValid = false;
+    const first = await device(server, a.factory, api);
+    expect((await first.engine.unlock({ password: PASSWORD })).sessionProblem).toBe(
+      'device_key_missing',
+    );
+    first.engine.wipeMemory();
+    stripProof = false;
+    // The next unlock proves that session; the reply is lost, so it logs in again with the key.
+    const second = await device(server, a.factory, api);
+    const view = await second.engine.unlock({ password: PASSWORD });
+    expect(view.sessionProblem).toBeUndefined();
+    expect(view.sync.state).toBe('synced');
+    expect(lost).toBe(false);
   });
 });

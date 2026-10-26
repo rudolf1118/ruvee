@@ -3939,10 +3939,11 @@ export class VaultEngine {
     } catch {
       // Offline or already expired: the local lock still happens.
     }
+    // The clients lock after a logout as well; the engine does not rely on it (INV-15).
+    this.wipeMemory();
     return true;
   }
 
-  /** Best-effort zeroing before the worker is terminated (sync-protocol §Memory and lock). */
   /** An unfinished setup's keys (INV-15, review R23). */
   private dropSetup(): void {
     const s = this.setup;
@@ -3961,8 +3962,9 @@ export class VaultEngine {
   }
 
   /**
-   * INV-15: the lock. Zeroes what this engine holds now, even while an operation runs; that
-   * operation can then neither write nor leave a session behind (review R19).
+   * INV-15: the lock, best-effort zeroing before the worker is terminated (sync-protocol §Memory
+   * and lock). Zeroes what this engine holds now, even while an operation runs; that operation
+   * can then neither write nor leave a session behind (review R19).
    */
   wipeMemory(): void {
     this.generation++;
