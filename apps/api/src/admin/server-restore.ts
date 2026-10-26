@@ -16,12 +16,15 @@ import {
   META_FORMAT,
   newBackupId,
   openBackup,
+  passMatches,
   openNewFile,
   Tap,
   verifyDump,
   type BackupMeta,
   type Manifest,
   type OpenOutput,
+  type OpenedBackup,
+  type VerifyHooks,
 } from './backup-files.js';
 import {
   newReopenCode,
@@ -287,6 +290,10 @@ export interface RestoreOptions {
   /** The repository's migration directory names, oldest first. */
   readonly knownMigrations: readonly string[];
   readonly maxDumpBytes?: number;
+  /** Where the private staging directory for the dump's ciphertext is made (R9). */
+  readonly stagingRoot?: string;
+  /** For tests: adversarial changes to the source files at each boundary (R9). */
+  readonly hooks?: VerifyHooks;
   /** For tests: stop after a state, as an interruption would. */
   readonly stopAfter?: 'prepare' | 'load' | 'migrate';
   /** For tests: runs after VERIFY and PREPARE, before LOAD (a file changed in between). */
@@ -319,8 +326,10 @@ async function load(
   const run = tools.restore(target);
   // A pg_restore that exits early makes writes fail; `run.done` reports why.
   run.stdin.on('error', () => undefined);
-  const { plaintext, tap } = await backup.decryptDump();
   try {
+    // Inside the handler: a staged file whose header no longer decrypts fails as LOAD too, with
+    // pg_restore killed first.
+    const { plaintext, tap, cipher } = await backup.decryptDump();
     for await (const chunk of plaintext as AsyncIterable<Buffer>) {
       if (!run.stdin.write(chunk))
         await new Promise<void>((resolve, reject) => {
@@ -328,7 +337,9 @@ async function load(
           run.done.catch(reject);
         });
     }
-    if (tap.bytes !== backup.meta.dump.size || tap.digest() !== backup.meta.dump.sha256)
+    // The input ends only if this pass read exactly the ciphertext VERIFY checked, and it
+    // decrypted to exactly the plaintext the metadata names (R9).
+    if (!passMatches(backup, tap, cipher))
       throw new RestoreError('load', 'the decrypted dump does not match its metadata');
   } catch (error) {
     run.kill();
@@ -356,23 +367,42 @@ async function load(
 export async function restoreBackup(
   options: RestoreOptions,
 ): Promise<RestoreResult | { stoppedAfter: string; restoreId: string }> {
-  let backup;
+  let backup: OpenedBackup;
   try {
     backup = await openBackup({
       manifestPath: options.manifestPath,
       identityPath: options.identityPath,
       trustedDigest: options.trustedDigest,
       ...(options.maxDumpBytes ? { maxDumpBytes: options.maxDumpBytes } : {}),
+      ...(options.stagingRoot ? { stagingRoot: options.stagingRoot } : {}),
+      ...(options.hooks ? { hooks: options.hooks } : {}),
     });
-    if (!options.knownMigrations.includes(backup.meta.schema.migration))
-      throw new RestoreError(
-        'verify',
-        'the backup is from a newer or unknown schema; use the same or a newer Ruvee',
-      );
-    await verifyDump(backup);
   } catch (error) {
     throw fromBackupError(error, 'verify');
   }
+  // The staged ciphertext lives exactly as long as this restore (R9).
+  try {
+    try {
+      if (!options.knownMigrations.includes(backup.meta.schema.migration))
+        throw new RestoreError(
+          'verify',
+          'the backup is from a newer or unknown schema; use the same or a newer Ruvee',
+        );
+      await verifyDump(backup);
+    } catch (error) {
+      throw fromBackupError(error, 'verify');
+    }
+    return await restoreVerified(options, backup);
+  } finally {
+    backup.cleanup();
+  }
+}
+
+/** PREPARE to APPLY POLICY, from a backup VERIFY passed, read only from its staged copy. */
+async function restoreVerified(
+  options: RestoreOptions,
+  backup: OpenedBackup,
+): Promise<RestoreResult | { stoppedAfter: string; restoreId: string }> {
   const restoreId = randomUUID();
   const url = options.targetDatabaseUrl;
 

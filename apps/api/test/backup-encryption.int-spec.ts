@@ -434,13 +434,17 @@ describe('encrypted server backups (real dumps, real age)', () => {
   it('a dump that fails to decrypt during LOAD leaves an installation that cannot be opened', async () => {
     const paths = copySet(backup);
     const db = await target();
+    const stagingRoot = dir();
     await expect(
       restoreBackup(
         restoreArgs(paths.manifest, db.url, {
           trustedDigest: backup.digest,
-          // VERIFY passed; the file changes before LOAD reads it again.
+          stagingRoot,
+          // VERIFY passed; the staged copy LOAD reads changes in between (the source directory
+          // is never read again, review R9).
           beforeLoad: () => {
-            flipByte(paths.dump, (n) => n - 5);
+            const [staging] = readdirSync(stagingRoot);
+            flipByte(join(stagingRoot, staging ?? '', 'dump.age'), (n) => n - 5);
           },
         }),
       ),

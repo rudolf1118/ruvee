@@ -106,6 +106,7 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
     run.stdout.on('data', (c: Buffer) => chunks.push(c));
     await pipeline(plaintext, run.stdin);
     await run.done;
+    opened.cleanup();
     sql = Buffer.concat(chunks).toString('utf8');
   }, 120_000);
 

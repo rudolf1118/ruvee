@@ -55,6 +55,7 @@ async function dumpSql(manifestPath: string, digest: string, key: TestBackupKey)
   run.stdout.on('data', (c: Buffer) => chunks.push(c));
   await pipeline(plaintext, run.stdin);
   await run.done;
+  opened.cleanup();
   return Buffer.concat(chunks).toString('utf8');
 }
 

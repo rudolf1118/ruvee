@@ -1,14 +1,18 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   closeSync,
-  createReadStream,
+  constants,
   createWriteStream,
   fsyncSync,
   lstatSync,
+  mkdtempSync,
   openSync,
-  readFileSync,
+  promises as fsp,
+  rmSync,
   type Stats,
 } from 'node:fs';
+import type { FileHandle } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { basename, dirname, join } from 'node:path';
 import {
   pipeline as streamPipeline,
@@ -195,46 +199,85 @@ export async function encryptBytesToFile(
   return { size: ciphertext.length, sha256: sha256(ciphertext) };
 }
 
-/** A plain file, not a link or anything else, of at most `maxBytes`. */
-function regularFile(path: string, what: string, maxBytes: number): Stats {
-  let stat: Stats;
-  try {
-    stat = lstatSync(path);
-  } catch {
-    throw new BackupError('verify', `${what} is missing`);
-  }
-  if (!stat.isFile()) throw new BackupError('verify', `${what} is not a regular file`);
-  if (stat.size > maxBytes) throw new BackupError('verify', `${what} is larger than allowed`);
-  return stat;
-}
-
-function hashFile(path: string): Promise<string> {
-  const tap = new Tap();
-  return pipeline(
-    createReadStream(path),
-    tap,
-    new Writable({
-      write(_chunk, _encoding, callback) {
-        callback();
-      },
-    }),
-  ).then(() => tap.digest());
+/** Which source file is about to be opened; a test seam for adversarial changes (R9). */
+export type SourceFile = 'manifest' | 'meta' | 'dump' | 'identity';
+export interface VerifyHooks {
+  beforeOpen?(file: SourceFile): void | Promise<void>;
 }
 
 /**
- * Reads the offline identity for one restore. The file must be the operator's own (no group or
- * other permissions), hold exactly one X25519 identity, and match the backup's recipient. Its
- * contents are never logged or put in an error. (JavaScript cannot zero a string; the process
- * ends after the restore.)
+ * Opens a source file exactly once (predeployment-review R9): `O_NOFOLLOW` refuses a symbolic
+ * link in the last path component, and the type and size come from the descriptor, so a rename
+ * or a link swapped in after the open changes nothing for this read.
+ */
+async function openSource(path: string, what: string, maxBytes: number): Promise<FileHandle> {
+  let handle: FileHandle;
+  try {
+    handle = await fsp.open(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === 'ENOENT') throw new BackupError('verify', `${what} is missing`);
+    if (code === 'ELOOP' || code === 'EMLINK')
+      throw new BackupError('verify', `${what} is not a regular file`);
+    throw new BackupError('verify', `${what} cannot be read`);
+  }
+  const stat = await handle.stat();
+  if (!stat.isFile()) {
+    await handle.close();
+    throw new BackupError('verify', `${what} is not a regular file`);
+  }
+  if (stat.size > maxBytes) {
+    await handle.close();
+    throw new BackupError('verify', `${what} is larger than allowed`);
+  }
+  return handle;
+}
+
+/** Everything from an open descriptor, refusing more than `maxBytes` (a file that grew). */
+async function readAll(handle: FileHandle, what: string, maxBytes: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let total = 0;
+  for (;;) {
+    const buf = Buffer.alloc(Math.min(65_536, maxBytes + 1 - total));
+    if (buf.length === 0) throw new BackupError('verify', `${what} is larger than allowed`);
+    const { bytesRead } = await handle.read(buf, 0, buf.length, null);
+    if (bytesRead === 0) break;
+    total += bytesRead;
+    chunks.push(buf.subarray(0, bytesRead));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Reads a small source file once, through one descriptor, and closes it. */
+async function readSource(
+  path: string,
+  what: string,
+  maxBytes: number,
+): Promise<{ bytes: Buffer; stat: Stats }> {
+  const handle = await openSource(path, what, maxBytes);
+  try {
+    const stat = await handle.stat();
+    return { bytes: await readAll(handle, what, maxBytes), stat };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * The offline identity for one restore, read once through one descriptor. The file must be the
+ * operator's own (no group or other permissions), hold exactly one X25519 identity, and match the
+ * backup's recipient. Its contents are never logged or put in an error. (JavaScript cannot zero a
+ * string; the process ends after the restore.)
  */
 export async function readIdentity(path: string, recipient: string): Promise<string> {
-  const stat = regularFile(path, 'the identity file', MAX_IDENTITY_FILE_BYTES);
+  const { bytes, stat } = await readSource(path, 'the identity file', MAX_IDENTITY_FILE_BYTES);
   if ((stat.mode & 0o077) !== 0)
     throw new BackupError(
       'verify',
       'the identity file is readable by others; keep it owner-only (chmod 600)',
     );
-  const keys = readFileSync(path, 'utf8')
+  const keys = bytes
+    .toString('utf8')
     .split('\n')
     .map((l) => l.trim())
     .filter((l) => l !== '' && !l.startsWith('#'));
@@ -246,21 +289,56 @@ export async function readIdentity(path: string, recipient: string): Promise<str
   return identity;
 }
 
+/**
+ * A private staging directory for one restore: created by this process with `mkdtemp`, owned by
+ * its user, no group or other permissions. Only ciphertext is ever written to it, and it is
+ * removed when the restore ends.
+ */
+function privateStagingDir(root: string): string {
+  const dir = mkdtempSync(join(root, 'ruvee-restore-'));
+  const stat = lstatSync(dir);
+  const uid = process.getuid?.();
+  if (!stat.isDirectory() || (uid !== undefined && stat.uid !== uid) || (stat.mode & 0o077) !== 0) {
+    rmSync(dir, { recursive: true, force: true });
+    throw new BackupError('verify', 'the staging directory is not private to this user');
+  }
+  return dir;
+}
+
 export interface OpenedBackup {
   readonly manifest: Manifest;
   readonly meta: BackupMeta;
   /** SHA-256 of the manifest file: what the operator compares with their own record. */
   readonly digest: string;
   readonly provenance: 'trusted-digest' | 'unchecked';
-  /** The dump's plaintext, decrypted as it is read. The caller checks `tap` at the end. */
-  decryptDump(): Promise<{ plaintext: Readable; tap: Tap }>;
+  /**
+   * The dump's plaintext, decrypted as it is read from the staged copy. The caller checks, at
+   * the end, `tap` (plaintext: size and SHA-256 as in the metadata) and `cipher` (ciphertext:
+   * size and SHA-256 as in the manifest) before treating the bytes as good.
+   */
+  decryptDump(): Promise<{ plaintext: Readable; tap: Tap; cipher: Tap }>;
+  /** Removes the staged copy. Always called when the restore ends. */
+  cleanup(): void;
+}
+
+/** True when both taps of a finished pass match what the manifest and metadata promise. */
+export function passMatches(backup: OpenedBackup, tap: Tap, cipher: Tap): boolean {
+  return (
+    tap.bytes === backup.meta.dump.size &&
+    tap.digest() === backup.meta.dump.sha256 &&
+    cipher.bytes === backup.manifest.files.dump.size &&
+    cipher.digest() === backup.manifest.files.dump.sha256
+  );
 }
 
 /**
- * VERIFY, before anything is created: the manifest (bounded, exact schema, its digest against
- * the operator's), both files (plain files in the manifest's directory, named by its stem,
- * bounded, sizes and SHA-256 as listed), the identity, and the encrypted metadata (decrypted,
- * exact schema, the same backup id). The dump itself is verified by `verifyDump`.
+ * VERIFY, before anything is created (predeployment-review R9: the bytes verified are the bytes
+ * used). The manifest and the metadata are read once each into memory, through one descriptor,
+ * and everything checked about them is checked on those same bytes: the manifest's digest
+ * against the operator's, its exact schema and file names, the metadata's size and SHA-256, its
+ * decryption and schema. The dump is copied once, through one descriptor, into a private staging
+ * directory while its SHA-256 is computed; every later read is of that copy, and each pass
+ * hashes the ciphertext again. Nothing is read from the backup's own directory after this.
  */
 export async function openBackup(options: {
   manifestPath: string;
@@ -268,13 +346,20 @@ export async function openBackup(options: {
   /** The digest the operator kept apart from backup storage; `false`: explicitly not checked. */
   trustedDigest: string | false;
   maxDumpBytes?: number;
+  /** Where the private staging directory is made; the system temporary directory by default. */
+  stagingRoot?: string;
+  hooks?: VerifyHooks;
 }): Promise<OpenedBackup> {
   const manifestPath = options.manifestPath;
   const name = basename(manifestPath);
   const stem = name.endsWith('.manifest.json') ? name.slice(0, -'.manifest.json'.length) : '';
   if (!STEM.test(stem)) throw new BackupError('verify', 'not a Ruvee backup manifest file name');
-  regularFile(manifestPath, 'the manifest', MAX_MANIFEST_BYTES);
-  const manifestBytes = readFileSync(manifestPath);
+  await options.hooks?.beforeOpen?.('manifest');
+  const { bytes: manifestBytes } = await readSource(
+    manifestPath,
+    'the manifest',
+    MAX_MANIFEST_BYTES,
+  );
   const digest = backupDigest(manifestBytes);
   if (options.trustedDigest !== false) {
     if (!SHA256.test(options.trustedDigest))
@@ -297,63 +382,136 @@ export async function openBackup(options: {
   )
     throw new BackupError('verify', 'the manifest names files outside its own backup set');
   const dir = dirname(manifestPath);
-  const dumpPath = join(dir, manifest.files.dump.file);
-  const metaPath = join(dir, manifest.files.meta.file);
   const maxDump = options.maxDumpBytes ?? DEFAULT_MAX_DUMP_BYTES;
-  for (const [path, entry, max, what] of [
-    [dumpPath, manifest.files.dump, maxDump, 'the encrypted dump'],
-    [metaPath, manifest.files.meta, MAX_META_BYTES, 'the encrypted metadata'],
-  ] as const) {
-    if (entry.size > max) throw new BackupError('verify', `${what} is larger than allowed`);
-    const stat = regularFile(path, what, max);
-    if (stat.size !== entry.size || (await hashFile(path)) !== entry.sha256)
-      throw new BackupError('verify', `${what} does not match the manifest (size or SHA-256)`);
-  }
-  const identity = await readIdentity(options.identityPath, manifest.recipient);
-  const decrypter = new Decrypter();
-  decrypter.addIdentity(identity);
-  let meta: BackupMeta;
-  try {
-    const metaPlain = await decrypter.decrypt(readFileSync(metaPath), 'text');
-    meta = metaSchema.parse(JSON.parse(metaPlain));
-  } catch (error) {
-    if (error instanceof z.ZodError || error instanceof SyntaxError)
-      throw new BackupError('verify', 'the backup metadata is not a supported format');
-    throw ageFailure();
-  }
-  if (meta.backupId !== manifest.backupId)
-    throw new BackupError('verify', 'the metadata belongs to another backup');
+  if (manifest.files.dump.size > maxDump)
+    throw new BackupError('verify', 'the encrypted dump is larger than allowed');
+  if (manifest.files.meta.size > MAX_META_BYTES)
+    throw new BackupError('verify', 'the encrypted metadata is larger than allowed');
 
-  const decryptDump = async () => {
-    let plaintext;
+  // The metadata: read once; hashed and decrypted from the same bytes.
+  await options.hooks?.beforeOpen?.('meta');
+  const { bytes: metaBytes } = await readSource(
+    join(dir, manifest.files.meta.file),
+    'the encrypted metadata',
+    MAX_META_BYTES,
+  );
+  if (
+    metaBytes.length !== manifest.files.meta.size ||
+    sha256(metaBytes) !== manifest.files.meta.sha256
+  )
+    throw new BackupError(
+      'verify',
+      'the encrypted metadata does not match the manifest (size or SHA-256)',
+    );
+
+  // The dump: copied once into private staging, hashed as it is copied.
+  const staging = privateStagingDir(options.stagingRoot ?? tmpdir());
+  const stagedDump = join(staging, 'dump.age');
+  const cleanup = () => {
+    rmSync(staging, { recursive: true, force: true });
+  };
+  try {
+    await options.hooks?.beforeOpen?.('dump');
+    const source = await openSource(
+      join(dir, manifest.files.dump.file),
+      'the encrypted dump',
+      maxDump,
+    );
+    const copied = createHash('sha256');
+    let copiedBytes = 0;
     try {
-      plaintext = await decrypter.decrypt(
-        Readable.toWeb(createReadStream(dumpPath)) as unknown as ReadableStream<Uint8Array>,
+      const out = await fsp.open(
+        stagedDump,
+        constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW,
+        0o600,
       );
-    } catch {
+      try {
+        // One descriptor in, one out: the bytes hashed are exactly the bytes staged.
+        const buf = Buffer.alloc(1 << 20);
+        for (;;) {
+          const { bytesRead } = await source.read(buf, 0, buf.length, null);
+          if (bytesRead === 0) break;
+          copiedBytes += bytesRead;
+          if (copiedBytes > maxDump)
+            throw new BackupError('verify', 'the encrypted dump is larger than allowed');
+          const chunk = buf.subarray(0, bytesRead);
+          copied.update(chunk);
+          await out.write(chunk, 0, chunk.length);
+        }
+        await out.sync();
+      } finally {
+        await out.close();
+      }
+    } finally {
+      await source.close();
+    }
+    if (
+      copiedBytes !== manifest.files.dump.size ||
+      copied.digest('hex') !== manifest.files.dump.sha256
+    )
+      throw new BackupError(
+        'verify',
+        'the encrypted dump does not match the manifest (size or SHA-256)',
+      );
+
+    await options.hooks?.beforeOpen?.('identity');
+    const identity = await readIdentity(options.identityPath, manifest.recipient);
+    const decrypter = new Decrypter();
+    decrypter.addIdentity(identity);
+    let meta: BackupMeta;
+    try {
+      const metaPlain = await decrypter.decrypt(metaBytes, 'text');
+      meta = metaSchema.parse(JSON.parse(metaPlain));
+    } catch (error) {
+      if (error instanceof z.ZodError || error instanceof SyntaxError)
+        throw new BackupError('verify', 'the backup metadata is not a supported format');
       throw ageFailure();
     }
-    const tap = new Tap(meta.dump.size);
-    // A decryption error destroys `tap` with that error; consumers report it as ageFailure.
-    streamPipeline(
-      Readable.fromWeb(plaintext as unknown as WebReadableStream<Uint8Array>),
-      tap,
-      () => undefined,
-    );
-    return { plaintext: tap as Readable, tap };
-  };
-  return {
-    manifest,
-    meta,
-    digest,
-    provenance: options.trustedDigest === false ? 'unchecked' : 'trusted-digest',
-    decryptDump,
-  };
+    if (meta.backupId !== manifest.backupId)
+      throw new BackupError('verify', 'the metadata belongs to another backup');
+
+    const decryptDump = async () => {
+      const handle = await openSource(stagedDump, 'the staged dump', maxDump);
+      const cipher = new Tap(manifest.files.dump.size);
+      const ciphertext = streamPipeline(handle.createReadStream(), cipher, () => undefined);
+      let plaintext;
+      try {
+        plaintext = await decrypter.decrypt(
+          Readable.toWeb(ciphertext) as unknown as ReadableStream<Uint8Array>,
+        );
+      } catch {
+        ciphertext.destroy();
+        throw ageFailure();
+      }
+      const tap = new Tap(meta.dump.size);
+      // A decryption error destroys `tap` with that error; consumers report it as ageFailure.
+      streamPipeline(
+        Readable.fromWeb(plaintext as unknown as WebReadableStream<Uint8Array>),
+        tap,
+        () => undefined,
+      );
+      return { plaintext: tap as Readable, tap, cipher };
+    };
+    return {
+      manifest,
+      meta,
+      digest,
+      provenance: options.trustedDigest === false ? 'unchecked' : 'trusted-digest',
+      decryptDump,
+      cleanup,
+    };
+  } catch (error) {
+    cleanup();
+    throw error;
+  }
 }
 
-/** Decrypts the whole dump once, authenticating every chunk, and checks its SHA-256 and size. */
+/**
+ * Decrypts the whole staged dump once, authenticating every chunk, and checks the plaintext's
+ * SHA-256 and size against the metadata and the ciphertext's against the manifest.
+ */
 export async function verifyDump(backup: OpenedBackup): Promise<void> {
-  const { plaintext, tap } = await backup.decryptDump();
+  const { plaintext, tap, cipher } = await backup.decryptDump();
   try {
     await pipeline(
       plaintext,
@@ -367,7 +525,7 @@ export async function verifyDump(backup: OpenedBackup): Promise<void> {
     if (error instanceof BackupError) throw error;
     throw ageFailure();
   }
-  if (tap.bytes !== backup.meta.dump.size || tap.digest() !== backup.meta.dump.sha256)
+  if (!passMatches(backup, tap, cipher))
     throw new BackupError('verify', 'the decrypted dump does not match its metadata');
 }
 

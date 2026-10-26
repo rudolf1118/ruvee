@@ -101,16 +101,19 @@ async function restore(args: string[]): Promise<void> {
   const manifest = option(args, '--manifest');
   const identity = option(args, '--identity');
   const digest = option(args, '--trusted-digest');
+  // Where the dump's ciphertext is staged privately for the restore (review R9).
+  const staging = option(args, '--staging-dir');
   const unchecked = args.includes('--no-trusted-digest');
   if (!manifest || !identity || (!digest && !unchecked) || (digest && unchecked))
     fail(
       'usage: RESTORE_DATABASE_URL=… ruvee-admin restore --manifest <file> --identity <file>\n' +
-        '       (--trusted-digest <sha256> | --no-trusted-digest)',
+        '       (--trusted-digest <sha256> | --no-trusted-digest) [--staging-dir <dir>]',
     );
   const result = await restoreBackup({
     manifestPath: manifest,
     identityPath: identity,
     trustedDigest: digest ?? false,
+    ...(staging ? { stagingRoot: staging } : {}),
     targetDatabaseUrl: restoreUrl(),
     tools: pgToolsFromEnv(),
     knownMigrations: knownMigrations(`${apiRoot}prisma/migrations`),
