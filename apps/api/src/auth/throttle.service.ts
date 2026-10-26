@@ -4,7 +4,10 @@ import { sha256, type Bytes } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
 import type { ThrottleScope } from '../generated/prisma/client.js';
 
-/** authentication.md §7, as proposed. Throttling delays; it never locks an account for good. */
+/**
+ * authentication.md §7, as proposed. Throttling delays; it never locks an account for good. Login:
+ * five free failures, then 30 s, 60 s, 120 s, … capped at 15 minutes (computed in SQL below).
+ */
 const LOGIN_FREE_FAILURES = 5;
 const LOGIN_FIRST_DELAY_MS = 30_000;
 const LOGIN_MAX_DELAY_MS = 15 * 60_000;
@@ -21,12 +24,6 @@ function subject(scope: ThrottleScope, value: string): Bytes {
   return sha256(`${scope}\u0000${value}`);
 }
 
-/** Exponential delay after the free failures: 30 s, 60 s, 120 s, … capped at 15 minutes. */
-export function loginDelayMs(failures: number): number {
-  if (failures < LOGIN_FREE_FAILURES) return 0;
-  return Math.min(LOGIN_FIRST_DELAY_MS * 2 ** (failures - LOGIN_FREE_FAILURES), LOGIN_MAX_DELAY_MS);
-}
-
 @Injectable()
 export class ThrottleService {
   private readonly perIp = new Map<string, { windowStart: number; count: number }>();
@@ -35,7 +32,8 @@ export class ThrottleService {
 
   /**
    * Per-username login throttle. The key is a hash of the normalized username, so unknown and
-   * known usernames are throttled identically and the typed name is never stored.
+   * known usernames are throttled identically and the typed name is never stored. A cheap early
+   * refusal at `start`; the bound itself is `reserveLoginAttempt`.
    */
   async assertLoginAllowed(username: string, now = new Date()): Promise<void> {
     const row = await this.prisma.authThrottle.findUnique({
@@ -49,19 +47,31 @@ export class ThrottleService {
       );
   }
 
-  async recordLoginFailure(username: string, now = new Date()): Promise<void> {
-    const key = { scope: 'login' as const, subjectHash: subject('login', username) };
-    const row = await this.prisma.authThrottle.upsert({
-      where: { scope_subjectHash: key },
-      create: { ...key, failureCount: 1, windowStart: now },
-      update: { failureCount: { increment: 1 } },
-    });
-    const delay = loginDelayMs(row.failureCount);
-    if (delay > 0)
-      await this.prisma.authThrottle.update({
-        where: { scope_subjectHash: key },
-        data: { blockedUntil: new Date(now.getTime() + delay) },
-      });
+  /**
+   * Reserves one password check before it runs (login, step-up and reopening finishes): one
+   * atomic statement counts it as a failure and sets the delay its count implies, but only if no
+   * delay is in force; otherwise it refuses. However many finishes run in parallel, at most five
+   * are evaluated before the delay applies (review R3). A successful check resets the count.
+   */
+  async reserveLoginAttempt(username: string, now = new Date()): Promise<void> {
+    const hash = Buffer.from(subject('login', username));
+    const reserved = await this.prisma.$queryRaw<{ failure_count: number }[]>`
+      INSERT INTO auth_throttle AS t (scope, subject_hash, failure_count, window_start, blocked_until)
+      VALUES ('login', ${hash}, 1, ${now}, NULL)
+      ON CONFLICT (scope, subject_hash) DO UPDATE SET
+        failure_count = t.failure_count + 1,
+        blocked_until = CASE
+          WHEN t.failure_count + 1 < ${LOGIN_FREE_FAILURES} THEN NULL
+          ELSE ${now}::timestamptz + make_interval(secs => LEAST(
+            ${LOGIN_FIRST_DELAY_MS}::float8 * power(2, LEAST(t.failure_count + 1 - ${LOGIN_FREE_FAILURES}, 30)),
+            ${LOGIN_MAX_DELAY_MS}::float8) / 1000)
+        END
+      WHERE t.blocked_until IS NULL OR t.blocked_until <= ${now}
+      RETURNING failure_count`;
+    if (reserved.length === 1) return;
+    await this.assertLoginAllowed(username, now);
+    // The delay ended between the two statements: refuse this one anyway; the next may proceed.
+    throw new ApiException('rate_limited', undefined, 1);
   }
 
   async resetLogin(username: string): Promise<void> {
@@ -70,71 +80,46 @@ export class ThrottleService {
     });
   }
 
-  /** At most 10 failed bootstrap attempts per hour in total (INV-20). */
-  async assertBootstrapAllowed(now = new Date()): Promise<void> {
+  /**
+   * At most `limit` counted attempts per hour on one key, reserved atomically before the attempt
+   * is checked: parallel requests cannot pass a check together and then all count (review R3).
+   */
+  private async reserveHourly(
+    scope: 'recovery' | 'bootstrap',
+    value: string,
+    limit: number,
+    now: Date,
+  ): Promise<void> {
+    const hash = Buffer.from(subject(scope, value));
+    const windowOpen = new Date(now.getTime() - HOUR_MS);
+    const reserved = await this.prisma.$queryRaw<{ failure_count: number }[]>`
+      INSERT INTO auth_throttle AS t (scope, subject_hash, failure_count, window_start)
+      VALUES (${scope}::throttle_scope, ${hash}, 1, ${now})
+      ON CONFLICT (scope, subject_hash) DO UPDATE SET
+        failure_count = CASE WHEN t.window_start <= ${windowOpen} THEN 1 ELSE t.failure_count + 1 END,
+        window_start = CASE WHEN t.window_start <= ${windowOpen} THEN ${now} ELSE t.window_start END,
+        blocked_until = NULL
+      WHERE t.window_start <= ${windowOpen} OR t.failure_count < ${limit}
+      RETURNING failure_count`;
+    if (reserved.length === 1) return;
     const row = await this.prisma.authThrottle.findUnique({
-      where: { scope_subjectHash: { scope: 'bootstrap', subjectHash: subject('bootstrap', '') } },
+      where: { scope_subjectHash: { scope, subjectHash: subject(scope, value) } },
     });
-    if (
-      row &&
-      now.getTime() - row.windowStart.getTime() < HOUR_MS &&
-      row.failureCount >= BOOTSTRAP_FAILURES_PER_HOUR
-    )
-      throw new ApiException(
-        'rate_limited',
-        undefined,
-        (row.windowStart.getTime() + HOUR_MS - now.getTime()) / 1000,
-      );
+    const retry = row ? (row.windowStart.getTime() + HOUR_MS - now.getTime()) / 1000 : 1;
+    throw new ApiException('rate_limited', undefined, Math.max(retry, 1));
   }
 
-  async recordBootstrapFailure(now = new Date()): Promise<void> {
-    const key = { scope: 'bootstrap' as const, subjectHash: subject('bootstrap', '') };
-    const row = await this.prisma.authThrottle.findUnique({ where: { scope_subjectHash: key } });
-    if (!row || now.getTime() - row.windowStart.getTime() >= HOUR_MS) {
-      await this.prisma.authThrottle.upsert({
-        where: { scope_subjectHash: key },
-        create: { ...key, failureCount: 1, windowStart: now },
-        update: { failureCount: 1, windowStart: now, blockedUntil: null },
-      });
-      return;
-    }
-    await this.prisma.authThrottle.update({
-      where: { scope_subjectHash: key },
-      data: { failureCount: { increment: 1 } },
-    });
+  /** At most 10 bootstrap attempts per hour in total (INV-20); counted before the token is checked. */
+  async reserveBootstrapAttempt(now = new Date()): Promise<void> {
+    await this.reserveHourly('bootstrap', '', BOOTSTRAP_FAILURES_PER_HOUR, now);
   }
 
   /**
-   * Recovery starts per username: 5 per hour, counted for unknown usernames too, so the limit
+   * Recovery attempts per username: 5 per hour, counted for unknown usernames too, so the limit
    * says nothing about whether an account exists (authentication.md §7).
    */
-  async assertRecoveryAllowed(username: string, now = new Date()): Promise<void> {
-    const row = await this.prisma.authThrottle.findUnique({
-      where: {
-        scope_subjectHash: { scope: 'recovery', subjectHash: subject('recovery', username) },
-      },
-    });
-    if (
-      row &&
-      now.getTime() - row.windowStart.getTime() < HOUR_MS &&
-      row.failureCount >= RECOVERY_STARTS_PER_HOUR
-    )
-      throw new ApiException(
-        'rate_limited',
-        undefined,
-        (row.windowStart.getTime() + HOUR_MS - now.getTime()) / 1000,
-      );
-  }
-
-  async recordRecoveryAttempt(username: string, now = new Date()): Promise<void> {
-    const key = { scope: 'recovery' as const, subjectHash: subject('recovery', username) };
-    const row = await this.prisma.authThrottle.findUnique({ where: { scope_subjectHash: key } });
-    const fresh = !row || now.getTime() - row.windowStart.getTime() >= HOUR_MS;
-    await this.prisma.authThrottle.upsert({
-      where: { scope_subjectHash: key },
-      create: { ...key, failureCount: 1, windowStart: now },
-      update: fresh ? { failureCount: 1, windowStart: now } : { failureCount: { increment: 1 } },
-    });
+  async reserveRecoveryAttempt(username: string, now = new Date()): Promise<void> {
+    await this.reserveHourly('recovery', username, RECOVERY_STARTS_PER_HOUR, now);
   }
 
   async resetRecovery(username: string): Promise<void> {

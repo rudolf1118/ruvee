@@ -57,12 +57,12 @@ export class AuthService {
 
   /** Checks the bootstrap token (hash lookup, unused, unexpired); counts failures (INV-20). */
   private async assertBootstrapToken(token: string, client: ClientContext): Promise<void> {
-    await this.throttle.assertBootstrapAllowed();
+    // Counted before the token is looked at, so parallel guesses share the hourly bound.
+    await this.throttle.reserveBootstrapAttempt();
     const row = await this.prisma.bootstrapToken.findUnique({
       where: { tokenHash: sha256(fromBase64url(token)) },
     });
     if (row?.usedAt !== null || row.expiresAt <= new Date()) {
-      await this.throttle.recordBootstrapFailure();
       await this.events.record('bootstrap_failed', client);
       throw new ApiException('bootstrap_failed');
     }
@@ -232,9 +232,10 @@ export class AuthService {
     // state can only create a reopen session.
     if (!pending || pending.sessionId !== undefined || pending.reopenCodeId !== undefined)
       throw new ApiException('login_failed');
+    // Counted before OPAQUE runs (R3): parallel finishes cannot all be evaluated.
+    await this.throttle.reserveLoginAttempt(pending.username);
     const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
     if (!verified || pending.accountId === null) {
-      await this.throttle.recordLoginFailure(pending.username);
       await this.events.record('login_failed', { accountId: pending.accountId, ...client });
       throw new ApiException('login_failed');
     }
@@ -339,8 +340,8 @@ export class AuthService {
     this.throttle.assertIpAllowed(client.ip);
     const pending = this.loginStates.consume(body.loginId);
     if (pending?.sessionId !== session.sessionId) throw new ApiException('login_failed');
+    await this.throttle.reserveLoginAttempt(pending.username);
     if (!this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest)) {
-      await this.throttle.recordLoginFailure(pending.username);
       await this.events.record('login_failed', {
         accountId: session.accountId,
         deviceId: session.deviceId,

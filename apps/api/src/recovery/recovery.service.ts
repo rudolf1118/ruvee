@@ -40,8 +40,7 @@ export class RecoveryService {
     client: ClientContext,
   ): Promise<RecoveryStartResponse & { token: string; absoluteExpiresAt: Date }> {
     this.throttle.assertIpAllowed(client.ip);
-    await this.throttle.assertRecoveryAllowed(body.username);
-    await this.throttle.recordRecoveryAttempt(body.username);
+    await this.throttle.reserveRecoveryAttempt(body.username);
     const account = await this.prisma.account.findUnique({
       where: { usernameNormalized: body.username },
       include: { accountKeys: { select: { recoveryVerifier: true } } },

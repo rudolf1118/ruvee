@@ -169,9 +169,9 @@ export class ReopenService {
     if (!pending?.reopenCodeId || pending.accountId === null || !pending.deviceId)
       throw new ApiException('reopen_failed');
     const accountId = pending.accountId;
+    await this.throttle.reserveLoginAttempt(pending.username);
     const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
     if (!verified) {
-      await this.throttle.recordLoginFailure(pending.username);
       return this.fail(client, pending.reopenCodeId, accountId);
     }
     const device = await this.prisma.device.findFirst({
@@ -203,8 +203,7 @@ export class ReopenService {
    */
   async recoveryStart(body: ReopenRecoveryStartRequest, client: ClientContext): Promise<NewReopen> {
     this.throttle.assertIpAllowed(client.ip);
-    await this.throttle.assertRecoveryAllowed(body.username);
-    await this.throttle.recordRecoveryAttempt(body.username);
+    await this.throttle.reserveRecoveryAttempt(body.username);
     const code = await this.usableCode(body.reopenCode);
     if (!code) return this.fail(client);
     const account = await this.prisma.account.findUnique({
