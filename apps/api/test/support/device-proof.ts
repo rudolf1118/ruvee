@@ -63,12 +63,13 @@ export function signOperation(
     deviceKey?: DeviceKeyPair;
     deviceId?: string;
     accountKeyMaterial?: Uint8Array;
+    accountId?: string;
   } = {},
 ): { nonce: string; proof: { device: string; accountKey?: string } } {
   const { crypto } = account;
   const base = {
     operation,
-    accountId: uuidToBytes(account.accountId),
+    accountId: uuidToBytes(options.accountId ?? account.accountId),
     binding: raw(nonce.sessionRef),
     nonce: raw(nonce.nonce),
     payload: crypto.proofPayload(operation, fields),

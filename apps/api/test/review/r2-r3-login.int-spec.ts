@@ -12,6 +12,7 @@ import {
   WRITE_HEADERS,
   type Harness,
 } from '../support/api-harness.js';
+import { uuidToBytes } from '@ruvee/crypto';
 import { loginDevice, proofNonce, signLogin, signOperation } from '../support/device-proof.js';
 import { query } from '../support/temp-database.js';
 import {
@@ -234,6 +235,78 @@ describe('REVIEW R2 (regression): the password alone never acts as an enrolled d
     await h.get('/api/v1/devices', third.cookie).expect(200);
     expectError(await h.get('/api/v1/devices', owner), 'unauthenticated');
     owner = third.cookie;
+  });
+
+  it('binds an operation proof to its account, operation and session; a used nonce stays used', async () => {
+    // A fresh proven login: fresh enough for the step-up that revocation needs.
+    const res = await loginDevice(h, account);
+    expect(res.status, res.text).toBe(200);
+    owner = sessionCookie(res);
+    const addDevice = async (key?: { publicKey: Uint8Array }) => {
+      const id = account.crypto.generateUuid();
+      await query(
+        h.db.url,
+        `INSERT INTO devices (id, account_id, platform, status, enrolled_via, public_key, created_at, enrolled_at)
+         VALUES ($1, $2, 'web', 'active', 'pairing', $3, now(), now())`,
+        [id, account.accountId, key ? Buffer.from(key.publicKey) : null],
+      );
+      return id;
+    };
+    const [x, y] = [await addDevice(), await addDevice()];
+    const fields = (id: string) => [uuidToBytes(id), { text: 'retired' }];
+    const revoke = (id: string, signed: object, cookie = owner) =>
+      h.post(`/api/v1/devices/${id}/revoke`, { reason: 'retired', ...signed }, cookie);
+
+    // Signed for another account: refused.
+    const n1 = await proofNonce(h, owner, 'device_revoke');
+    const otherAccount = account.crypto.generateUuid();
+    expectError(
+      await revoke(
+        x,
+        signOperation(account, 'device_revoke', n1, fields(x), { accountId: otherAccount }),
+      ),
+      'device_proof_failed',
+    );
+    // A nonce issued for another operation, with a valid device_revoke signature: refused.
+    const forPassword = await proofNonce(h, owner, 'password_change');
+    expectError(
+      await revoke(x, signOperation(account, 'device_revoke', forPassword, fields(x))),
+      'device_proof_failed',
+    );
+    // A nonce of another proven session, signed with this session's binding: refused.
+    const otherKey = account.crypto.generateDeviceKey();
+    const otherId = await addDevice(otherKey);
+    const otherRes = await loginDevice(h, account, { deviceId: otherId, deviceKey: otherKey });
+    expect(otherRes.status, otherRes.text).toBe(200);
+    const theirs = await proofNonce(h, sessionCookie(otherRes), 'device_revoke');
+    const mine = await proofNonce(h, owner, 'device_revoke');
+    expectError(
+      await revoke(
+        x,
+        signOperation(
+          account,
+          'device_revoke',
+          { ...theirs, sessionRef: mine.sessionRef },
+          fields(x),
+        ),
+      ),
+      'device_proof_failed',
+    );
+    // The right proof succeeds once; its nonce, signed again for another device, is refused.
+    const good = await proofNonce(h, owner, 'device_revoke');
+    expect((await revoke(x, signOperation(account, 'device_revoke', good, fields(x)))).status).toBe(
+      204,
+    );
+    expectError(
+      await revoke(y, signOperation(account, 'device_revoke', good, fields(y))),
+      'device_proof_failed',
+    );
+    const [row] = await query<{ status: string }>(
+      h.db.url,
+      'SELECT status FROM devices WHERE id = $1',
+      [y],
+    );
+    expect(row?.status).toBe('active');
   });
 
   it('lets an unproven session lapse after 10 minutes', async () => {
