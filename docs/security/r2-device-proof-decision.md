@@ -29,35 +29,71 @@ Two separate questions follow, and both need an answer:
 
 ### Option A: per-device signing key, plus an account verification key derived from `AK` (recommended for discussion)
 
-**Device key.** At enrollment each device generates an Ed25519 key pair (`DSK`, `DPK`) with
-libsodium `crypto_sign`. The server stores `DPK` in the device row. `DSK` lives where `SK` lives
-(device-enrollment.md §5), encrypted under `K_local`, so it is usable only while unlocked.
+Recommended because it separates the two questions cleanly: the device key answers "is this
+the enrolled device" without the server holding anything secret, and the `AK`-derived key answers
+"does the uploader hold `AK`" without the server learning anything that decrypts. It uses one
+well-known primitive, Ed25519 (libsodium `crypto_sign`, already in the dependency), which is
+not yet among Ruvee's approved primitives (ADR-0002).
 
-**Login.** `login/start` returns, with `loginId`, a 32-byte random `challenge` stored in the
-same single-use login state. The client finishes OPAQUE, and for an enrolled device sends
-`sig = Sign(DSK, "ruvee/v1/device-login" ‖ account_id ‖ device_id ‖ loginId ‖ challenge ‖ H(finishLoginRequest))`.
-The server verifies `sig` against the stored `DPK` **after** OPAQUE succeeds. With no valid
-signature, the login creates a new `pending` device, as for an unknown id; it never adopts an
-existing device. Both are required: a valid signature never replaces the password.
+**Device key, and where it lives.** Each device generates an Ed25519 key pair (`DSK`, `DPK`) when
+it first logs in as a new device, before it is enrolled. The server stores `DPK` in the device
+row once the device is enrolled, never before. Until enrollment `DSK` exists only in the worker's
+memory (a device that restarts mid-pairing starts again with a new key). After enrollment it is
+stored like `SK` (device-enrollment.md §5), sealed under `K_local` (derived from `AK`), so it is
+**usable only while unlocked**. Ruvee's unlock already opens `AK` locally before it restores the
+server session, so login and every proof below happen after a local unlock; a locked device can
+prove nothing. (An alternative for the owner: a non-extractable WebCrypto key, usable while
+locked and not exportable by script, but usable by any script in the origin; not proposed.)
 
-**Binding to the session and the sensitive operation.** Step-up (`reauth/finish`) and every
-request that changes credentials or devices (password change, kit rotation, `SK` rotation,
-device revoke, reopening completion) carry
-`Sign(DSK, "ruvee/v1/device-op" ‖ session_id_hash ‖ op_name ‖ H(canonical request body) ‖ server_nonce)`.
-`server_nonce` is single-use, issued by the reauth start; `session_id_hash` is a value the
-server derives from the session (never the cookie itself). This binds the proof to one session,
-one operation and one body, so it cannot be replayed into another request.
+**Initial trust.** `DPK` is accepted only through a path that already proves more than the
+password:
 
-**Key possession (wrap replacement).** The client derives
+- the first device: in the bootstrap request, authorized by the host-issued setup token;
+- pairing: in B's pairing request, which `req_mac` covers, so device A approves exactly this key
+  and the server cannot substitute it (device-enrollment.md §3.3);
+- recovery: in the request that proves `RAK`, so the Recovery Kit holder enrolls the key;
+- reopening (D-30): a device active in the snapshot proves with its restored `DPK`; a device
+  enrolled by the Recovery Kit path registers a new one as in recovery.
+
+**Login.** `login/start` returns, with `loginId`, a 32-byte random `challenge` kept in the same
+single-use login state. An enrolled device sends
+`Sign(DSK, "ruvee/v1/device-login" ‖ account_id ‖ device_id ‖ loginId ‖ challenge ‖ H(finishLoginRequest))`.
+The server checks it against the stored `DPK` after OPAQUE succeeds; without a valid signature
+the login creates a new `pending` device, as for an unknown id, and never adopts an existing one.
+Both are required: a valid signature never replaces the password.
+
+**Which operations require proof.** Every request that changes credentials, keys or devices:
+step-up (`reauth/finish`), password change, Recovery Kit rotation, `SK` rotation, device revoke,
+pairing approval, vault reset, and the reopening completion. Each obtains a fresh single-use
+`nonce` from the server, bound to its session (for example returned by that operation's own
+`…/start`), and sends
+`Sign(DSK, "ruvee/v1/device-op" ‖ account_id ‖ device_id ‖ session_ref ‖ op_name ‖ nonce ‖ H(canonical request body))`.
+`session_ref` is a value the server derives from the session, never the cookie. The server
+consumes the nonce in the same transaction as the operation. This binds the proof to one
+account, device, session, operation and body, and the consumed nonce stops replay. Ordinary
+reads and sync commits do not need it.
+
+**Validating a replacement wrap (key possession).** The client derives
 `(AVSK, AVPK) = crypto_sign_seed_keypair(KDF(AK, "rvakver1"))`. The server stores `AVPK` with the
-keyset at account creation and after a full rotation. Every upload that replaces a wrap or the
-keyset includes
-`Sign(AVSK, "ruvee/v1/wrap-replace" ‖ account_id ‖ ak_id ‖ ak_epoch ‖ H(new wrap or keyset) ‖ server_nonce)`.
-The server refuses any replacement without a valid signature under the current `AVPK`.
+keyset at account creation (and a new one after a full rotation). Every upload that replaces a
+wrap or the keyset includes
+`Sign(AVSK, "ruvee/v1/wrap-replace" ‖ account_id ‖ ak_id ‖ ak_epoch ‖ op_name ‖ nonce ‖ H(new envelope(s)))`,
+and the server refuses a replacement without a valid signature under the current `AVPK`.
 
-This proves the uploader held `AK`. It does **not** prove the new wrap opens to `AK`: the client
-must still unwrap its own new wrap before uploading (it already does for the password path),
-and a client holding `AK` can always destroy its own account.
+What this does and does not establish:
+
+- It proves that whoever made the request held `AK` (or a key derived from it) at that moment,
+  and that these exact envelopes were what they chose to upload.
+- It does **not** prove that the new envelopes are correct or decrypt to `AK`. The server cannot
+  check that without the keys. The client must open its own new wrap before uploading (it does so
+  for the password path), and a client that holds `AK` can always upload garbage and lock its
+  owner out; that is outside what any server-side check can stop.
+- `AVPK` reveals nothing that decrypts: it is a public key, and `KDF` is one-way.
+
+**Replay and restore.** Challenges and nonces are random, single-use and short-lived, and are
+never part of a backup. A restored server has the `DPK`s and `AVPK` as of the snapshot. A
+signature captured before the backup names a nonce that no longer exists, and the restore policy
+ends every session, so nothing captured earlier replays against the restored server.
 
 ### Option B: per-device secret with a server-side hash, plus an `AK`-derived verifier
 
@@ -105,8 +141,22 @@ Recovery Kit.
 4. The migration choice in §3.
 5. That the result is written as an ADR with test vectors and goes to the independent review
    with the pairing protocol (D-19).
+6. Whether a non-extractable WebCrypto key (usable while locked) is preferred to a `K_local`-sealed
+   key (usable only while unlocked).
 
-## 5. Limits, whichever option is chosen
+## 5. Claims that need independent cryptographic review
+
+- The transcript formats above: domain separation, unambiguous encodings (length-prefixed or
+  fixed-size fields), and that no signature in one context verifies in another.
+- That `KDF(AK, "rvakver1")` as an Ed25519 seed is sound alongside Ruvee's other `AK`
+  derivations, and the handling of `AVPK` across full rotation.
+- The pairing change: `DPK` inside the `req_mac` input, and that the server still cannot
+  substitute keys (device-enrollment.md §3.4 is already a pending review item).
+- That the set of operations requiring proof is complete, and the nonce lifecycle has no gap
+  (issued, bound, consumed atomically, expired).
+- The migration and recovery paths: that no password-only path can register a `DPK` or `AVPK`.
+
+## 6. Limits, whichever option is chosen
 
 - XSS in the web origin, while unlocked, can use `DSK` and `AVSK` (T-18, T-19). This raises the
   bar from "password plus a public id" to "code running on an enrolled, unlocked device"; it does

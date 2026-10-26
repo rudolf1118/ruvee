@@ -3,9 +3,10 @@
 **This is an AI-assisted code review, not a professional independent security audit. It does
 not complete D-19.** It looks for defects before the synthetic private deployment rehearsal.
 
-> **Remediation (2026-10-26, milestone 1):** R1, R7, R8, R9 and R10 are fixed in local commits
-> and their reproductions are now regression tests (§9). Every other finding, including R2, R3,
-> R5, R6 and R11, is **open**. D-19 is open and real-data use stays blocked.
+> **Remediation (2026-10-26):** milestone 1 fixed R1, R7, R8, R9 and R10 (§9); milestone 2 fixed
+> R3, R5, R6, R11, R13, R14, R15, R16, R17 and R20 (§10). Their reproductions are now regression
+> tests. **Open:** R2 and R12 (they need the D-31 protocol decision), R18, R19, R21, R22 and the
+> R23 items. D-19 is open and real-data use stays blocked.
 
 ## 1. What was reviewed
 
@@ -46,30 +47,30 @@ Synthetic data only.
 
 ## 2. Findings, most severe first
 
-| ID  | Severity                                  | Status                                        | Title                                                                                                     |
-| --- | ----------------------------------------- | --------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| R1  | **High** (critical for the restore model) | **Fixed** (509b092); §9                       | A change of case in `/API/` bypasses the maintenance and reopening gate, CSRF checks and bearer parsing   |
-| R2  | **High**                                  | Confirmed, reproduced                         | The password plus a known device id gives an active device, and then a lock-out of the owner without `SK` |
-| R8  | **High** (conditional)                    | **Fixed** (5bc18cd, 40dc0bc); §9              | SQL in a restored dump can open the guard itself; the restore then reports success                        |
-| R10 | Medium (deployment)                       | **Fixed** (bfb248a), real Caddy; §9           | An unset `RUVEE_CSP` gives an empty CSP header (fail-open); unknown paths lack `no-store`                 |
-| R7  | Medium                                    | **Fixed** (4367db9); §9                       | `?dbname=` in the URL makes `pg_dump` back up a database the synthetic-only check never saw               |
-| R9  | Medium                                    | **Fixed** (e8259da); §9                       | VERIFY reads each backup file again by path, so a storage controller can defeat the trusted digest        |
-| R5  | Medium                                    | Confirmed, reproduced (engine and FakeServer) | A replayed commit reply lowers the client checkpoint, so a later rollback is accepted (INV-07)            |
-| R6  | Medium                                    | Confirmed, reproduced                         | Forgotten-password recovery on an enrolled browser erases its unsynced edits without warning              |
-| R3  | Medium                                    | Confirmed, reproduced                         | The per-username login throttle is checked only at `start`; parallel guesses all count                    |
-| R11 | Medium                                    | Confirmed by reading                          | Anyone can keep a restored installation closed by using up the reopening code                             |
-| R12 | Low                                       | Confirmed by reading                          | Reopening's password path completes without proof of `AK` (same root as R2)                               |
-| R13 | Low                                       | Plausible                                     | `restore-reopen-code` can race a reopening's completion                                                   |
-| R14 | Low                                       | Confirmed by reading                          | The maintenance gate caches `none` as open, not only `open`                                               |
-| R15 | Low                                       | Plausible                                     | With the `docker exec` prefix, killing the client does not stop `pg_restore`; an early exit can hang LOAD |
-| R16 | Low                                       | Confirmed by reading                          | The documented 300 requests/min per-session limit does not exist                                          |
-| R17 | Low                                       | Confirmed by reading                          | No warning when the proxy address is unset (one global throttle bucket); IPv6 is limited per address      |
-| R18 | Low                                       | Confirmed by reading                          | Extension fill checks only the field's own visibility                                                     |
-| R19 | Low                                       | Plausible                                     | An extension lock during an in-flight unlock can be undone                                                |
-| R20 | Low                                       | Plausible                                     | Recovery on a device that already holds data drops its rollback floors                                    |
-| R21 | Low                                       | Plausible                                     | Concurrent pairing creates can exceed `MAX_OPEN_PAIRINGS`                                                 |
-| R22 | Low                                       | Confirmed by reading                          | `startOver` ignores the conflict count; `feedImport` can queue duplicates                                 |
-| R23 | Info                                      | Confirmed by reading                          | Smaller items (§2.23)                                                                                     |
+| ID  | Severity                                  | Status                              | Title                                                                                                     |
+| --- | ----------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| R1  | **High** (critical for the restore model) | **Fixed** (509b092); §9             | A change of case in `/API/` bypasses the maintenance and reopening gate, CSRF checks and bearer parsing   |
+| R2  | **High**                                  | Confirmed, reproduced               | The password plus a known device id gives an active device, and then a lock-out of the owner without `SK` |
+| R8  | **High** (conditional)                    | **Fixed** (5bc18cd, 40dc0bc); §9    | SQL in a restored dump can open the guard itself; the restore then reports success                        |
+| R10 | Medium (deployment)                       | **Fixed** (bfb248a), real Caddy; §9 | An unset `RUVEE_CSP` gives an empty CSP header (fail-open); unknown paths lack `no-store`                 |
+| R7  | Medium                                    | **Fixed** (4367db9); §9             | `?dbname=` in the URL makes `pg_dump` back up a database the synthetic-only check never saw               |
+| R9  | Medium                                    | **Fixed** (e8259da); §9             | VERIFY reads each backup file again by path, so a storage controller can defeat the trusted digest        |
+| R5  | Medium                                    | **Fixed** (40a6cf4); §10            | A replayed commit reply lowers the client checkpoint, so a later rollback is accepted (INV-07)            |
+| R6  | Medium                                    | **Fixed** (a916561); §10            | Forgotten-password recovery on an enrolled browser erases its unsynced edits without warning              |
+| R3  | Medium                                    | **Fixed** (b990cd0); §10            | The per-username login throttle is checked only at `start`; parallel guesses all count                    |
+| R11 | Medium                                    | **Fixed** (56eef75); §10            | Anyone can keep a restored installation closed by using up the reopening code                             |
+| R12 | Low                                       | Confirmed by reading                | Reopening's password path completes without proof of `AK` (same root as R2)                               |
+| R13 | Low                                       | **Fixed** (233333d); §10            | `restore-reopen-code` can race a reopening's completion                                                   |
+| R14 | Low                                       | **Fixed** (d239bb5); §10            | The maintenance gate caches `none` as open, not only `open`                                               |
+| R15 | Low                                       | **Fixed** (6ed27df); §10            | With the `docker exec` prefix, killing the client does not stop `pg_restore`; an early exit can hang LOAD |
+| R16 | Low                                       | **Fixed** (417acfe); §10            | The documented 300 requests/min per-session limit does not exist                                          |
+| R17 | Low                                       | **Fixed** (417acfe); §10            | No warning when the proxy address is unset (one global throttle bucket); IPv6 is limited per address      |
+| R18 | Low                                       | Confirmed by reading                | Extension fill checks only the field's own visibility                                                     |
+| R19 | Low                                       | Plausible                           | An extension lock during an in-flight unlock can be undone                                                |
+| R20 | Low                                       | **Fixed** (a916561); §10            | Recovery on a device that already holds data drops its rollback floors                                    |
+| R21 | Low                                       | Plausible                           | Concurrent pairing creates can exceed `MAX_OPEN_PAIRINGS`                                                 |
+| R22 | Low                                       | Confirmed by reading                | `startOver` ignores the conflict count; `feedImport` can queue duplicates                                 |
+| R23 | Info                                      | Confirmed by reading                | Smaller items (§2.23)                                                                                     |
 
 ### R1. A change of case bypasses the maintenance gate, CSRF checks and bearer parsing (High)
 
@@ -293,6 +294,18 @@ Synthetic data only.
 - **Impact:**
   - A malicious server can hide a change the device already verified, such as a rotated password, which defeats INV-07 for that device.
   - With an honest server the view is stale until the next pull. A local export made in that window is stale too.
+- **Remediation (40a6cf4):** a pull whose verified chain contains the in-flight commit's
+  manifest hash clears it (it landed; only its reply was lost), so it is not resent. A commit
+  reply moves the checkpoint only if the commit was built on the current checkpoint and the reply
+  is exactly the next seq; anything else is the integrity error `stale_commit_reply`. The
+  checkpoint never decreases.
+  - **Regression:** `r5-r6-client.test.ts`: the review's two-device lost-reply sequence now ends
+    at B's seq with B's edit shown, and the later rollback is `integrity_error`/`server_behind`
+    (before: A's old seq, A's edit, `synced`); the same across a restart with the commit
+    persisted in flight; a reply for an older seq is refused and the checkpoint kept; and with
+    syncs, saves and B's commits interleaved, the checkpoint read on every engine event never
+    decreases (before: 4 → 3 inside one sync).
+  - **Residual:** freeze and fork stay as documented (sync-protocol §Limits, D-14).
 - **Fix:**
   - Never let the checkpoint `seq` decrease.
   - Accept a commit reply only if `seq === inflight.body.baseSeq + 1`; otherwise reconcile.
@@ -305,6 +318,21 @@ Synthetic data only.
 - **Reproduction:** `r5-r6-client.test.ts`. An offline edit exists only in the browser's store; the test checks the server never received it and an offline unlock shows it pending. Recovery on the same browser ends with only the synced item and `pendingCount: 0`. No warning is shown.
 - **Impact:** silent loss of user data. Compare `startOver`, which requires an export or typed confirmation.
 - **Fix:** recovery yields the same `AK`, so the local `pending` and `conflicts` records can be opened and kept, then rebased after the genesis pull. At minimum, count them and require an export or acknowledgement first.
+- **Remediation (a916561):** on a browser holding this account's vault (same account,
+  device and vault under the same `AK`), recovery keeps its synced records, pending edits,
+  conflicts, import state, checkpoint and anchor, replaces only the password wrap, salt and
+  keyset, and says what it kept. A browser holding another account's vault (another username, or
+  the same name on another server) is never erased without an explicit confirmation that says its
+  unsynced changes are lost from this browser (`local_data_other_account`).
+  - **Regression:** `r5-r6-client.test.ts`: the review's sequence now ends with both items and
+    `keptLocal: { pending: 1 }`, and the edit is uploaded by the first sync; an offline edit that
+    meets a newer server change is kept as a conflict; both other-account cases refuse, leave the
+    first account's pending edit intact, and erase only after `replaceLocalData`. Browser:
+    `e2e-vault/two-devices.spec.ts` adds an offline note on A, forgotten-password recovery from
+    A's own lock screen, the "kept its own copy … 1 change not yet uploaded" notice, and the note
+    arriving on C.
+  - **Residual:** a browser whose own records cannot be opened with the recovered `AK` (a future
+    full rotation) falls under the other-account rule: replaced only with confirmation.
 
 ### R3. Login throttle checked only at `start` (Medium)
 
@@ -312,12 +340,36 @@ Synthetic data only.
 - **Reproduction:** `r2-r3-login.int-spec.ts`. Twelve starts issued before any failure, then twelve finishes: all twelve are evaluated (401), none is refused (429), and a new start is already blocked. The per-IP window is reset between requests, as a few addresses would give.
 - **Impact:** guesses are bounded by parallelism times the number of addresses, not by the documented 5-then-delay schedule. T-15 is weaker than documented.
 - **Fix:** check `blockedUntil` in every finish before running `finishLogin`. Limit concurrent pending login states per username in `LoginStateStore`.
+- **Remediation (b990cd0):** every password check (login, step-up and reopening finish) reserves
+  its attempt in one SQL statement that counts it, sets the delay its count implies and refuses
+  while a delay is in force; recovery and bootstrap attempts are reserved the same way against
+  their hourly bounds. The reservation, not the count of pending login states, is the bound.
+  - **Regression:** `r2-r3-login.int-spec.ts`, through the documented topology (trusted proxy,
+    a different `X-Forwarded-For` for every request): twelve parallel login finishes → 5
+    evaluated, 7 × 429 (before: 12 evaluated); seven sequential → 5 and 2 × 429; nine parallel
+    step-ups → 5 and 4 × 429 (before: 9); nine parallel recovery attempts → 5 and 4 × 429
+    (before: 9).
+  - **Residual:** pending login states are still only bounded globally (10,000), not per
+    username; filling them costs the attacker nothing beyond the per-address limit and gains no
+    guesses.
 
 ### R11. Anyone can keep a restored installation closed (Medium, availability)
 
 - **Where:** `apps/api/src/reopen/reopen.service.ts:75-90`: a wrong code counts a failure on **every** usable code, and five revoke it. `:207` records a recovery attempt before checking the code, which uses up the owner's 5-per-hour recovery budget.
 - **Impact:** anyone who can reach the API can keep a restored server closed and force the host to keep reissuing codes. The tests assert this behaviour ("revokes a code after five failures").
 - **Fix:** with 256-bit codes a wrong code tells an attacker nothing. Throttle wrong codes per IP, count failures only against the presented code (right code, wrong credentials), and check the code before recording a recovery attempt.
+- **Remediation (56eef75):** a wrong, malformed, expired or used code is limited per client
+  address (10 per 15 minutes; refused before any lookup once over) and never counts against the
+  usable code; failed credentials presented with the usable code still count on it, and five
+  revoke it. The Recovery Kit path reserves the owner's recovery budget only after the code
+  checked out. Security events record `reason: code | credentials`, never the code.
+  - **Regression:** `reopen.int-spec.ts` R11 block: twenty wrong codes from one address → ten
+    401 then ten 429, the usable code untouched, and the owner then reopens (before: the fifth
+    wrong code revoked it); eight wrong codes on the kit path from different addresses, then the
+    owner reopens with the kit (before: 429 from the sixth); the old tests that asserted
+    wrong-code counting now assert the opposite.
+  - **Residual:** an attacker with many addresses can still make many wrong-code requests (each
+    address bounded); they cannot affect the usable code.
 
 ### R12–R22. Low
 
@@ -326,16 +378,54 @@ Synthetic data only.
   - `complete` authenticates the reopen session before its transaction. Inside it, it checks only that the linked code has `revoked_at IS NULL` (`reopen.service.ts:319`).
   - `issueCode` (`server-restore.ts:589-605`) revokes only unconsumed codes and does not lock the guard row. A host revocation committed in between is ignored.
   - Fix: re-check the session `FOR UPDATE` inside the transaction; have `issueCode` lock the guard row and revoke consumed codes too.
+  - **Fixed (233333d):** exactly that. Regression in `reopen.int-spec.ts`: a completion whose
+    session the host ended after authentication fails and the state stays `reopening` (before:
+    it opened); a completion and a new code run concurrently: exactly one takes effect (before:
+    both).
 - **R14. The gate caches `none` as open** (`maintenance.service.ts:39`). An API that touched the target database before PREPARE stays open after the guard appears. The specification says only `open` is cached. Fix: cache only `open`.
+  - **Fixed (d239bb5)**, more broadly: a missing control schema is now **uninitialized** and
+    closed; a fresh installation is opened explicitly by `ruvee-admin init`, which refuses any
+    database that already has a control schema; a guard decides wherever one exists, and a
+    missing row, unknown state or schema with neither table is closed; only `open` is cached.
+    Regression `r14-gate-lifecycle.int-spec.ts`: an uninitialized database serves only health
+    (20 parallel requests too); one app sees every later state of a restore target at once
+    (before: it stayed open); `init` opens a fresh database once and refuses a restored one.
+    Deployment change: run `init` once per new database (README, operator guide).
 - **R15. `docker exec` kill and an early pg_restore exit** (`pg-tools.ts:85`, `server-restore.ts:293-296`).
   - Killing the `docker exec` client gives `pg_restore` inside the container a clean EOF, contrary to the comment on `load`.
   - If `pg_restore` exits 0 early, the drain wait never settles.
   - The guard still keeps the database closed, so only defence in depth is lost. Fix: race drain against `done`, and document the prefix limitation.
+  - **Fixed (6ed27df):** LOAD holds the last decrypted chunk back until both hashes match, so a
+    clean end of input after a failure leaves `pg_restore` a truncated archive that rolls back;
+    waiting for pipe space races `pg_restore`'s exit. Regression in `r9-verified-bytes.int-spec.ts`:
+    with the input ended instead of killed (the `docker exec` case), a forged staged dump no
+    larger than the genuine one leaves 0 tables (before: its 14 tables were committed behind the
+    closed guard); a tool that exits 0 without reading fails LOAD in under a second (before:
+    hung). Observed: in this environment `pg_restore` connects late, so the old code was also
+    saved by the loader role being dropped first; the test isolates the archive property by
+    connecting as the admin role. The prefix remains for development; the guide says so.
 - **R16. No per-session request limit** (authentication.md §7 lists 300/min/session). Not implemented.
+  - **Fixed (417acfe):** every authenticated request (normal, token, recovery, reopen sessions)
+    counts against an in-memory 300/minute window per session. Regression
+    `r16-r17-limits.int-spec.ts`: the 301st request is 429 with `Retry-After`, another session
+    of the same account is unaffected; unit tests for the window. Residual: in memory, one
+    process (as V1 specifies).
 - **R17. Proxy and IP keying** (`sessions/client-info.ts`). Behind Caddy without `TRUSTED_PROXY_ADDRESS`, every client is 127.0.0.1, so one attacker exhausts the global 20/min auth budget. Nothing warns. IPv6 is limited per address, not per /64.
+  - **Fixed (417acfe):** per-address windows key IPv6 by /64; the API warns once (without the
+    header's value) when a request carries `X-Forwarded-For` and `TRUSTED_PROXY_ADDRESS` is
+    unset, and at start in production when it is unset. Regression: the warning test in
+    `r16-r17-limits.int-spec.ts`; `throttle-windows.spec.ts` for /64 keys (compressed, zoned and
+    IPv4-tailed forms). Residual: the operator must still set the variable; the API cannot
+    detect a proxy that strips the header.
 - **R18. Extension fill visibility** (`apps/extension/src/fill.ts:13-22`). Only the element's own style is checked: an ancestor with `opacity:0`, off-screen or clipped fields pass. Precondition: HTML injection on the exact saved origin, and a user click on Fill.
 - **R19. Extension lock race** (`apps/extension/src/background.ts:113`, `:136-147`, `:266`). An `ended` lock during an in-flight `unlock` can be followed by `rememberUnlocked` writing `AK` back. It self-corrects on the next sync. Fix: a lock generation counter or one serialized queue.
 - **R20. Recovery on a device with data drops rollback floors** (`vault-engine.ts:1914-1937`, `:2205-2212`). It accepts any keyset version and resets the checkpoint to 0, so an old keyset or state could be re-served to a device that knew better.
+  - **Fixed (a916561, with R6):** the kept checkpoint and anchor are the floor for the first sync, and a
+    keyset older than this browser's is refused in `recoveryBegin`, before the server changes
+    anything. Regression in `r5-r6-client.test.ts`: a server that rolled back one commit →
+    `integrity_error`/`server_behind` after recovery (before: `synced`); an older keyset →
+    `integrity` and the password unchanged on the server (before: accepted). A browser with no
+    data still has no floor (sync-protocol §Limits).
 - **R21. Pairing open-count race** (`apps/api/src/pairing/pairing.service.ts:51-81`). Count then insert at READ COMMITTED. It bypasses a rate limit only for an already active device.
 - **R22. `startOver` and `feedImport`.**
   - `startOver` checks only `pendingSeen` (`vault-engine.ts:2900`), so conflict drafts are erased uncounted.
@@ -415,7 +505,8 @@ Synthetic data only.
 
 ## 7. Prioritized remediation plan
 
-Items 1 to 4 and 6 are done (milestone 1, §9). The rest are open.
+Items 1 to 4 and 6 are done (milestone 1, §9). Items 7, 8, 9 and 10 are done (milestone 2,
+§10), except R12 in item 5. Item 5 (R2, R12) waits for the D-31 decision. P2 is open.
 
 **Before the synthetic rehearsal (P0):**
 
@@ -484,3 +575,53 @@ checked by `apps/api/scripts/check-caddy.mjs`.
 applies (`MaintenanceService` caches `none` as open). R2's protocol choice is prepared as a
 proposal, not a decision: [r2-device-proof-decision.md](r2-device-proof-decision.md) (D-31,
 proposed).
+
+## 10. Remediation milestone 2 (2026-10-26): R3, R5, R6, R11, R13 to R17, R20
+
+Local commits on `vault/web-vault`, none pushed. Each reproduction was run against the code
+before its fix (by restoring the old source files temporarily) and failed there, then passed
+after; the figures are in each finding's entry.
+
+| Commit    | Finding    | Change                                                                                       |
+| --------- | ---------- | -------------------------------------------------------------------------------------------- |
+| `70c6a15` | test infra | Temporary databases tracked by exact name; dropped on every failure path and by a run ledger |
+| `d239bb5` | R14        | Explicit installation lifecycle (`ruvee-admin init`); only `open` is cached                  |
+| `b990cd0` | R3         | Atomic reservation of every password, recovery and bootstrap attempt                         |
+| `56eef75` | R11        | Wrong codes limited per address, never charged to the usable code                            |
+| `233333d` | R13        | Completion and code issuing serialized on the guard row; consumed codes revoked              |
+| `6ed27df` | R15        | Last chunk held back until verified; drain raced against exit                                |
+| `417acfe` | R16, R17   | 300/min per session; IPv6 by /64; proxy warnings                                             |
+| `40a6cf4` | R5         | Landed in-flight commits cleared on pull; stale replies refused                              |
+| `a916561` | R6, R20    | Recovery keeps this browser's vault and floors; other accounts erased only on confirmation   |
+
+**Test-resource lifecycle.** Run alone and together, the integration suites left no database
+behind on success; the five databases found after milestone 1 came from failed, timed-out or
+killed runs. Several suites created databases outside a `try`/`finally`, the harness leaked its
+database when its app failed to start, and a URL recorded after a harness had pointed
+`DATABASE_URL` at a dropped database could not be used to drop anything. Now every database is
+recorded by exact name before it is created, dropped after each file and at the end of the run,
+and always through a non-temporary database; a lifecycle test reproduces the harness leak.
+Nothing is dropped by prefix.
+
+**Checks run** (2026-10-26, after the last code commit, task-owned PostgreSQL 18.6 container,
+`pg_dump`/`pg_restore` 18 inside it):
+
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build`: pass.
+- `pnpm test`: contracts 37, crypto 60, API 83, extension 27, web 43, vault 72 (+1 skipped
+  fixture regenerator): pass.
+- `pnpm test:integration`: 23 files, 150 tests: pass; no `ruvee_it_*`/`ruvee_e2e_*` database
+  and no loader role left afterwards.
+- Browser (Chromium): `test:vault` 1 (now with recovery on an enrolled browser that has an
+  unsynced edit; it waits out the documented 20/min per-address window, which the run's own
+  sign-ins reach because every context is 127.0.0.1), `test:restore` 2, `test:import` 1,
+  `test:headers` 33, extension 9, `test:e2e` 8 (+4 skipped as before): pass.
+- `test:caddy` (Caddy 2.11.7): 87 checks: pass.
+
+**Not run:** Firefox and WebKit for the vault and restore suites (as before, Chromium only); a
+multi-instance API (V1 is one process; the in-memory windows are per process).
+
+**Still open:** R2 and R12 (they need the D-31 protocol decision:
+[r2-device-proof-decision.md](r2-device-proof-decision.md), proposed, not approved), R18, R19,
+R21, R22 and the R23 items. Two R23 items were addressed by milestone 1's R8 work (the
+schema-qualified guard queries and the empty-target check), and the item stays open for the
+rest.
