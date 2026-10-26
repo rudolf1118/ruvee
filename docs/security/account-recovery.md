@@ -181,7 +181,8 @@ holds: ciphertext, wraps, OPAQUE records and metadata
   [sync-protocol.md §Server restore](../architecture/sync-protocol.md#server-restored-from-an-older-backup).
 
 **Portable encrypted exports** are planned for Phase 7, and their format is not yet specified
-([D-13](../architecture/open-decisions.md)). Constraints fixed now:
+([D-13](../architecture/open-decisions.md); proposed design in
+[backup-restore.md](../architecture/backup-restore.md), 2026-10-26). Constraints fixed now:
 
 - An export must contain the encrypted records, the manifest and the keyset, together with a wrap
   of `AK` that the **Recovery Key** can open, so that it can be restored without the server and

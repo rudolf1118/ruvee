@@ -130,3 +130,15 @@ compromised API server serving wrong ciphertext (that is detected by sync verifi
   app, fill on the saved origin, no offer and a refused forged fill on another port, a real
   service-worker restart followed by resume from `chrome.storage.session`, lock, and scans of the
   network, `chrome.storage` and the extension's IndexedDB.
+
+### Verification added on 2026-10-26
+
+The browser suite now also covers auto-lock (including an unlock that expired while the worker
+was stopped, which must not resume), `chrome.storage.session` being refused to a content script
+and absent from the page's world, a stale fill after the tab navigated, previous-password unlock,
+refresh-token reuse, logout and a revoked extension reconnecting
+([phase-2-review-packet.md §2a](phase-2-review-packet.md#2a-browser-level-evidence-added-on-2026-10-26-and-its-limits)).
+Two defects found by those tests were fixed: idleness is now checked before every message (a
+late alarm could let a message resume an expired unlock), and logout and revocation now remove
+both tokens, not only `AK`. The popup syncs when opened, which is how a revoked browser or an
+ended session is noticed while unlocked.

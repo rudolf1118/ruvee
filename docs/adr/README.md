@@ -20,6 +20,7 @@ next milestone; it is not an independent review and not approval to store real s
 | [0007](0007-sync-manifest-chain.md)           | Linear commits with an encrypted manifest chain         | Proposed                              |
 | [0008](0008-session-model.md)                 | Cookie sessions for web, rotating tokens elsewhere      | Proposed                              |
 | [0009](0009-web-client-trust.md)              | The web app trusts its server; say so                   | Proposed                              |
+| [0010](0010-backup-and-portable-export.md)    | Server backups; portable exports as envelope containers | Proposed (D-13, D-28 pending)         |
 
 New ADRs copy the structure of an existing one and take the next number. An ADR is never edited
 to reverse its decision; a new ADR supersedes it.

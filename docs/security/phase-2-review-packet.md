@@ -1,26 +1,29 @@
 # Phase 2 review packet
 
-Status: **Self-review, 2026-10-25.** Written by the developer and an AI agent against what is
-built on `vault/web-vault`. It is the input for the independent review (D-19), not a
-substitute for it. Nothing here approves storing real secrets.
+Status: **Self-review, updated 2026-10-26.** Written by the developer and an AI agent against
+what is built on `vault/web-vault`, now including the browser extension and bearer-token
+sessions. It is the input for the independent review (D-19), not a substitute for it, and not an
+audit. **D-19 is open: real data stays blocked until the review in §6 has happened.**
 
-Everything below was run locally. Remote CI has never run. Safari, a real Caddy binary, phones and
-older laptops were not tested.
+Everything below was run locally. Remote CI has never run. Safari, a real Caddy binary, phones,
+older laptops and a packed (store) build of the extension were not tested. A passing test is
+evidence for the specific behaviour it exercises, not proof that an invariant holds everywhere.
 
 ## 1. How to reproduce
 
-| Suite                                 | Command                                                                                         | Result on 2026-10-25                    |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------- |
-| Format, lint, types                   | `pnpm format:check && pnpm lint && pnpm typecheck`                                              | Pass                                    |
-| Unit                                  | `pnpm test`                                                                                     | contracts 34, API 68, web 73, crypto 60 |
-| Integration (real PostgreSQL)         | `DATABASE_URL=… pnpm test:integration`                                                          | 42                                      |
-| Crypto in browsers                    | `pnpm --filter @ruvee/crypto test:browsers`                                                     | 24 checks × 6 contexts                  |
-| Headers, CSP, OPAQUE under the CSP    | `pnpm --filter @ruvee/web test:headers`                                                         | 30, three engines                       |
-| Design preview                        | `pnpm --filter @ruvee/web test:e2e`                                                             | 8 (needs network for `next/font`)       |
-| Two- and three-device vault, real API | `RUVEE_E2E_ADMIN_DATABASE_URL=… RUVEE_E2E_BROWSER=<engine> pnpm --filter @ruvee/web test:vault` | Pass in Chromium, Firefox, WebKit       |
+| Suite                              | Command                                                                                         | Result on 2026-10-26                                            |
+| ---------------------------------- | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| Format, lint, types                | `pnpm format:check && pnpm lint && pnpm typecheck`                                              | Pass                                                            |
+| Unit                               | `pnpm test`                                                                                     | contracts 34, API 68, web 33, vault 41, extension 27, crypto 60 |
+| Integration (real PostgreSQL)      | `DATABASE_URL=… pnpm test:integration`                                                          | 52 passed, 3 todo (D-28 placeholders)                           |
+| Crypto in browsers                 | `pnpm --filter @ruvee/crypto test:browsers`                                                     | 24 checks × 6 contexts                                          |
+| Headers, CSP, OPAQUE, local fonts  | `pnpm --filter @ruvee/web test:headers`                                                         | 33, three engines                                               |
+| Design preview                     | `pnpm --filter @ruvee/web test:e2e`                                                             | 8 (no network needed since the fonts are local)                 |
+| Web vault, three devices, real API | `RUVEE_E2E_ADMIN_DATABASE_URL=… RUVEE_E2E_BROWSER=<engine> pnpm --filter @ruvee/web test:vault` | Pass in Chromium, Firefox, WebKit                               |
+| Extension, real API and web app    | `RUVEE_E2E_ADMIN_DATABASE_URL=… pnpm --filter @ruvee/extension test:extension`                  | 9, Chromium (unpacked test build)                               |
 
-The integration and vault suites create and drop their own `ruvee_it_*` and `ruvee_e2e_*`
-databases on the server they are given.
+The integration, vault and extension suites create and drop their own `ruvee_it_*` and
+`ruvee_e2e_*` databases on the server they are given.
 
 ## 2. Invariants and the tests that prove them
 
@@ -28,31 +31,63 @@ databases on the server they are given.
 "Partly" names what is not covered. "Structural" means the property follows from what the code
 lacks, and a reviewer should confirm that by reading.
 
-| Invariant                                            | Status                 | Tests                                                                                                                                                                                                                                                                                                                                                                                  |
-| ---------------------------------------------------- | ---------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| INV-01 nothing secret reaches the server             | Tested                 | `apps/api/test/auth.int-spec.ts` "never sends or stores the password, Recovery Key or vault keys (INV-01 capture)"; `apps/web/e2e-vault/two-devices.spec.ts` (every request URL, header and body of three browsers scanned for passwords, Recovery Keys, item secrets and titles); `apps/web/src/vault/worker/vault-engine.test.ts` "stores items as ciphertext only"                  |
-| INV-02 fresh nonces, no caller nonce                 | Tested                 | `packages/crypto/test/exports.spec.ts` (no input has a nonce field; the fixed-nonce module is test-only); portable check `nonce-uniqueness`                                                                                                                                                                                                                                            |
-| INV-03 AAD from expectations                         | Tested                 | Portable checks `envelope-parsing-and-tampering`, `item-record-round-trip-and-binding`, `recovery-wrap-round-trip-and-binding`, `local-record-round-trip-and-binding`, `pairing-round-trip-and-binding`, `items-digest-and-manifest` (each changes one context field and expects failure)                                                                                              |
-| INV-04 fail closed                                   | Tested                 | Portable checks `decoder-fuzz`, `envelope-parsing-and-tampering`; `packages/crypto/test/errors.spec.ts`; `sync-logic.test.ts` "rejects a record that does not decrypt at its claimed revision"                                                                                                                                                                                         |
-| INV-05 known KDF profile, floor 1                    | Tested                 | Portable check `kdf-profile-floor`; the contracts accept only `kdfProfile: 1`                                                                                                                                                                                                                                                                                                          |
-| INV-06 a session alone never decrypts                | Tested                 | `auth.int-spec.ts` "logs in an enrolled device, and puts an unknown device in pending" (pending device gets `device_not_enrolled` on keys and sync); `pairing.int-spec.ts` (pending device refused on keys, enrolled only by pairing)                                                                                                                                                  |
-| INV-07 verify before applying                        | Tested                 | `sync-logic.test.ts` `verifyPages` cases; `vault-engine.test.ts` "stops and goes read-only when the server rolls back a record"; `sync.int-spec.ts` "pages on commit boundaries and the client can still verify the whole range"                                                                                                                                                       |
-| INV-08 no silent overwrite                           | Tested                 | `vault-engine.test.ts` "syncs between two devices and turns concurrent edits into an explicit conflict", "reports an edit of an item that was deleted on another device"; the vault e2e conflict step                                                                                                                                                                                  |
-| INV-09 no keyset rollback                            | Tested                 | `vault-engine.test.ts` "refuses an older keyset, or a newer one that does not open, and goes read-only (INV-09)"; server side `account-security.int-spec.ts` "rotates SK: the next keyset version…"                                                                                                                                                                                    |
-| INV-10 server plaintext is the listed set            | Tested                 | `migrations.int-spec.ts` (the columns equal `column-classes.ts`)                                                                                                                                                                                                                                                                                                                       |
-| INV-11 auth and decryption independent               | Structural             | No API in `packages/crypto` takes an OPAQUE export key or session key; `AUK` takes only the password, salt, profile, `SK` and account id. The `RAK` exception is the portable check `recovery-verifier-is-sha256`.                                                                                                                                                                     |
-| INV-12 no secrets in logs, URLs, errors              | Tested                 | `apps/api/test/logging.spec.ts` (sentinel secret); `http.spec.ts` (errors never repeat input); `account-security.int-spec.ts` "lists security events… with only allow-listed details" (a stored non-allow-listed field never leaves); crypto `errors.spec.ts`; the vault e2e URL scan                                                                                                  |
-| INV-13 random tokens, hashed, `__Host-` cookie       | Tested for cookies     | `auth.int-spec.ts`: the cookie attributes, and "stores only the SHA-256 of each 256-bit session token (INV-13)". Refresh tokens are not built (Phase 5).                                                                                                                                                                                                                               |
-| INV-14 step-up for sensitive operations              | Tested for what exists | `account-security.int-spec.ts`: revoke, password change, `SK` rotation, Recovery Kit rotation each refuse a stale authentication with `step_up_required`. Vault reset, full key rotation and plaintext export are not built.                                                                                                                                                           |
-| INV-15 lock drops keys                               | Partly                 | The vault e2e locks and checks that no item text is on the page; locking terminates the worker. `packages/crypto/test/ownership.spec.ts` checks wiping of intermediates. No test inspects the worker heap; JavaScript allows no such test (R-11).                                                                                                                                      |
-| INV-16 no plaintext at rest                          | Tested                 | The vault e2e dumps IndexedDB, `localStorage` and `sessionStorage` of three browsers and scans for every secret; `vault-engine.test.ts` "stores items as ciphertext only"                                                                                                                                                                                                              |
-| INV-17 `SK` alone decrypts nothing                   | Tested                 | Portable check `inv17-secret-key-alone-decrypts-nothing`                                                                                                                                                                                                                                                                                                                               |
-| INV-18 no administrator decryption                   | Structural             | `apps/api/src/admin/cli.ts` has only `opaque-setup` and `bootstrap-token`; the server holds no key that opens any envelope.                                                                                                                                                                                                                                                            |
-| INV-19 content scripts never get keys                | Not applicable yet     | Phase 5.                                                                                                                                                                                                                                                                                                                                                                               |
-| INV-20 registration closed                           | Tested                 | `auth.int-spec.ts` "refuses registration without a valid bootstrap token…", "creates the account… then closes registration"                                                                                                                                                                                                                                                            |
-| INV-21 OPAQUE setup never stored, logged or returned | Tested                 | `auth.int-spec.ts` "never stores, logs or returns the OPAQUE server setup (INV-21)" (every table, the logs and several responses, in base64url and hex)                                                                                                                                                                                                                                |
-| INV-22 exact crypto pins                             | Tested                 | `packages/crypto/test/versions.spec.ts`                                                                                                                                                                                                                                                                                                                                                |
-| INV-23 single-use protocol state                     | Tested                 | Login: `auth.int-spec.ts` "consumes a login id once"; reauth: `account-security.int-spec.ts` (a reauth id is refused by `login/finish` and works once); pairing: `pairing.int-spec.ts` and `vault-engine.test.ts` (one request per pairing, a MAC failure burns it); recovery completion: `recovery.int-spec.ts` (a second completion is refused); bootstrap token: `auth.int-spec.ts` |
+| Invariant                                            | Status                        | Tests                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------- | ----------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| INV-01 nothing secret reaches the server             | Tested                        | `apps/api/test/auth.int-spec.ts` "never sends or stores the password, Recovery Key or vault keys (INV-01 capture)"; `apps/web/e2e-vault/two-devices.spec.ts` (every request of three browsers scanned); `apps/extension/e2e/extension.spec.ts` "capture" (every request of the extension and web app, both master passwords, the item password, the Recovery Key); `packages/vault/src/vault-engine.test.ts` "stores items as ciphertext only" |
+| INV-02 fresh nonces, no caller nonce                 | Tested                        | `packages/crypto/test/exports.spec.ts` (no input has a nonce field; the fixed-nonce module is test-only); portable check `nonce-uniqueness`                                                                                                                                                                                                                                                                                                    |
+| INV-03 AAD from expectations                         | Tested                        | Portable checks `envelope-parsing-and-tampering`, `item-record-round-trip-and-binding`, `recovery-wrap-round-trip-and-binding`, `local-record-round-trip-and-binding`, `pairing-round-trip-and-binding`, `items-digest-and-manifest` (each changes one context field and expects failure)                                                                                                                                                      |
+| INV-04 fail closed                                   | Tested                        | Portable checks `decoder-fuzz`, `envelope-parsing-and-tampering`; `packages/crypto/test/errors.spec.ts`; `sync-logic.test.ts` "rejects a record that does not decrypt at its claimed revision"                                                                                                                                                                                                                                                 |
+| INV-05 known KDF profile, floor 1                    | Tested                        | Portable check `kdf-profile-floor`; the contracts accept only `kdfProfile: 1`                                                                                                                                                                                                                                                                                                                                                                  |
+| INV-06 a session alone never decrypts                | Tested                        | `auth.int-spec.ts` (pending device refused on keys and sync); `pairing.int-spec.ts`; `tokens.int-spec.ts` (a pending extension gets `device_not_enrolled` on keys); the extension e2e (a revoked extension that logs in again is pending and must be paired)                                                                                                                                                                                   |
+| INV-07 verify before applying                        | Tested                        | `sync-logic.test.ts` `verifyPages` cases; `vault-engine.test.ts` "stops and goes read-only when the server rolls back a record"; `sync.int-spec.ts` "pages on commit boundaries and the client can still verify the whole range"                                                                                                                                                                                                               |
+| INV-08 no silent overwrite                           | Tested                        | `vault-engine.test.ts` "syncs between two devices and turns concurrent edits into an explicit conflict", "reports an edit of an item that was deleted on another device"; the vault e2e conflict step                                                                                                                                                                                                                                          |
+| INV-09 no keyset rollback                            | Tested                        | `vault-engine.test.ts` "refuses an older keyset, or a newer one that does not open, and goes read-only (INV-09)"; server side `account-security.int-spec.ts` "rotates SK: the next keyset version…"                                                                                                                                                                                                                                            |
+| INV-10 server plaintext is the listed set            | Tested                        | `migrations.int-spec.ts` (the columns equal `column-classes.ts`)                                                                                                                                                                                                                                                                                                                                                                               |
+| INV-11 auth and decryption independent               | Structural                    | No API in `packages/crypto` takes an OPAQUE export key or session key; `AUK` takes only the password, salt, profile, `SK` and account id. The `RAK` exception is the portable check `recovery-verifier-is-sha256`.                                                                                                                                                                                                                             |
+| INV-12 no secrets in logs, URLs, errors              | Tested                        | `apps/api/test/logging.spec.ts` (sentinel secret); `http.spec.ts` (errors never repeat input); `account-security.int-spec.ts` "lists security events… with only allow-listed details" (a stored non-allow-listed field never leaves); crypto `errors.spec.ts`; the vault e2e URL scan                                                                                                                                                          |
+| INV-13 random tokens, hashed, `__Host-` cookie       | Tested                        | `auth.int-spec.ts`: cookie attributes, "stores only the SHA-256 of each 256-bit session token"; `tokens.int-spec.ts` "stores only hashes of access and refresh tokens", rotation, reuse revoking the family, expiry; extension e2e "a reused refresh token ends the session for the extension too"                                                                                                                                             |
+| INV-14 step-up for sensitive operations              | Tested for what exists        | `account-security.int-spec.ts`: revoke, password change, `SK` rotation, Recovery Kit rotation each refuse a stale authentication with `step_up_required`. Vault reset, full key rotation and plaintext export are not built.                                                                                                                                                                                                                   |
+| INV-15 lock drops keys                               | Partly                        | Web: the vault e2e locks and checks no item text remains; locking terminates the worker. Extension e2e: lock, auto-lock (alarm, and an expired unlock after a worker restart), logout, refresh-token reuse and revocation each leave no `ak` in `chrome.storage.session`; logout and revocation also remove both tokens. `ownership.spec.ts` checks wiping of intermediates. No test can inspect a JavaScript heap (R-11).                     |
+| INV-16 no plaintext at rest                          | Tested                        | The web vault e2e and the extension e2e dump IndexedDB, `chrome.storage.local` / `session` and web storage and scan for every secret; `vault-engine.test.ts`. D-27 reads "persists" as written to persistent storage: `AK` is in `chrome.storage.session` while unlocked.                                                                                                                                                                      |
+| INV-17 `SK` alone decrypts nothing                   | Tested                        | Portable check `inv17-secret-key-alone-decrypts-nothing`                                                                                                                                                                                                                                                                                                                                                                                       |
+| INV-18 no administrator decryption                   | Structural                    | `apps/api/src/admin/cli.ts` has only `opaque-setup` and `bootstrap-token`; the server holds no key that opens any envelope.                                                                                                                                                                                                                                                                                                                    |
+| INV-19 content scripts never get keys                | Tested for the current design | Extension e2e: a content script (isolated world) is refused `chrome.storage.session`, the page's own world has no storage API, the popup never receives the item password, and fills go only to the saved origin; `fill.test.ts`, `origin.test.ts`. There is no persistent content script to test.                                                                                                                                             |
+| INV-20 registration closed                           | Tested                        | `auth.int-spec.ts` "refuses registration without a valid bootstrap token…", "creates the account… then closes registration"                                                                                                                                                                                                                                                                                                                    |
+| INV-21 OPAQUE setup never stored, logged or returned | Tested                        | `auth.int-spec.ts` "never stores, logs or returns the OPAQUE server setup (INV-21)" (every table, the logs and several responses, in base64url and hex)                                                                                                                                                                                                                                                                                        |
+| INV-22 exact crypto pins                             | Tested                        | `packages/crypto/test/versions.spec.ts`                                                                                                                                                                                                                                                                                                                                                                                                        |
+| INV-23 single-use protocol state                     | Tested                        | Login, reauth, pairing, recovery completion and bootstrap token as before; refresh tokens: `tokens.int-spec.ts` and the extension e2e (a rotated refresh token presented again revokes the session)                                                                                                                                                                                                                                            |
+
+## 2a. Browser-level evidence added on 2026-10-26, and its limits
+
+Closed (each is a test in `apps/extension/e2e/extension.spec.ts` unless noted):
+
+| Gap                         | What the test shows                                                                                                                                                                                                                                                                              |
+| --------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Extension auto-lock         | An unlock that expired while Chrome had stopped the worker is never resumed; with no message at all, the alarm locks the vault. Writing this test found a defect: the worker recorded activity _before_ checking idleness, so a late alarm let the next message resume an expired unlock. Fixed. |
+| Worker suspension           | A proven restart (a marker in the old global scope is gone) resumes from `chrome.storage.session` while within the window.                                                                                                                                                                       |
+| Navigation during fill      | A fill requested after the tab moved to another origin is refused and nothing is injected; back on the saved origin it works.                                                                                                                                                                    |
+| Previous-password unlock    | After `SK` and the password both changed in the web app, the locked extension asks for the previous password, refuses a wrong one, adopts the new keys, and then opens with the new password only.                                                                                               |
+| Revoked device reconnecting | A locked extension removed in the web app is wiped (device record, `AK`, both tokens) on its first server contact and must be paired again. Web: the existing vault e2e covers an unlocked browser removed while online.                                                                         |
+| Refresh-token reuse         | A copied refresh token presented after the extension rotated it is refused, the session family is revoked, the extension locks, and a `refresh_reuse` event exists.                                                                                                                              |
+| `storage.session` access    | Refused to a content script; absent from the page's main world.                                                                                                                                                                                                                                  |
+| Logout                      | Removes `AK` and both tokens and ends the server session. Writing this test found orphaned server sessions after a second sign-in from the same device; a new login now supersedes that device's older sessions (`tokens`/`account-security` integration tests).                                 |
+| Fonts                       | The web app no longer fetches Google fonts at build or run time; `security-headers.spec.ts` checks that every font request is to the app's own origin. The export is pixel-identical (compared during the change).                                                                               |
+
+Remaining, and why:
+
+- **The race between the worker's last origin check and injection.** The page navigating in that
+  millisecond window cannot be timed in a browser test. It is covered by the in-page check
+  (`fill.ts` compares `location.origin` before touching any field; `fill.test.ts`).
+- **Same-origin frames, Firefox, Safari, packed builds:** not built or not tested.
+- **What `chrome.storage.session` does with memory under swap, hibernation or a crash dump** is
+  not documented by Chrome and cannot be tested from the extension (D-27 unknown).
+- **An offline device** that is never told of its revocation keeps opening its copy with the
+  password it knows; this is a stated limit (device-enrollment §6), not a test gap.
+- **A malicious or compromised extension update, or another extension with broad host
+  permissions on an unlocked browser** (E-06, T-23): outside what tests here can show.
+- **The test build** differs from the shipped build only by `__RUVEE_TEST__` (the popup may name
+  its target tab) and host permission for `127.0.0.1`; a reviewer should confirm nothing else
+  depends on it.
 
 ## 3. Deviations and interpretations
 
@@ -78,6 +113,15 @@ Choices made while building that a reviewer should confirm. None weakens an inva
 9. **Activity** re-filters event details through the allowlist on the way out as well as on write.
 10. **The web client adopts a newer keyset only under the current `AK` and the same vault id**;
     anything else stops sync with an integrity error (unchanged from the web-vault milestone).
+11. **A login for a known device supersedes that device's older cookie and token sessions**
+    (revoke reason `superseded`). Recovery sessions are not affected.
+12. **Bearer tokens:** the extension fetches with `credentials: 'omit'`; unauthenticated writes from
+    an extension origin pass the CSRF check only if listed in `EXTENSION_ORIGINS` and cookie-less;
+    registration and recovery stay web-only.
+13. **D-27:** only `AK` (not `VK`) is kept in `chrome.storage.session`; sync-protocol §12 names
+    both. Idleness is checked before every message as well as by the alarm.
+14. **The extension's popup can only call an allow-listed subset of engine methods**, without
+    `secret`; fills happen in the worker.
 
 ## 4. Changes to the threat model and risk register
 
@@ -90,26 +134,52 @@ Choices made while building that a reviewer should confirm. None weakens an inva
   any recovery the old kit had started but not finished.
 - **R-15** (no independent review): unchanged. This packet is its input.
 - **T-16, T-17** (username enumeration, CSRF): covered by `auth.int-spec.ts` as listed above.
-- No new server-visible plaintext. New stored values are the `secret_key_rotated` event type and
-  the existing columns updated by the new endpoints; `migrations.int-spec.ts` still passes.
+- No new server-visible plaintext. New stored values are the `secret_key_rotated` event type,
+  `refresh_tokens` (hashes), the `superseded` revoke reason, and existing columns updated by the
+  new endpoints; `migrations.int-spec.ts` still passes.
+- **R-18** (a stolen locked device may hold a live session): for the extension, a refresh token
+  in its IndexedDB lives up to 90 days; reuse after rotation ends the session, and removal from
+  Devices ends it at once.
+- **Backups:** a restored database copy brings back removed devices and their sessions
+  (`backup-restore.int-spec.ts`); the proposed rule is D-28 ([backup-restore.md](../architecture/backup-restore.md)).
 
 ## 5. Scope for the independent review
 
-In order of risk, with where to start reading:
+Concrete areas, in order of risk. This list is what D-19 must cover before real data; none of it
+has been reviewed by anyone other than its authors.
 
-1. **`packages/crypto`** and the vectors: `src/operations.ts`, `src/vault-operations.ts`,
-   `src/pairing-operations.ts`, `src/envelope.ts`, `test/portable/`. The libsodium.js V-15
-   containment (`v15-*` checks) is containment, not an upstream fix.
-2. **OPAQUE integration**: `apps/api/src/auth/` (single-use login state, fake records for unknown
-   users, reauth binding), `apps/web/src/vault/worker/vault.worker.ts` (D-02 configuration).
-3. **Sessions, CSRF, throttling, step-up**: `apps/api/src/sessions/`, `auth/throttle.service.ts`.
-4. **Pairing**: device-enrollment §3 against `vault-engine.ts` `pairing*` and
-   `apps/api/src/pairing/`. D-21 requires this review before real data.
-5. **Recovery and key rotations**: `recovery/`, `account/account-security.service.ts`, and the
-   engine's `recovery*`, `rotateSecretKey`, `kitRotate*`, `adoptServerKeys`, `refreshKeyset`.
-6. **Sync verification**: `apps/web/src/vault/worker/sync-logic.ts` and the engine's pull, rebase
-   and push.
-7. **Web delivery**: the CSP and headers (`apps/web/src/security/headers.ts`, `deploy/Caddyfile`)
-   and the trust model of a server-served client (D-07, R-01).
+1. **Pinned library defect and its containment.** libsodium.js 0.8.4 has V-15:
+   `crypto_kdf_derive_from_key` with a subkey length outside 16..64 ignores the C error and returns
+   uninitialized WebAssembly heap (in a probe, a previous subkey and earlier plaintext). Ruvee
+   contains it in `packages/crypto/src/primitives.ts` by passing only the constant 32 and checking
+   it before the call; `v15-defect-present-in-pinned-library` reproduces it and
+   `v15-contained-by-wrapper` checks the wrapper. This is containment, not a fix; confirm every
+   KDF call goes through the wrapper (`exports.spec.ts` "only src/libsodium.ts imports the
+   library") and track upstream libsodium.js#370.
+2. **`packages/crypto`** constructions and vectors: `src/operations.ts`, `src/vault-operations.ts`,
+   `src/pairing-operations.ts`, `src/envelope.ts`, `test/portable/`.
+3. **Pairing** (D-21 requires this review): device-enrollment §3 against
+   `packages/vault/src/vault-engine.ts` `pairing*` and `apps/api/src/pairing/`, including the
+   platform code in the MAC now that extensions pair (platform 2) and the server's check that a
+   request names the requester's own platform.
+4. **Recovery and key rotation:** `apps/api/src/recovery/`, `account/account-security.service.ts`,
+   and the engine's `recovery*`, `rotateSecretKey`, `kitRotate*`, `adoptServerKeys`,
+   `refreshKeyset`, the `previous_password_required` path, and D-24's rotation on lost removal.
+5. **Session and token lifecycle:** `apps/api/src/sessions/` (cookie and bearer paths, CSRF with
+   `EXTENSION_ORIGINS`), `session.service.ts` `createToken`/`refresh` (rotation, reuse detection,
+   concurrent refresh), login superseding older sessions, step-up binding, throttling, and the
+   extension's `tokens.ts` and transport refresh-and-retry.
+6. **Extension key retention and message boundaries:** `apps/extension/src/background.ts` (D-27:
+   `AK` in `chrome.storage.session`, resume, idle check, lock, `forget`), sender checks
+   (`sender.id`, `sender.origin`), the schema in `messages.ts`, the method allowlist, and what the
+   test build changes.
+7. **Autofill origin validation:** `apps/extension/src/origin.ts` (exact origin, HTTPS or loopback,
+   userinfo, IDN/trailing dot), `fill.ts` (top frame, visible fields, in-page origin re-check),
+   and the worker's re-read of the tab URL before injection.
+8. **Sync verification:** `packages/vault/src/sync-logic.ts` and the engine's pull, rebase, push.
+9. **OPAQUE integration:** `apps/api/src/auth/` and both clients' D-02 configuration.
+10. **Web delivery:** CSP and headers, `deploy/Caddyfile`, local fonts, and the trust model of a
+    server-served client (D-07, R-01).
 
-Not in scope yet: the extension (Phase 5), mobile (Phase 6), full key rotation (Phase 4).
+Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), backups (designs proposed in
+[backup-restore.md](../architecture/backup-restore.md), not built).

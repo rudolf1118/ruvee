@@ -1,6 +1,6 @@
 # Status and handoff
 
-Updated 2026-10-25. Everything is **local**: nothing has been pushed, and remote CI has never run.
+Updated 2026-10-26. Everything is **local**: nothing has been pushed, and remote CI has never run.
 This is a development build with synthetic data only. Nothing here has been independently
 reviewed, and it must not hold real secrets (D-19).
 
@@ -61,18 +61,18 @@ A complete single-user web vault across several browsers, against the real API a
 
 ## Verified (locally, 2026-10-25)
 
-| Check                                                                                                                                                                                                                  | Result                          |
-| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
-| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                                     | Pass                            |
-| `pnpm test` (contracts 34, API 68, web 33, vault 41, extension 27, crypto 60)                                                                                                                                          | Pass                            |
-| `pnpm test:integration` (49; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                   | Pass                            |
-| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                                      | Pass                            |
-| `pnpm --filter @ruvee/web test:headers` (30: headers, CSP, OPAQUE and crypto probes, three engines)                                                                                                                    | Pass                            |
-| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                                  | Pass                            |
-| `pnpm --filter @ruvee/extension test:extension` (Chromium: options, login, pairing from the web app, exact-origin fill, refusal on another port and of a forged fill, worker restart and resume, lock, capture checks) | Pass                            |
-| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` and kit rotation, activity; INV-01 and INV-16 capture), per engine               | Pass: Chromium, Firefox, WebKit |
-| Remote CI                                                                                                                                                                                                              | **Not run** (nothing pushed)    |
-| Safari, a real Caddy binary, phones, older laptops                                                                                                                                                                     | **Not run**                     |
+| Check                                                                                                                                                                                                                                                                                                                                          | Result                          |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
+| `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                                                                                                                                                             | Pass                            |
+| `pnpm test` (contracts 34, API 68, web 33, vault 41, extension 27, crypto 60)                                                                                                                                                                                                                                                                  | Pass                            |
+| `pnpm test:integration` (52 and 3 todo; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                                                                                                                                | Pass                            |
+| `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                                                                                                                                                              | Pass                            |
+| `pnpm --filter @ruvee/web test:headers` (33: headers, CSP, OPAQUE and crypto probes, local fonts, three engines)                                                                                                                                                                                                                               | Pass                            |
+| `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                                                                                                                                                          | Pass                            |
+| `pnpm --filter @ruvee/extension test:extension` (Chromium, 9: pairing, exact-origin fill and refusals, proven worker restart and resume, auto-lock and expired unlock, `storage.session` refused to page scripts, stale fill after navigation, previous-password unlock, refresh-token reuse, logout, revoked extension reconnecting, capture) | Pass                            |
+| `pnpm --filter @ruvee/web test:vault` (three browsers: setup, pairing, sync, conflict, lock, recovery, password change, removal, `SK` and kit rotation, activity; INV-01 and INV-16 capture), per engine                                                                                                                                       | Pass: Chromium, Firefox, WebKit |
+| Remote CI                                                                                                                                                                                                                                                                                                                                      | **Not run** (nothing pushed)    |
+| Safari, a real Caddy binary, phones, older laptops                                                                                                                                                                                                                                                                                             | **Not run**                     |
 
 ## Running it
 
@@ -132,11 +132,15 @@ D-07, D-05, D-11 to D-15, D-18.
 
 - **Extension gaps:** no account setup or recovery (web only), no item editing, copy or search
   beyond the page's matches, no fill into same-origin frames, no Firefox or Safari, no store
-  packaging. The auto-lock alarm and a page
-  navigating during a fill are covered by unit checks, not by the browser test.
-- **Not built:** the pairing QR code, device labels (`DEVICE_LABEL` rule undecided), the password
-  generator, cards and identities, import/export, SSE push, re-seeding, key rotation, the browser
-  extension, mobile.
+  packaging. A page navigating in the instant between the worker's last check and injection is
+  covered only by the in-page origin check and its unit test.
+- **Not built:** server backup and restore, encrypted export (designs proposed in
+  [backup-restore.md](../architecture/backup-restore.md), blocked on D-28 and D-13), the pairing
+  QR code, device labels (`DEVICE_LABEL` rule undecided), the password generator, cards and
+  identities, SSE push, re-seeding, full key rotation, mobile.
+- **Restoring an older database copy today** brings back devices removed after it, with their
+  sessions (characterization tests in `apps/api/test/backup-restore.int-spec.ts`); D-28 proposes
+  what a restore must undo.
 - Common-password rejection (part of D-09) needs a reviewed list.
 - The web client is trusted code served by the server (D-07, T-18): a malicious server could
   serve code that reads secrets.
@@ -150,7 +154,9 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-The extension's remaining Phase 5 work, in order: copy-to-clipboard through an offscreen document, a browser test of the auto-lock alarm, and an
-extension-hosted vault page (ADR-0009, the higher-assurance client). Then backup and restore
-(Phase 7 export design first) and the Phase 2 independent review (D-19), which still gates real
-data. Mobile (Phase 6) waits on D-05.
+Waiting on the owner: **D-28** (what a server restore undoes) unblocks M1, server backup and
+restore; **D-13** (portable export format) unblocks M2. Both are laid out in
+[backup-restore.md §7](../architecture/backup-restore.md#7-decision-table) with recommendations.
+Work that needs no decision: copy-to-clipboard in the extension through an offscreen document,
+the extension-hosted vault page (ADR-0009), and preparing the independent review (D-19), which
+still gates real data. Mobile (Phase 6) waits on D-05.
