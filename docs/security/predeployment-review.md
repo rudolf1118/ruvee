@@ -4,9 +4,10 @@
 not complete D-19.** It looks for defects before the synthetic private deployment rehearsal.
 
 > **Remediation (2026-10-26):** milestone 1 fixed R1, R7, R8, R9 and R10 (§9); milestone 2 fixed
-> R3, R5, R6, R11, R13, R14, R15, R16, R17 and R20 (§10). Their reproductions are now regression
-> tests. **Open:** R2 and R12 (they need the D-31 protocol decision), R18, R19, R21, R22 and the
-> R23 items. D-19 is open and real-data use stays blocked.
+> R3, R5, R6, R11, R13, R14, R15, R16, R17 and R20 (§10); the D-31 milestone fixed R2 and R12
+> with device proof of possession (§11). Their reproductions are now regression tests. **Open:**
+> R18, R19, R21, R22 and the R23 items. D-31's protocol is unreviewed, D-19 is open and real-data
+> use stays blocked.
 
 ## 1. What was reviewed
 
@@ -50,7 +51,7 @@ Synthetic data only.
 | ID  | Severity                                  | Status                              | Title                                                                                                     |
 | --- | ----------------------------------------- | ----------------------------------- | --------------------------------------------------------------------------------------------------------- |
 | R1  | **High** (critical for the restore model) | **Fixed** (509b092); §9             | A change of case in `/API/` bypasses the maintenance and reopening gate, CSRF checks and bearer parsing   |
-| R2  | **High**                                  | Confirmed, reproduced               | The password plus a known device id gives an active device, and then a lock-out of the owner without `SK` |
+| R2  | **High**                                  | **Fixed** (a98e299, e62a198); §11   | The password plus a known device id gives an active device, and then a lock-out of the owner without `SK` |
 | R8  | **High** (conditional)                    | **Fixed** (5bc18cd, 40dc0bc); §9    | SQL in a restored dump can open the guard itself; the restore then reports success                        |
 | R10 | Medium (deployment)                       | **Fixed** (bfb248a), real Caddy; §9 | An unset `RUVEE_CSP` gives an empty CSP header (fail-open); unknown paths lack `no-store`                 |
 | R7  | Medium                                    | **Fixed** (4367db9); §9             | `?dbname=` in the URL makes `pg_dump` back up a database the synthetic-only check never saw               |
@@ -59,7 +60,7 @@ Synthetic data only.
 | R6  | Medium                                    | **Fixed** (a916561); §10            | Forgotten-password recovery on an enrolled browser erases its unsynced edits without warning              |
 | R3  | Medium                                    | **Fixed** (b990cd0); §10            | The per-username login throttle is checked only at `start`; parallel guesses all count                    |
 | R11 | Medium                                    | **Fixed** (56eef75); §10            | Anyone can keep a restored installation closed by using up the reopening code                             |
-| R12 | Low                                       | Confirmed by reading                | Reopening's password path completes without proof of `AK` (same root as R2)                               |
+| R12 | Low                                       | **Fixed** (a98e299, e62a198); §11   | Reopening's password path completes without proof of `AK` (same root as R2)                               |
 | R13 | Low                                       | **Fixed** (233333d); §10            | `restore-reopen-code` can race a reopening's completion                                                   |
 | R14 | Low                                       | **Fixed** (d239bb5); §10            | The maintenance gate caches `none` as open, not only `open`                                               |
 | R15 | Low                                       | **Fixed** (6ed27df); §10            | With the `docker exec` prefix, killing the client does not stop `pg_restore`; an early exit can hang LOAD |
@@ -144,6 +145,7 @@ Synthetic data only.
 - **Fix (needs a decision):** bind enrolled devices to a credential issued at enrollment, for example a per-device secret or key whose hash or public key the server stores and checks at login. Otherwise always create a new pending device.
   - Separately, consider a key-confirmation value the server can check on wrap replacement, for example an `AK`-derived verifier, so a session without `AK` cannot replace wraps.
   - Both are protocol changes. Record them as a new decision; do not just add a quick patch.
+- **Fixed (§11):** D-31 option A. A known device id now gives a pre-proof session limited to an allowlist; acting as the device needs its Ed25519 key, and wrap replacement also needs an `AK`-derived proof checked against the stored `AVPK`. Step 4 of the reproduction now fails at step-up.
 
 ### R8. SQL inside a restored dump can open the guard (High, conditional)
 
@@ -373,7 +375,7 @@ Synthetic data only.
 
 ### R12–R22. Low
 
-- **R12. Reopening's password path completes without proof of `AK`** (`reopen.service.ts:294-330`, header checks only). Whoever holds the code, the old password and a device id can install their own password and junk wraps, locking the owner out. The code is host-issued, and the host holder is the owner in this model, so this is low here. It has the same root and fix as R2.
+- **R12. Reopening's password path completes without proof of `AK`** (`reopen.service.ts:294-330`, header checks only). Whoever holds the code, the old password and a device id can install their own password and junk wraps, locking the owner out. The code is host-issued, and the host holder is the owner in this model, so this is low here. It has the same root and fix as R2. **Fixed (§11):** the reopening login signs with the restored device key, and the completion carries `DSK` and `AVSK` proofs; a password-only completion is refused.
 - **R13. `restore-reopen-code` racing completion.**
   - `complete` authenticates the reopen session before its transaction. Inside it, it checks only that the linked code has `revoked_at IS NULL` (`reopen.service.ts:319`).
   - `issueCode` (`server-restore.ts:589-605`) revokes only unconsumed codes and does not lock the guard row. A host revocation committed in between is ignored.
@@ -452,7 +454,7 @@ Synthetic data only.
 | INV-02, INV-03, INV-04 envelopes             | Held                                                                                                            | `packages/crypto` read: fresh CSPRNG nonce, AAD rebuilt from expectations, typed fail-closed errors; crypto suite run                                                                       |
 | INV-05 KDF profiles                          | Held                                                                                                            | Registry read; unknown profiles refused before any library call                                                                                                                             |
 | V-15 containment                             | Held                                                                                                            | The only libsodium import is `packages/crypto/src/libsodium.ts`; no direct use in `apps/` or `packages/vault` source. The lint boundary is missing in `packages/vault` and `apps/api` (gap) |
-| INV-06 session alone never grants decryption | Held for decryption; **enrollment claim broken (R2)**                                                           | R2 reproduction                                                                                                                                                                             |
+| INV-06 session alone never grants decryption | Held for decryption; enrollment claim broken (R2), **fixed by D-31 (§11)**                                      | R2 reproduction                                                                                                                                                                             |
 | INV-07 verify before applying                | **Broken for a device after a lost commit reply (R5)**                                                          | R5 reproduction                                                                                                                                                                             |
 | INV-08 no silent overwrite                   | Held in `rebase`; R5 overlays an older own edit                                                                 | Code read, R5                                                                                                                                                                               |
 | INV-09 keyset never lower                    | Held on refresh; recovery resets the floor (R20)                                                                | Code read                                                                                                                                                                                   |
@@ -472,7 +474,7 @@ Synthetic data only.
 ## 4. Coverage gaps (tests that do not enforce what is claimed)
 
 - ~~Every maintenance, reopening and CSRF test uses lower-case paths only (R1).~~ Closed (§9).
-- `auth.int-spec.ts` asserts a known device id yields an active device (R2 as intended behaviour). No test asks for proof of possession.
+- ~~`auth.int-spec.ts` asserts a known device id yields an active device (R2 as intended behaviour). No test asks for proof of possession.~~ Closed (§11).
 - The throttle tests are sequential (R3). Reauth and reopening throttling are untested.
 - The lost-reply engine test uses one device (R5). Recovery is tested only on a new device (R6, R20).
 - ~~The LOAD-failure test only flips a byte. It never substitutes a validly encrypted dump, adds padding, or swaps the meta between hash and read (R8, R9).~~ Closed for substitution and swaps (§9); padding is covered by the size check.
@@ -506,7 +508,7 @@ Synthetic data only.
 ## 7. Prioritized remediation plan
 
 Items 1 to 4 and 6 are done (milestone 1, §9). Items 7, 8, 9 and 10 are done (milestone 2,
-§10), except R12 in item 5. Item 5 (R2, R12) waits for the D-31 decision. P2 is open.
+§10). Item 5 (R2, R12) is done (D-31 milestone, §11), pending review of the protocol. P2 is open.
 
 **Before the synthetic rehearsal (P0):**
 
@@ -625,3 +627,102 @@ multi-instance API (V1 is one process; the in-memory windows are per process).
 R21, R22 and the R23 items. Two R23 items were addressed by milestone 1's R8 work (the
 schema-qualified guard queries and the empty-target check), and the item stays open for the
 rest.
+
+## 11. D-31 milestone (2026-10-26): R2, R12
+
+Development direction D-31 option A, as approved: a per-device Ed25519 key (`DSK`), sealed under
+`K_local` and usable only while unlocked, plus an `AK`-derived verification key (`AVPK`) for
+operations that replace key material. The protocol is [device-proof.md](device-proof.md) and
+[ADR-0011](../adr/0011-device-proof-of-possession.md); it was written and made consistent before
+any code. **It has not been independently reviewed** (device-proof.md §12, D-19). Local commits on
+`vault/web-vault`, none pushed.
+
+| Commit    | Scope   | Change                                                                                              |
+| --------- | ------- | --------------------------------------------------------------------------------------------------- |
+| `6c127d7` | spec    | device-proof.md and ADR-0011, before implementation                                                 |
+| `3876ad1` | crypto  | Guarded `crypto_sign_*`, the `rvakver1` context, the signed-byte encoders, `pair-req-2`             |
+| `a98e299` | API     | Login challenge, pre-proof sessions, proof nonces, tiered authorization, completion checks, restore |
+| `e62a198` | clients | Engine, web and extension hold, seal, load and wipe `DSK`; every bound operation signed; migration  |
+| `640a12b` | docs    | ADR-0002, authentication, enrollment, T-14, INV-24, review packet, migration guide                  |
+| `3d9b8bf` | tests   | Operation proofs bound to account, operation and session; a used nonce stays used                   |
+
+**What changed for R2.** A password plus a device id now gives a pre-proof session. It reaches
+`devices/current`, `account/keys`, a `session_proof` nonce, `session-proof` and logout only,
+lapses after 10 minutes, and no longer signs the genuine device out. Acting as the device needs a
+signature with its `DSK`. Password, Secret Key and Recovery Kit changes also need a fresh
+single-use nonce and an `AVSK` proof checked against the stored `AVPK`; device revocation needs a
+nonce-bound `DSK` proof after step-up; sync commits need a proven session. Device keys are
+accepted only with the setup token, an approving device's proof over the exact key (the pairing
+MAC now covers it), the Recovery Key plus `AK`, or a reopening.
+
+**What changed for R12.** The reopening password path signs `reopen/login/finish` with the restored
+device key, and `reopen/complete` carries `DSK` and `AVSK` proofs. A completion that is not backed
+by `AK` is refused with `device_key_mismatch` or `device_proof_failed`.
+
+**Regression evidence** (real API and PostgreSQL unless noted):
+
+- `r2-r3-login.int-spec.ts`, "REVIEW R2 (regression)":
+  - the pre-proof session reaches only the allowlist, and the device's proven session survives;
+  - it cannot step up, replace wraps, rotate the kit, revoke devices or commit. Baseline step 4,
+    the `0x41` wrap, now fails at step-up, and the owner's password still logs in;
+  - a login proof made with a substituted key, for another operation, or for another login fails;
+  - session-proof nonces are bound to their session and operation, single-use, expire, and only
+    one of two concurrent uses succeeds;
+  - an operation proof (device revocation, after step-up) signed for another account, sent with
+    a nonce of another operation or another session, or reusing a nonce that already succeeded
+    is refused, and the second device stays active;
+  - an unproven session lapses after 10 minutes;
+  - token refreshes keep the proof status, proven or not.
+- `reopen.int-spec.ts`, "REVIEW R12 (regression)": a password-only reopening and a junk wrap are
+  refused; the restored key and `AK` complete it.
+- `recovery.int-spec.ts`: R-08, where `RAK` alone with another key gives another `AVPK` and is
+  refused; the recovery installs the new `DPK`.
+- `pairing.int-spec.ts`: a device key swapped after A read the request is not enrolled.
+- `restore.int-spec.ts`: proof nonces and sessions from the snapshot are gone after restore.
+- `account-security.int-spec.ts`: a password change with a device proof but no valid `AVSK`
+  proof is refused; a revocation signed for one reason and sent with another is refused, and its
+  nonce is burnt. Password, Secret Key and kit changes and revocation succeed with the right
+  proofs.
+- `@ruvee/crypto` `device-proof.spec.ts`: RFC 8032 vectors; the signed bytes computed
+  independently; every field changes the signature; an `AVSK` signature never verifies as a device.
+- Engine against the FakeServer, which verifies every proof with the same code,
+  `d31-device-proof.test.ts`:
+  - setup registers `DPK` and `AVPK`, and the key is stored sealed;
+  - unlock proves a new session, and a locked engine cannot sign;
+  - a pre-D-31 device keeps its pending edit offline and is migrated with the kit, keeping it;
+  - an extension service-worker restart (resume from `AK`) still signs;
+  - an enrollment interrupted after approval becomes a new pending device.
+
+**Checks run** (2026-10-26, task-owned PostgreSQL 18.6 container):
+
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build`: pass.
+- `pnpm test`: pass. The counts are contracts 40, crypto 67, API 83, extension 27, web 43, and
+  vault 77 (+1 skipped fixture regenerator).
+- `pnpm test:integration`: 23 files, 158 tests: pass. No `ruvee_it_*` or `ruvee_e2e_*` database
+  and no loader role was left afterwards.
+- Browser `test:vault` 1, `test:restore` 2 and `test:import` 1, each in **Chromium, Firefox and
+  WebKit**: pass. Firefox and WebKit are Playwright's builds, not Safari.
+- Chromium only: `test:headers` 33, extension 9, `test:e2e` 8 (+4 skipped as before): pass.
+- `test:caddy` (Caddy 2.11.7): 87 checks: pass.
+
+**Not run, or partly covered:**
+
+- The extension suite runs in Chromium only, since the extension targets Chromium. Its
+  service-worker restart is covered by the engine test above and the existing extension suite,
+  not by a browser test that kills the worker mid-operation.
+- Safari itself; a multi-instance API, since nonces are in the database but login challenges are
+  in process memory.
+- An independent review of the protocol (D-19).
+
+**Residual risk, recorded in T-14 and INV-24:**
+
+- A pre-proof session still exposes the encrypted key material. This is useless without `SK` and
+  is already in every database copy.
+- Code running in the unlocked origin, through XSS or a malicious extension, can sign. A stolen
+  proven session can do tier-2 work (sync commits, ending sessions) until it is revoked.
+- Migration re-enrolls one device per Recovery Kit rotation.
+- A valid signature proves possession of a key for one payload, never that a wrap or envelope in
+  that payload decrypts.
+
+**Still open:** R18, R19, R21, R22 and the R23 items (P2). D-19 stays open and real-data use stays
+blocked.
