@@ -44,6 +44,23 @@ const config = {
 };
 const USERNAME = 'synthetic-backup-sentinel-user';
 
+/** The start of a custom-format archive (pg_backup_archiver.c WriteHead) naming `database`. */
+function archiveHeader(database: string): Buffer {
+  const int = (n: number) => {
+    const b = Buffer.alloc(5);
+    b.writeUInt32LE(n, 1);
+    return b;
+  };
+  const name = Buffer.from(database);
+  return Buffer.concat([
+    Buffer.from('PGDMP'),
+    Buffer.from([1, 16, 0, 4, 8, 1, 0]),
+    ...Array.from({ length: 7 }, () => int(0)),
+    int(name.length),
+    name,
+  ]);
+}
+
 describe('encrypted server backups (real dumps, real age)', () => {
   let h: Harness;
   let key: TestBackupKey;
@@ -199,11 +216,13 @@ describe('encrypted server backups (real dumps, real age)', () => {
     it('publishes nothing when pg_dump fails after writing part of a dump', async () => {
       const failing: PgTools = {
         ...tools,
-        dump: () => {
-          // Stands in for pg_dump: 300 kB of output, then a failure exit status.
-          const child = spawn('sh', ['-c', 'head -c 300000 /dev/urandom; exit 3'], {
-            stdio: ['ignore', 'pipe', 'ignore'],
+        dump: (target) => {
+          // Stands in for pg_dump: a valid archive header for the checked database (so the
+          // header check passes), 300 kB of output, then a failure exit status.
+          const child = spawn('sh', ['-c', 'cat; head -c 300000 /dev/urandom; exit 3'], {
+            stdio: ['pipe', 'pipe', 'ignore'],
           });
+          child.stdin.end(archiveHeader(target.database));
           const done = new Promise<void>((resolve, reject) => {
             child.on('close', (code) => {
               if (code === 0) resolve();

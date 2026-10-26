@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { Readable, Writable } from 'node:stream';
 import { z } from 'zod';
+import { libpqConninfo, toolEnvironment, type DbTarget } from './db-target.js';
 
 /**
  * The PostgreSQL client tools a backup and a restore run (`pg_dump`, `pg_restore`). They must be
@@ -22,9 +23,12 @@ export interface ToolRun {
 
 export interface PgTools {
   /** `pg_dump --format=custom` of the database to `stdout`. */
-  dump(databaseUrl: string, excludeTables: readonly string[]): ToolRun & { stdout: Readable };
+  dump(
+    target: DbTarget,
+    exclude: { readonly tables: readonly string[]; readonly schemas: readonly string[] },
+  ): ToolRun & { stdout: Readable };
   /** `pg_restore --single-transaction` into the database, reading the dump from `stdin`. */
-  restore(databaseUrl: string): ToolRun & { stdin: Writable };
+  restore(target: DbTarget): ToolRun & { stdin: Writable };
   /** `pg_restore -f -`: the dump as SQL text, with no database (for the R13 scan). */
   toSql(): ToolRun & { stdin: Writable; stdout: Readable };
 }
@@ -43,19 +47,12 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
     : [];
   const host = env.RUVEE_PG_TOOLS_HOST;
 
-  const target = (databaseUrl: string) => {
-    const url = new URL(databaseUrl);
-    const password = decodeURIComponent(url.password);
-    url.password = '';
-    if (host) url.host = host;
-    return { url: url.toString(), password };
-  };
-
   const run = (tool: string, args: string[], password: string, stdin: boolean, stdout: boolean) => {
     const [command, ...before] = prefix.length > 0 ? prefix : [tool];
     const argv = prefix.length > 0 ? [...before, tool, ...args] : args;
     const child: ChildProcess = spawn(command ?? tool, argv, {
-      env: { ...process.env, PGPASSWORD: password },
+      // No inherited PG* variable can redirect the tool (predeployment-review R7).
+      env: toolEnvironment(password),
       stdio: [stdin ? 'pipe' : 'ignore', stdout ? 'pipe' : 'ignore', 'pipe'],
     });
     let stderr = '';
@@ -88,26 +85,26 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
   };
 
   return {
-    dump(databaseUrl, excludeTables) {
-      const { url, password } = target(databaseUrl);
+    dump(target, exclude) {
       const r = run(
         'pg_dump',
         [
           '--format=custom',
           '--no-owner',
           '--no-privileges',
-          ...excludeTables.map((t) => `--exclude-table=${t}`),
-          `--dbname=${url}`,
+          ...exclude.tables.map((t) => `--exclude-table=${t}`),
+          ...exclude.schemas.map((n) => `--exclude-schema=${n}`),
+          // Explicit libpq keywords from the one parsed target (db-target.ts), never a URL.
+          `--dbname=${libpqConninfo(target, host)}`,
         ],
-        password,
+        target.password,
         false,
         true,
       );
       if (!r.child.stdout) throw new Error('pg_dump has no output stream');
       return { stdout: r.child.stdout, done: r.done, kill: r.kill };
     },
-    restore(databaseUrl) {
-      const { url, password } = target(databaseUrl);
+    restore(target) {
       const r = run(
         'pg_restore',
         [
@@ -115,9 +112,9 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
           '--no-owner',
           '--no-privileges',
           '--single-transaction',
-          `--dbname=${url}`,
+          `--dbname=${libpqConninfo(target, host)}`,
         ],
-        password,
+        target.password,
         true,
         false,
       );

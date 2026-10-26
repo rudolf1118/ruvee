@@ -37,6 +37,11 @@ import {
   revokeDeviceInReview,
 } from './server-restore.js';
 
+// Operator commands act only on the URLs they are given: no inherited PG* variable (PGSERVICE,
+// PGHOSTADDR, PGOPTIONS, PGDATABASE…) may redirect node-pg or the tools (predeployment-review R7).
+for (const key of Object.keys(process.env))
+  if (key.toUpperCase().startsWith('PG')) Reflect.deleteProperty(process.env, key);
+
 const apiRoot = new URL('../../', import.meta.url).pathname;
 
 function option(args: string[], name: string): string | undefined {

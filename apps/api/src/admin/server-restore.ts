@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { pipeline as streamPipeline, type Readable, type Writable } from 'node:stream';
-import pg from 'pg';
+import type pg from 'pg';
 import { z } from 'zod';
 import {
   ageFailure,
@@ -29,6 +29,7 @@ import {
   REOPEN_CODES_DDL,
   REOPEN_CODES_TABLE,
 } from '../reopen/reopen-codes.js';
+import { connectTo, DumpHeaderCheck, parseDbTarget, type DbTarget } from './db-target.js';
 import type { PgTools } from './pg-tools.js';
 
 /**
@@ -63,17 +64,24 @@ const fromBackupError = (error: unknown, fallback: RestoreError['stage']): Resto
   return new RestoreError(fallback, error instanceof Error ? error.message : 'failed');
 };
 
+/** Parses the URL once (db-target.ts) and refuses it as `stage` when it is not acceptable. */
+function targetOf(url: string, stage: RestoreError['stage']): DbTarget {
+  try {
+    return parseDbTarget(url);
+  } catch (error) {
+    throw new RestoreError(stage, error instanceof Error ? error.message : 'invalid URL');
+  }
+}
+
+/** A client on exactly the named database (it checks `current_database()`). */
 async function withClient<T>(url: string, run: (client: pg.Client) => Promise<T>): Promise<T> {
-  const client = new pg.Client({ connectionString: url });
-  await client.connect();
+  const client = await connectTo(targetOf(url, 'verify'));
   try {
     return await run(client);
   } finally {
     await client.end();
   }
 }
-
-const databaseName = (url: string) => decodeURIComponent(new URL(url).pathname.slice(1));
 
 // ---- Backup ----
 
@@ -124,8 +132,10 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
       throw fromBackupError(error, 'backup');
     }
   })();
-  const name = databaseName(options.databaseUrl);
-  if (!SYNTHETIC_DATABASE.test(name))
+  // The name is checked on the one parsed target, which node-pg and pg_dump both use, and again
+  // on the connection (current_database) and in pg_dump's own archive header (R7).
+  const target = targetOf(options.databaseUrl, 'backup');
+  if (!SYNTHETIC_DATABASE.test(target.database))
     throw new RestoreError('backup', 'only a synthetic ruvee_it_* or ruvee_e2e_* database');
   let outStat;
   try {
@@ -164,7 +174,10 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     written.push(path);
     return path;
   };
-  const run = options.tools.dump(options.databaseUrl, [GUARD_TABLE, REOPEN_CODES_TABLE]);
+  const run = options.tools.dump(target, {
+    tables: [GUARD_TABLE, REOPEN_CODES_TABLE],
+    schemas: [],
+  });
   const onAbort = () => {
     run.kill();
   };
@@ -173,7 +186,13 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
     options.signal?.throwIfAborted();
     const plain = new Tap();
     // pg_dump's output goes straight into encryption; an error on either side destroys both.
-    const source: Readable = streamPipeline(run.stdout, plain, () => undefined);
+    // Nothing passes before the archive header names the checked database.
+    const source: Readable = streamPipeline(
+      run.stdout,
+      new DumpHeaderCheck(target.database),
+      plain,
+      () => undefined,
+    );
     const [dump] = await Promise.all([
       encryptToFile(recipient, source, track(partial.dump), open, options.signal),
       // A pg_dump that fails after writing part of a dump still ends its output normally:
@@ -283,7 +302,7 @@ export interface RestoreResult {
  * happens, the guard is still `restoring`: nothing here can make the installation openable.
  */
 async function load(backup: Awaited<ReturnType<typeof openBackup>>, url: string, tools: PgTools) {
-  const run = tools.restore(url);
+  const run = tools.restore(targetOf(url, 'load'));
   // A pg_restore that exits early makes writes fail; `run.done` reports why.
   run.stdin.on('error', () => undefined);
   const { plaintext, tap } = await backup.decryptDump();
