@@ -1,9 +1,9 @@
 # D-31 (proposed): device proof of possession and wrap-replacement checks
 
-> **Status: proposal for the owner's decision. Not approved, not implemented.** It answers
-> predeployment-review R2 (and R12, which has the same root). Nothing here is a reviewed
-> cryptographic protocol; whichever option is chosen must be written up as an ADR, given test
-> vectors and reviewed independently (D-19) before real data. Until then R2 and R12 stay open.
+> **Status:** option A was selected by the owner as the development direction on 2026-10-26. The
+> protocol that implements it is [device-proof.md](device-proof.md) (ADR-0011), which supersedes
+> the sketch of option A below where they differ (key storage before enrollment, nonces per
+> operation, the full authorization table). Not reviewed; D-19 still applies.
 
 ## 1. The problem, in Ruvee's own terms
 

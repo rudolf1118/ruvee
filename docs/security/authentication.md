@@ -152,6 +152,15 @@ The same single-use rule applies to `reauth`.
 Error responses never distinguish "unknown user" from "wrong password", and contain no OPAQUE
 internals ([api-design.md](../architecture/api-design.md#errors)).
 
+### Device proof (D-31 A, 2026-10-26)
+
+`login/start` also returns a 32-byte `challenge`. An enrolled device signs it with its device
+key at `login/finish` (`deviceProof`), and only then is the session **proven**. Without a valid
+proof an active device gets a pre-proof session: 10 minutes, five allowlisted routes, and it ends
+none of the device's other sessions; it becomes proven through `POST /auth/session-proof`. The
+full protocol, including step-up and every sensitive operation, is
+[device-proof.md](device-proof.md).
+
 ## 5. Sessions
 
 | Client                       | Credential                                                                                                 | Stored on client                                                                                                                             | Lifetime (proposed; see [D-08](../architecture/open-decisions.md)) |

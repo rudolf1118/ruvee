@@ -23,6 +23,10 @@ Use libsodium everywhere: `libsodium-wrappers-sumo` on web and extension, and
 - keyed BLAKE2b and `crypto_kdf_derive_from_key`
 - `crypto_box_seal`
 - `randombytes_buf`
+- Ed25519 (`crypto_sign_keypair`, `crypto_sign_seed_keypair`, `crypto_sign_detached`,
+  `crypto_sign_verify_detached`), for device proof of possession only
+  ([ADR-0011](0011-device-proof-of-possession.md), added 2026-10-26 with D-31 option A as the
+  development direction; not reviewed)
 
 ## Consequences
 

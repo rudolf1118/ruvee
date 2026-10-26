@@ -31,6 +31,14 @@ device approved it, timestamps and status. The user-chosen name is stored encryp
 (`DEVICE_LABEL`). A pending device's encrypted-data endpoints return `403`, which is a
 second line of defense. Encrypted data alone would not let it decrypt anything.
 
+**Device keys (D-31 A, 2026-10-26).** Each enrolled device also holds an Ed25519 key pair; the
+server stores the public half in its device record and accepts it only at setup, through a
+pairing approval, through the Recovery Key or at a reopening. The private half is a local record
+sealed under `K_local`. A session acts as the device only after proving the key
+([device-proof.md](device-proof.md)). In pairing, B generates its key at step 4 and `req_mac`
+(`ruvee/v1/pair-req-2`) also covers it; A's approval at step 8 carries A's own proof over B's key;
+B proves its session before step 9 and seals its key after it.
+
 ## 2. First device (account creation)
 
 This is part of the account bootstrap in

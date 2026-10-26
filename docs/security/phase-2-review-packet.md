@@ -237,8 +237,14 @@ has been reviewed by anyone other than its authors.
 10. **OPAQUE integration:** `apps/api/src/auth/` and both clients' D-02 configuration.
 11. **Web delivery:** CSP and headers, `deploy/Caddyfile`, local fonts, and the trust model of a
     server-served client (D-07, R-01).
+12. **Device proof of possession (D-31 A, added 2026-10-26):** the claims listed in
+    [device-proof.md §12](device-proof.md#12-claims-that-need-independent-review-d-19):
+    `packages/crypto/src/device-proof.ts` (signed bytes, payload encoding, the `rvakver1` seed),
+    the `pair-req-2` MAC, `apps/api/src/sessions/proof.service.ts`, `completion-proof.ts`, the
+    guard's pre-proof allowlist, every operation in device-proof.md §7, the nonce lifecycle, and
+    the engine's key storage, lock wiping and signing (`packages/vault/src/vault-engine.ts`).
 
-12. **Server backup and restore** (§4a): `apps/api/src/admin/backup-files.ts` (the use of
+13. **Server backup and restore** (§4a): `apps/api/src/admin/backup-files.ts` (the use of
     `age-encryption`, the manifest and metadata checks, bounds, the identity file rules) and
     `server-restore.ts` (publication order, cleanup on failure, VERIFY before PREPARE, LOAD's
     end-of-input rule, the APPLY POLICY transaction), the guard's fail-closed reading in
@@ -246,7 +252,7 @@ has been reviewed by anyone other than its authors.
     (password checked against the local wrap, the existing format, the self-check) and
     `startOver` preconditions. Also the dependency `age-encryption` 0.3.1 itself.
 
-13. **Reopening** (D-30 B): `apps/api/src/reopen/` (code checks, failure counting, the atomic
+14. **Reopening** (D-30 B): `apps/api/src/reopen/` (code checks, failure counting, the atomic
     consumption, the completion transaction), `MaintenanceService.gate`, the `reopen` access level
     in `access.guard.ts`, `SessionService.authenticateReopen`, and the engine's `reopenBegin`,
     coded `recoveryBegin` and `finishReopenOnThisDevice`.

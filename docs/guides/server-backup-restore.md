@@ -40,6 +40,16 @@ then `DATABASE_URL=… pnpm --filter @ruvee/api admin init`. Until then the API 
 `503 maintenance` to everything except health checks. `init` refuses a database that was
 restored (it opens only through its reopening, §5) or is already initialized.
 
+## 1b. Device keys (D-31) and devices set up before them
+
+Every device holds its own Ed25519 key and proves it when it signs in
+([device-proof.md](../security/device-proof.md)); the password alone signs in only with a short,
+restricted session. A device set up before this change (synthetic development data only) opens its
+local copy but cannot sync until it re-enrolls: lock it and choose **Use your Recovery Kit** on
+the lock screen. Its local vault and unsynced edits are kept. A restored server has the device keys
+of its snapshot; a snapshot from before device keys can only be reopened with the Recovery Kit
+path (§5).
+
 ## 2. Make the key pair (once, offline)
 
 Make the identity on a machine you trust, **not** on the server, with the maintained `age` tool

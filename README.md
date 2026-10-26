@@ -56,6 +56,15 @@ The API serves a database only once it is marked as a fresh installation (predep
 R14); until then every API request answers `503 maintenance`. Once per new database, after its
 migrations: `set -a; . ./.env; set +a; pnpm --filter @ruvee/api build && pnpm --filter @ruvee/api admin init`.
 
+**Development migration to device keys (D-31, 2026-10-26).** Devices now prove possession of their
+own key ([device-proof.md](docs/security/device-proof.md)). The migration
+`20261026200000_device_proof` adds nullable columns and a table; it changes no row and erases
+nothing. After it, every existing session lacks a proof and keeps no privilege, and a device set
+up earlier opens its local vault but cannot sync. On each such device, lock it and choose **Use
+your Recovery Kit**: the recovery keeps the browser's vault and unsynced edits, enrolls a device
+key and, the first time, the account's verification key. Each recovery issues a new Recovery Kit;
+finish one device before the next. A browser in the middle of pairing simply pairs again.
+
 ### Inspecting it
 
 - Web home page: <http://127.0.0.1:3100/>
