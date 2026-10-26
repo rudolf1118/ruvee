@@ -33,7 +33,7 @@ function expectError(res: request.Response, code: keyof typeof API_ERRORS) {
  * tests describe the current behaviour on purpose: they are the evidence for D-28, which decides
  * what a restore must undo. They use the format-neutral snapshot scaffolding, not a backup format.
  */
-describe('restoring an older database copy (characterization, input to D-28)', () => {
+describe('restoring a raw older database copy (characterization, why D-28 exists)', () => {
   let h: Harness;
   let account: SyntheticAccount;
   let owner: string;
@@ -190,8 +190,7 @@ describe('restoring an older database copy (characterization, input to D-28)', (
     await h.get('/api/v1/recovery/material', cookie).expect(200);
   });
 
-  // The behaviour M1 must have once D-28 is decided (backup-restore.md §3.6 and §6).
-  it.todo('after a restore, every cookie, token and recovery session is ended (D-28)');
-  it.todo('after a restore, open pairings and unused setup tokens are gone (D-28)');
-  it.todo('after a restore, a server_restored event and a device review are required (D-28)');
+  // What the restore tool does about all of this (revised D-28, backup-restore.md §3.6) is tested
+  // with real dumps in restore.int-spec.ts and restore-edges.int-spec.ts. These tests stay: they
+  // show why the tool's policy step is needed, because a raw database copy undoes nothing.
 });

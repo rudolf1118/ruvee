@@ -23,7 +23,7 @@
     },
     "test:integration": {
       "dependsOn": ["^build", "generate"],
-      "env": ["DATABASE_URL"],
+      "env": ["DATABASE_URL", "RUVEE_PG_TOOLS_PREFIX", "RUVEE_PG_TOOLS_HOST"],
       "cache": false
     },
     "test:e2e": {

@@ -15,7 +15,7 @@ function errorText(e: unknown): string {
 }
 
 /** Hands ciphertext to the browser as a file. Nothing is uploaded (backup-restore.md §4.7). */
-function download(fileName: string, text: string) {
+export function download(fileName: string, text: string) {
   const url = URL.createObjectURL(new Blob([text], { type: 'application/vnd.ruvee.export+json' }));
   const link = document.createElement('a');
   link.href = url;

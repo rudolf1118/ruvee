@@ -65,6 +65,10 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return 'You can import only into a vault that has never held an item, and only once. Nothing was changed.';
     case 'integrity':
       return "The server's copy of your keys didn't pass Ruvee's checks. Nothing was changed.";
+    case 'server_maintenance':
+      return 'The server is being restored by its owner and is not available yet. Your local copy is kept, read-only.';
+    case 'export_first':
+      return 'Download a verified copy first, or choose to erase without one.';
     case 'internal':
       return 'Something went wrong. Try again.';
   }

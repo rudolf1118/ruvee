@@ -199,6 +199,8 @@ function operation(options: {
     ...ACCESS_ERRORS[options.access],
     ...(options.errors ?? []),
     'internal_error',
+    // Every API operation while a restored installation is in review (backup-restore.md §3.5).
+    'maintenance',
   ];
   return {
     operationId: options.operationId,

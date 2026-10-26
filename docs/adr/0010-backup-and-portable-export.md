@@ -1,6 +1,7 @@
 # ADR-0010: Server backups for disaster recovery; portable exports as envelope containers
 
-- Status: Proposed. D-13 option A approved by the owner for development (2026-10-26); D-28 pending
+- Status: Proposed. D-13 option A approved by the owner for development (2026-10-26); D-28 revised
+  and specified by the owner (2026-10-26); D-29 (required) and D-30 open
 - Date: 2026-10-26
 - Specification: [backup-restore.md](../architecture/backup-restore.md)
 
@@ -15,9 +16,11 @@ account-recovery.md §7 fixes constraints for both, and D-13 leaves the export f
 
 - **First milestone (M1): operational server backup.** `ruvee-admin backup` writes a consistent
   `pg_dump` with a checksummed sidecar; the OPAQUE setup file is never part of it (INV-21).
-  `ruvee-admin restore` restores into an empty database only, then ends every session, deletes
-  open pairings, and records a restore event that makes the web app ask for a device review
-  (D-28).
+  `ruvee-admin restore` restores into an empty database only, in maintenance mode: every
+  session, token, recovery session, pairing and unused setup token is invalidated, and the API
+  refuses every request until the owner completes a review with local tooling on the host
+  (revised D-28). Dumps are encrypted at rest before any real-data use (D-29, recommended `age`
+  to an offline-held X25519 identity).
 - **Second milestone (M2): portable export**, if D-13 option A is approved: one JSON container of
   envelopes Ruvee already defines (the keyset, the newest verified manifest, the item records)
   plus an `AK_WRAP_RECOVERY` made at export time from the Recovery Key the user types. No new
@@ -28,12 +31,13 @@ account-recovery.md §7 fixes constraints for both, and D-13 leaves the export f
 ## Consequences
 
 - Server loss becomes recoverable with tested steps; what a restore cannot undo is stated, and
-  revoked devices coming back is handled by a forced review rather than ignored.
+  revoked devices coming back is handled by a mandatory review before anything reopens.
 - The export's security rests on the constructions the vault already uses (themselves still
   awaiting independent review, D-19) and on the 128-bit Recovery Key: a stolen export file
   cannot be guessed offline.
 - Losing the Recovery Kit makes exports made with it unreadable forever.
-- Devices ahead of a restored server stay read-only until re-seeding exists (M3).
+- Devices ahead of a restored server stay read-only until re-seeding exists (M3); they can make
+  an offline export of their verified copy, and are never erased without the user's request.
 
 ## Alternatives considered
 

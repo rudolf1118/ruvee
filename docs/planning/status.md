@@ -66,13 +66,13 @@ A complete single-user web vault across several browsers, against the real API a
   (keep mine, keep theirs, keep both). Changes from other devices arrive by polling (60 s, focus,
   "Sync now").
 
-## Verified (locally, 2026-10-25)
+## Verified (locally, 2026-10-26)
 
 | Check                                                                                                                                                                                                                                                                                                                                          | Result                          |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------- |
 | `pnpm format:check`, `pnpm lint`, `pnpm typecheck`                                                                                                                                                                                                                                                                                             | Pass                            |
-| `pnpm test` (contracts 34, API 70, web 33, vault 54, extension 27, crypto 60)                                                                                                                                                                                                                                                                  | Pass                            |
-| `pnpm test:integration` (55 and 3 todo; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database)                                                                                                                                                                                                                                | Pass                            |
+| `pnpm test` (contracts 35, API 70, web 33, vault 59 and 1 skipped, extension 27, crypto 60)                                                                                                                                                                                                                                                    | Pass                            |
+| `pnpm test:integration` (67; real OPAQUE and envelopes, each suite on its own `ruvee_it_*` database; the restore suites run real `pg_dump`/`pg_restore` 18)                                                                                                                                                                                    | Pass                            |
 | `pnpm --filter @ruvee/crypto test:browsers` (24 checks, Chromium/Firefox/WebKit, page and worker)                                                                                                                                                                                                                                              | Pass                            |
 | `pnpm --filter @ruvee/web test:headers` (33: headers, CSP, OPAQUE and crypto probes, local fonts, three engines)                                                                                                                                                                                                                               | Pass                            |
 | `pnpm --filter @ruvee/web test:e2e` (design preview and welcome screen on `next dev`)                                                                                                                                                                                                                                                          | Pass                            |
@@ -142,13 +142,17 @@ D-07, D-05, D-11 to D-15, D-18.
   beyond the page's matches, no fill into same-origin frames, no Firefox or Safari, no store
   packaging. A page navigating in the instant between the worker's last check and injection is
   covered only by the in-page origin check and its unit test.
-- **Not built:** server backup and restore (blocked on D-28), importing into a vault that already
-  holds items (merge), the pairing
+- **Server backup and restore (M1) is not usable yet.** The revised D-28 restore (maintenance
+  mode, local review, invalidation, client handling) is implemented and tested on synthetic
+  databases only. Dumps are not encrypted at rest (D-29, required), so `ruvee-admin backup`
+  refuses real databases; forcing a password and kit change after a restore (D-30) is open.
+- **Not built:** dump encryption (D-29), importing into a vault that already holds items (merge),
+  the pairing
   QR code, device labels (`DEVICE_LABEL` rule undecided), the password generator, cards and
   identities, SSE push, re-seeding, full key rotation, mobile.
-- **Restoring an older database copy today** brings back devices removed after it, with their
-  sessions (characterization tests in `apps/api/test/backup-restore.int-spec.ts`); D-28 proposes
-  what a restore must undo.
+- **A raw database copy** (not through `ruvee-admin restore`) still brings back devices removed
+  after it, with their sessions (`apps/api/test/backup-restore.int-spec.ts`); only the restore
+  tool applies the D-28 policy.
 - Common-password rejection (part of D-09) needs a reviewed list.
 - The web client is trusted code served by the server (D-07, T-18): a malicious server could
   serve code that reads secrets.
@@ -162,9 +166,9 @@ D-07, D-05, D-11 to D-15, D-18.
 
 ## Next task
 
-**D-28 needs the owner's decision.** The server backup and restore design is ready
-([backup-restore.md §3](../architecture/backup-restore.md#3-operational-server-backup-milestone-m1)):
-what is backed up, custody, the restore state machine, the recommended policy (§3.6), what happens
-to each change made after the snapshot, the owner's runbook, acceptance tests R1 to R14, and the
-missing mechanisms. Characterization tests already show why the policy is needed. Once D-28 is
-approved, M1 is the six steps of §8.
+**D-29 needs the owner's decision; M1 is not complete.** The revised D-28 restore is implemented
+for synthetic data ([backup-restore.md §3.11](../architecture/backup-restore.md#311-status-of-the-m1-implementation-2026-10-26)).
+Before any real-data backup: approve and implement D-29 (recommended: `age` to an X25519
+recipient, identity held offline by the owner), then R1, R3, R13 and the R14 browser suite, and
+the operator guide. D-30 (forced credential change after a restore) is a separate protocol
+decision; D-19 (independent review) remains open.

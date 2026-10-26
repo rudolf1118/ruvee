@@ -6,6 +6,7 @@ import { ApiException } from '../common/api-exception.js';
 import type { Env } from '../config/env.js';
 import { ACCESS_METADATA, type AccessLevel, type RequestWithSession } from './access.decorator.js';
 import { readCookie } from './client-info.js';
+import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { SessionService, STEP_UP_MS } from './session.service.js';
 
 const SAFE_METHODS = new Set(['GET', 'HEAD']);
@@ -27,6 +28,7 @@ export class AccessGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly sessions: SessionService,
+    private readonly maintenance: MaintenanceService,
     config: ConfigService<Env, true>,
   ) {
     this.publicOrigin = config.get('PUBLIC_ORIGIN', { infer: true });
@@ -43,6 +45,10 @@ export class AccessGuard implements CanActivate {
     if (level === undefined) throw new ApiException('internal_error');
 
     const req = context.switchToHttp().getRequest<RequestWithSession>();
+    // A restored installation in review serves nothing at all, whatever the credentials:
+    // restored cookies, tokens and passwords cannot open it (backup-restore.md §3.6 rules 3, 4).
+    if (req.path.startsWith('/api/') && !(await this.maintenance.isOpen()))
+      throw new ApiException('maintenance');
     let bearer: string | undefined;
     if (req.path.startsWith('/api/')) {
       if (req.headers.authorization !== undefined) {

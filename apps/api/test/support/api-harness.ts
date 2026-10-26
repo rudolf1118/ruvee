@@ -33,9 +33,14 @@ export interface Harness {
  * Starts the full application against a fresh migrated database that this harness created.
  * The configuration is read when the app module is imported, so DATABASE_URL is set first.
  */
-export async function startHarness(): Promise<Harness> {
-  const db = await createTempDatabase();
-  migrate(db.url);
+/**
+ * `database`: serve an existing database (a restored one) instead of a fresh migrated one. A test
+ * file that starts a second app calls `vi.resetModules()` first, so the app reads its
+ * configuration again.
+ */
+export async function startHarness(options: { database?: TempDatabase } = {}): Promise<Harness> {
+  const db = options.database ?? (await createTempDatabase());
+  if (!options.database) migrate(db.url);
   process.env.DATABASE_URL = db.url;
   const logs: string[] = [];
   const destination = new Writable({

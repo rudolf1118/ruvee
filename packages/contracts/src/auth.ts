@@ -170,6 +170,11 @@ export const accountResponseSchema = z.strictObject({
   passwordChangedAt: timestamp,
   /** When the Recovery Kit was last used (recovery started), so every device can say so. */
   lastRecoveryAt: timestamp.nullable(),
+  /**
+   * The latest server restore (backup-restore.md §3.6 rule 6), for wording only: a server can
+   * invent or omit it, so clients never treat it as proof of anything.
+   */
+  lastRestore: z.strictObject({ restoredAt: timestamp, restoreId: uuidSchema }).nullable(),
 });
 export type AccountResponse = z.infer<typeof accountResponseSchema>;
 
@@ -291,6 +296,8 @@ export const SECURITY_EVENT_TYPES = [
   'bootstrap_used',
   'bootstrap_failed',
   'integrity_warning_reported',
+  'server_restored',
+  'restore_review_completed',
 ] as const;
 export type SecurityEventType = (typeof SECURITY_EVENT_TYPES)[number];
 

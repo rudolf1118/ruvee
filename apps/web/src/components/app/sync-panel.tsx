@@ -2,6 +2,7 @@ import type { SyncStatus } from '@ruvee/vault';
 import { Button } from '../ui/button';
 import { cx } from '../ui/cx';
 import { AlertIcon, CloudIcon, RefreshIcon } from '../ui/icons';
+import { restoreExplanation } from './restore-help';
 import { relativeTime } from './view-model';
 
 function describe(status: SyncStatus): {
@@ -36,9 +37,13 @@ function describe(status: SyncStatus): {
       return {
         title: 'Sync paused',
         detail:
-          "The server's copy didn't pass Ruvee's checks, so nothing from it was applied. Your local copy is unchanged and read-only.",
+          status.serverRestoredAtMs !== undefined
+            ? restoreExplanation(status)
+            : "The server's copy didn't pass Ruvee's checks, so nothing from it was applied. Your local copy is unchanged and read-only.",
         tone: 'warn',
       };
+    case 'maintenance':
+      return { title: 'Server unavailable', detail: restoreExplanation(status), tone: 'warn' };
   }
 }
 

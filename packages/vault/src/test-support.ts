@@ -9,7 +9,7 @@ import type {
   RegisterFinishRequest,
   SyncChangesResponse,
 } from '@ruvee/contracts';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { ApiError, NetworkError, type Api } from './api.js';
 import { fromB64 } from './bytes.js';
 import type { OpaqueClient } from './vault-engine.js';
@@ -45,6 +45,9 @@ export class FakeServer {
   /** Every request body the server received, for capture checks. */
   received: string[] = [];
   lastRecoveryAt: string | null = null;
+  lastRestore: { restoredAt: string; restoreId: string } | null = null;
+  /** While set, every request fails as a server in restore review does (503 maintenance). */
+  maintenance = false;
   recoverySessions = new Set<string>();
   rowVersion = 1;
   /** Stands in for the OPAQUE record: which password the server would accept. */
@@ -99,6 +102,18 @@ export class FakeServer {
     this.lastRecoveryAt = copy.lastRecoveryAt;
   }
 
+  /**
+   * A restore under the revised D-28 policy, as the server reopens after the review: the snapshot
+   * is back, every session from before is dead, and the account reports the restore.
+   */
+  restoreReviewed(state: FakeServerState, restoreId: string): void {
+    this.restore(state);
+    this.generation += 1;
+    this.recoverySessions.clear();
+    this.pairings.clear();
+    this.lastRestore = { restoredAt: new Date().toISOString(), restoreId };
+  }
+
   get currentSeq(): number {
     return this.manifests.length;
   }
@@ -113,6 +128,7 @@ export class FakeServer {
 
   private check(body?: unknown) {
     if (this.offline) throw new NetworkError('offline');
+    if (this.maintenance) this.fail(503, 'maintenance');
     if (body !== undefined) this.received.push(JSON.stringify(body));
   }
 
@@ -166,7 +182,8 @@ export class FakeServer {
         this.sessionValid = true;
         let id = loginDevice;
         if (!id || !this.devices.has(id)) {
-          id = `${'0'.repeat(8)}-0000-4000-8000-${String(this.devices.size).padStart(12, '0')}`;
+          // Never reused, like the server's own ids, also across a restore.
+          id = randomUUID();
           this.devices.set(id, 'pending');
         }
         sessionDevice = id;
@@ -259,6 +276,7 @@ export class FakeServer {
           createdAt: at,
           passwordChangedAt: at,
           lastRecoveryAt: this.lastRecoveryAt,
+          lastRestore: this.lastRestore,
         });
       },
       recoveryStart: (body) => {

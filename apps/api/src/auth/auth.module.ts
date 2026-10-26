@@ -4,6 +4,7 @@ import { AccountSecurityController } from '../account/account-security.controlle
 import { AccountSecurityService } from '../account/account-security.service.js';
 import { AccountController } from '../account/account.controller.js';
 import { DatabaseModule } from '../database/database.module.js';
+import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { PairingController } from '../pairing/pairing.controller.js';
 import { PairingService } from '../pairing/pairing.service.js';
 import { RecoveryController } from '../recovery/recovery.controller.js';
@@ -32,6 +33,7 @@ import { ThrottleService } from './throttle.service.js';
   ],
   providers: [
     AuthService,
+    MaintenanceService,
     OpaqueServerService,
     SessionService,
     LoginStateStore,

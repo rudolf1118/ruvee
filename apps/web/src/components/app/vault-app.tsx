@@ -14,6 +14,7 @@ import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
 import { ActivityPanel } from './activity';
 import { ExportViewer } from './export';
 import { DevicesPanel, SecurityPanel } from './devices';
+import { needsRestoreHelp, restoreExplanation, RestoreHelpSection } from './restore-help';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
 import { AddDevicePanel } from './pairing';
@@ -357,7 +358,8 @@ function UnlockedApp({
       : []),
   ].filter((n) => !dismissed.includes(n.id));
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
-  const readOnly = status.state === 'integrity_error';
+  const readOnly = status.state === 'integrity_error' || status.state === 'maintenance';
+  const restoreHelp = needsRestoreHelp(status, vault.sessionProblem);
 
   return (
     <VaultShell
@@ -370,6 +372,17 @@ function UnlockedApp({
               <Notice key={n.id} tone={n.tone}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <span>{n.text}</span>
+                  {n.id === 'restore' ? (
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setEditing(null);
+                        setPanel('password');
+                      }}
+                    >
+                      What to do
+                    </Button>
+                  ) : null}
                   {n.id === 'recovered' ? (
                     <Button
                       size="sm"
@@ -504,6 +517,20 @@ function UnlockedApp({
                     client={client}
                     // A hint only: the worker refuses any vault that ever held an item.
                     canImport={items.length === 0 && status.import === undefined}
+                    restoreHelp={
+                      restoreHelp ? (
+                        <RestoreHelpSection
+                          client={client}
+                          status={status}
+                          {...(vault.sessionProblem
+                            ? { sessionProblem: vault.sessionProblem }
+                            : {})}
+                          onErased={() => {
+                            onLock('This device was erased. Log in to start over.');
+                          }}
+                        />
+                      ) : undefined
+                    }
                     onClose={() => {
                       setPanel(null);
                     }}
@@ -583,6 +610,12 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       id: 'import-complete',
       tone: 'brand',
       text: `Import complete: all ${String(status.import.total)} items from the export of ${new Date(status.import.sourceAsOfMs).toLocaleString()} are in this vault.`,
+    });
+  if (needsRestoreHelp(status, vault.sessionProblem))
+    out.push({
+      id: 'restore',
+      tone: 'caution',
+      text: restoreExplanation(status, vault.sessionProblem),
     });
   if (vault.sessionProblem === 'login_failed')
     out.push({

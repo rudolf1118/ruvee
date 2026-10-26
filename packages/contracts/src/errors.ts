@@ -36,6 +36,10 @@ export const API_ERRORS = {
   },
   rate_limited: { status: 429, message: 'Too many attempts; try again later.' },
   internal_error: { status: 500, message: 'An internal error occurred.' },
+  maintenance: {
+    status: 503,
+    message: 'The server is being restored by its owner and is not available yet.',
+  },
 } as const;
 
 export type ApiErrorCode = keyof typeof API_ERRORS;

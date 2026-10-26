@@ -31,6 +31,8 @@ import type {
   ItemDetail,
   ItemDraft,
   ItemSummary,
+  LocalExport,
+  LocalStateView,
   RecoveryKitView,
   SyncStatus,
   UnlockedVault,
@@ -157,6 +159,10 @@ interface Session {
   /** When the Recovery Kit was used, if this device has not acknowledged it (§3 step 2). */
   recoveryNotice: number | undefined;
   recoveryAcknowledgedMs: number;
+  /** When the server says it was restored from a backup; wording only (protocol.ts). */
+  serverRestore: number | undefined;
+  /** The state a local export was made of (`localMark`), if one was made in this unlock. */
+  localExportMark: string | undefined;
   /** An import into this vault (backup-restore.md §4.4a), if one was ever started here. */
   importState: ImportRecord | undefined;
   /** Queue position of each imported item handed to the pending queue, by item id. */
@@ -236,6 +242,8 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('not_found');
       case 'row_version_conflict':
         return new VaultError('changed_elsewhere');
+      case 'maintenance':
+        return new VaultError('server_maintenance');
       default:
         return new VaultError('internal');
     }
@@ -689,6 +697,8 @@ export class VaultEngine {
       if (sessionProblem === undefined) {
         secretKeyUpdated = await this.refreshKeyset(session, password);
         await this.syncNow();
+      } else if (sessionProblem === 'maintenance') {
+        session.state = 'maintenance';
       } else session.state = sessionProblem === 'offline' ? 'offline' : 'session_expired';
       return {
         ...this.unlockedView(),
@@ -828,17 +838,23 @@ export class VaultEngine {
     } catch (error) {
       const e = vaultErrorFrom(error);
       if (e.code === 'offline') return 'offline';
+      if (e.code === 'server_maintenance') return 'maintenance';
       if (e.code === 'device_revoked') return this.revoked();
       if (e.code !== 'session_expired') return 'offline';
     }
     try {
       const result = await this.opaqueLogin(device.username, password, device.deviceId);
-      return result.device.status === 'active' ? undefined : 'login_failed';
+      if (result.device.status === 'active' && result.device.id === device.deviceId)
+        return undefined;
+      // The server took the password but does not know this device: it was restored from a
+      // backup older than this device's enrollment. Nothing here is erased (§3.6a).
+      return result.device.id === device.deviceId ? 'login_failed' : 'device_unknown';
     } catch (error) {
       const e = vaultErrorFrom(error);
       if (e.code === 'device_revoked') return this.revoked();
       if (e.code === 'rate_limited') return 'rate_limited';
       if (e.code === 'offline') return 'offline';
+      if (e.code === 'server_maintenance') return 'maintenance';
       return 'login_failed';
     }
   }
@@ -1033,6 +1049,8 @@ export class VaultEngine {
       importOrders: new Map(),
       importRemaining: 0,
       recoveryAcknowledgedMs: 0,
+      serverRestore: undefined,
+      localExportMark: undefined,
     };
   }
 
@@ -1363,6 +1381,8 @@ export class VaultEngine {
   private writable(): Session {
     const session = this.requireSession();
     if (session.state === 'integrity_error') throw new VaultError('read_only');
+    // Nothing new is queued against a server in restore review (backup-restore.md §3.5).
+    if (session.state === 'maintenance') throw new VaultError('server_maintenance');
     // The import is the only writer until it is complete (backup-restore.md §4.4a).
     if (session.importState?.state === 'uploading') throw new VaultError('import_in_progress');
     return session;
@@ -2588,6 +2608,153 @@ export class VaultEngine {
     return true;
   }
 
+  // ---- After a server restore: local export and start over (backup-restore.md §3.12) ----
+
+  /** Identifies the local state an export was made of: any later change makes it stale. */
+  private localMark(session: Session): string {
+    return JSON.stringify([
+      session.checkpoint.seq,
+      // Each seal starts with a fresh random nonce, so its first bytes tell edits apart.
+      session.pending.map((m) => [
+        m.itemId,
+        m.baseRevision,
+        m.record ? toB64(m.record.subarray(0, 24)) : null,
+      ]),
+      session.inflight?.mutations.length ?? 0,
+      [...session.conflicts.keys()],
+    ]);
+  }
+
+  localState(): Promise<LocalStateView> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      const manifest = await this.deps.store.manifest();
+      return {
+        snapshot: {
+          seq: session.checkpoint.seq,
+          asOfMs:
+            manifest?.seq === session.checkpoint.seq ? (session.lastChange?.atMs ?? null) : null,
+          items: [...session.synced.values()].filter((i) => i.record !== null).length,
+        },
+        pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
+        conflicts: session.conflicts.size,
+        exported: session.localExportMark === this.localMark(session),
+      };
+    });
+  }
+
+  /**
+   * An encrypted export of the last snapshot this device verified, with no server: for a device
+   * that is ahead of a restored server, in maintenance or offline. The file is the existing
+   * format (§4.2), a verified manifest and its items, so it cannot hold changes nothing has
+   * verified: pending edits and conflicts stay on this device, are counted in the result, and
+   * must be acknowledged when there are any. The password is checked against the local wrap.
+   */
+  exportLocal(params: {
+    password: string;
+    recoveryKey: string;
+    acknowledgeNotIncluded?: boolean;
+  }): Promise<LocalExport> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      const { crypto } = this.deps;
+      try {
+        crypto.parseRecoveryKey(params.recoveryKey).fill(0);
+      } catch {
+        throw new VaultError('invalid_recovery_key');
+      }
+      const enrolled = session.device.enrolled;
+      let auk: Uint8Array | undefined;
+      try {
+        auk = crypto.deriveAccountUnlockKey({
+          password: normalizePassword(params.password),
+          passwordSalt: enrolled.saltPw,
+          profile: enrolled.kdfProfile,
+          secretKey: enrolled.secretKey,
+          accountId: uuidToBytes(session.device.accountId),
+        });
+        const accountKey = crypto.unwrapAccountKey({
+          accountUnlockKey: auk,
+          accountId: uuidToBytes(session.device.accountId),
+          accountKeyId: enrolled.akId,
+          accountKeyEpoch: enrolled.akEpoch,
+          profile: enrolled.kdfProfile,
+          passwordSalt: enrolled.saltPw,
+          envelope: enrolled.wrappedAkPassword,
+        });
+        const matches = same(accountKey, session.accountKey);
+        accountKey.fill(0);
+        if (!matches) throw new VaultError('wrong_password');
+      } catch {
+        throw new VaultError('wrong_password');
+      } finally {
+        auk?.fill(0);
+      }
+      const notIncluded = {
+        pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
+        conflicts: session.conflicts.size,
+      };
+      if ((notIncluded.pending > 0 || notIncluded.conflicts > 0) && !params.acknowledgeNotIncluded)
+        throw new VaultError('unsynced_changes');
+      const manifest = await this.deps.store.manifest();
+      // A device with no verified snapshot (never synced since enrolling or recovering) has
+      // nothing the format can hold.
+      if (manifest?.seq !== session.checkpoint.seq || session.checkpoint.seq === 0)
+        throw new VaultError('unsynced_changes');
+      const text = buildExport({
+        crypto,
+        accountId: session.device.accountId,
+        vaultId: session.vault.vaultId,
+        accountKey: session.accountKey,
+        accountKeyId: enrolled.akId,
+        accountKeyEpoch: enrolled.akEpoch,
+        recoveryKeyText: params.recoveryKey,
+        keyset: { version: enrolled.keysetVersion, envelope: enrolled.keyset },
+        manifest,
+        items: session.synced,
+      });
+      // Read back with the same reader an importer uses: the file is checked, and its date is the
+      // one its manifest authenticates.
+      const { asOfMs } = openExport(crypto, text, params.recoveryKey);
+      session.localExportMark = this.localMark(session);
+      const day = new Date(asOfMs).toISOString().slice(0, 10);
+      return {
+        fileName: `ruvee-export-${day}-verified.ruvee`,
+        text,
+        snapshot: {
+          seq: manifest.seq,
+          asOfMs,
+          items: [...session.synced.values()].filter((i) => i.record !== null).length,
+        },
+        notIncluded,
+      };
+    });
+  }
+
+  /**
+   * Erases this device's copy so it can log in to a restored server afresh. Never automatic:
+   * only on this call, with the typed confirmation, after a local export of the current state
+   * or an explicit `withoutExport`, and with the pending count the user was shown.
+   */
+  startOver(params: {
+    confirm: 'erase-this-device';
+    withoutExport?: boolean;
+    pendingSeen: number;
+  }): Promise<true> {
+    return this.exclusive(async () => {
+      const session = this.requireSession();
+      // Checked at run time too: parameters arrive from the UI as a message.
+      if ((params.confirm as string) !== 'erase-this-device') throw new VaultError('internal');
+      const pending = session.pending.length + (session.inflight?.mutations.length ?? 0);
+      if (params.pendingSeen !== pending) throw new VaultError('unsynced_changes');
+      if (!params.withoutExport && session.localExportMark !== this.localMark(session))
+        throw new VaultError('export_first');
+      await this.deps.store.wipe();
+      this.wipeMemory();
+      return true as const;
+    });
+  }
+
   // ---- Import into a fresh installation (backup-restore.md §4.4a) ----
 
   /**
@@ -2723,7 +2890,11 @@ export class VaultEngine {
   private async syncNow(): Promise<SyncStatus> {
     const session = this.session;
     if (!session) throw new VaultError('locked');
-    if (session.state === 'integrity_error') return this.status(session);
+    if (session.state === 'integrity_error') {
+      // Nothing is pulled or pushed; the account notices only choose the wording.
+      await this.checkRecoveryNotice(session).catch(() => undefined);
+      return this.status(session);
+    }
     session.state = 'syncing';
     this.emitStatus(session);
     try {
@@ -2748,6 +2919,8 @@ export class VaultEngine {
       if (e.code === 'session_expired') {
         session.state = 'session_expired';
         this.deps.emit({ event: 'ended', reason: 'session_expired' });
+      } else if (e.code === 'server_maintenance') {
+        session.state = 'maintenance';
       } else {
         session.state = 'offline';
       }
@@ -2961,6 +3134,8 @@ export class VaultEngine {
     const account = await this.deps.api.account();
     const at = account.lastRecoveryAt === null ? 0 : Date.parse(account.lastRecoveryAt);
     if (at > session.recoveryAcknowledgedMs) session.recoveryNotice = at;
+    session.serverRestore =
+      account.lastRestore === null ? undefined : Date.parse(account.lastRestore.restoredAt);
   }
 
   private integrity(session: Session, reason: string): void {
@@ -2977,6 +3152,7 @@ export class VaultEngine {
       lastChange: session.lastChange,
       ...(session.integrity ? { integrity: session.integrity } : {}),
       ...(session.recoveryNotice !== undefined ? { recoveryUsedAtMs: session.recoveryNotice } : {}),
+      ...(session.serverRestore !== undefined ? { serverRestoredAtMs: session.serverRestore } : {}),
       ...(session.importState
         ? {
             import: {

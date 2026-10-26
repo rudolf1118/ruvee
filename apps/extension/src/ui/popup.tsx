@@ -304,6 +304,22 @@ function Unlock({ onDone }: { onDone: () => void }) {
   );
 }
 
+/**
+ * backup-restore.md §3.12. This browser keeps its copy and is never erased by itself; the
+ * verified-copy export and "start over" are in the web app. The server's restore claim only
+ * picks the wording.
+ */
+function restoreNotice(status: SyncStatus): string | null {
+  if (status.state === 'maintenance')
+    return 'Your Ruvee server is being restored by its owner. Logins here can still be filled; nothing changes until the server opens again.';
+  if (
+    status.state === 'integrity_error' &&
+    ['server_behind', 'history_rewritten', 'keyset_rollback'].includes(status.integrity ?? '')
+  )
+    return `${status.serverRestoredAtMs !== undefined ? 'Your server reports that it was restored from a backup.' : 'Your server may have been restored from an older backup.'} This browser has newer data, so sync is paused and its copy is kept, read-only. See Security in the Ruvee web app.`;
+  return null;
+}
+
 const FILL_TEXT: Record<FillOutcome, string> = {
   filled: 'Filled. Check the page before you submit it.',
   origin_changed: 'The page changed before Ruvee could fill it. Nothing was filled.',
@@ -329,6 +345,7 @@ function Fill({ onLocked }: { onLocked: () => void }) {
         // browser or an ended session is noticed (the worker then locks or wipes itself).
         const synced = await call<SyncStatus>({ kind: 'vault', method: 'sync' });
         if (synced.state === 'session_expired') onLocked();
+        else setNotice(restoreNotice(synced));
       } catch (e) {
         if (
           e instanceof CallError &&

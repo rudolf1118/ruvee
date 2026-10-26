@@ -57,6 +57,7 @@ enum RevokeReason {
   refresh_reuse
   expired
   superseded
+  restored
 
   @@map("revoke_reason")
 }
@@ -89,6 +90,8 @@ enum SecurityEventType {
   bootstrap_used
   bootstrap_failed
   integrity_warning_reported
+  server_restored
+  restore_review_completed
 
   @@map("security_event_type")
 }

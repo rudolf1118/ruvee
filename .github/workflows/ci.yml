@@ -47,7 +47,12 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      # The restore tests need pg_dump and pg_restore of the server's major version (18); the
+      # runner's client is older, so they run inside the service container (pg-tools.ts).
       - run: pnpm test:integration
+        env:
+          RUVEE_PG_TOOLS_PREFIX: '["docker","exec","-i","-e","PGPASSWORD","${{ job.services.postgres.id }}"]'
+          RUVEE_PG_TOOLS_HOST: 127.0.0.1:5432
       - run: pnpm build
 
   e2e:

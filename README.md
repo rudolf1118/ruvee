@@ -105,6 +105,10 @@ The browser checks need Playwright's engines once
 `pnpm test:integration` reads `DATABASE_URL` from the environment, e.g.
 `set -a; . ./.env; set +a; pnpm test:integration` (open a new shell afterwards so
 `NODE_ENV=development` does not leak into `next build`).
+The restore tests (`restore*.int-spec.ts`) also run `pg_dump` and `pg_restore`, which must have
+the server's major version (18). If the host's client is older, run them inside the database
+container: `RUVEE_PG_TOOLS_PREFIX='["docker","exec","-i","-e","PGPASSWORD","<container>"]'
+RUVEE_PG_TOOLS_HOST=127.0.0.1:5432` (the address as seen inside the container).
 
 For end-to-end tests, either install Playwright's browser once
 (`pnpm --filter @ruvee/web exec playwright install chromium`) or reuse a local Chrome with

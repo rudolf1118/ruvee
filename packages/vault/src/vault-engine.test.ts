@@ -712,6 +712,150 @@ describe('clients after a server restore (characterization, input to D-28)', () 
   });
 });
 
+describe('clients after a server restore (revised D-28, backup-restore.md §3.6 and §3.12)', () => {
+  const RESTORE_ID = '7d0c5f43-2a4e-4c84-9d1b-3f6a2b8e9c10';
+
+  it('in maintenance, keeps the local copy readable and adds nothing; resumes when the server opens', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    await a.engine.save({ draft: login('Kept') });
+    await a.engine.sync();
+    server.maintenance = true;
+    const reopened = await device(server, a.factory, a.api);
+    const unlocked = await reopened.engine.unlock({ password: PASSWORD });
+    expect(unlocked.sessionProblem).toBe('maintenance');
+    expect(unlocked.sync.state).toBe('maintenance');
+    expect(unlocked.items.map((i) => i.title)).toEqual(['Kept']);
+    expect(await code(reopened.engine.save({ draft: login('Not now') }))).toBe(
+      'server_maintenance',
+    );
+    expect((await reopened.engine.sync()).state).toBe('maintenance');
+    expect(await reopened.store.device()).toBeDefined();
+    server.maintenance = false;
+    expect((await reopened.engine.sync()).state).toBe('synced');
+  });
+
+  it('a device ahead of the restored server keeps its newer data read-only and says why', async () => {
+    const server = new FakeServer();
+    const { a, kit } = await createAccount(server);
+    await a.engine.save({ draft: login('Before the backup') });
+    await a.engine.sync();
+    const backup = server.snapshot();
+    await a.engine.save({ draft: login('After the backup') });
+    await a.engine.sync();
+    // An edit that never reached the server, then the restore.
+    server.offline = true;
+    await a.engine.save({ draft: login('Pending on this device') });
+    server.offline = false;
+    server.restoreReviewed(backup, RESTORE_ID);
+
+    const reopened = await device(server, a.factory, a.api);
+    const unlocked = await reopened.engine.unlock({ password: PASSWORD });
+    expect(unlocked.sync).toMatchObject({ state: 'integrity_error', integrity: 'server_behind' });
+    expect(unlocked.sync.serverRestoredAtMs).toBeGreaterThan(0);
+    expect(unlocked.items.map((i) => i.title).sort()).toEqual([
+      'After the backup',
+      'Before the backup',
+      'Pending on this device',
+    ]);
+    expect(await code(reopened.engine.save({ draft: login('Blocked') }))).toBe('read_only');
+    // Nothing was erased, and nothing went to the server.
+    expect(await reopened.store.device()).toBeDefined();
+    expect([...server.items.values()].filter((i) => i.record !== null)).toHaveLength(1);
+    expect(await reopened.engine.localState()).toMatchObject({
+      pending: 1,
+      conflicts: 0,
+      exported: false,
+      snapshot: { items: 2 },
+    });
+
+    // The offline export holds the verified snapshot only, and says so; pending is acknowledged.
+    expect(await code(reopened.engine.exportLocal({ password: PASSWORD, recoveryKey: kit }))).toBe(
+      'unsynced_changes',
+    );
+    expect(
+      await code(
+        reopened.engine.exportLocal({
+          password: 'synthetic wrong guess',
+          recoveryKey: kit,
+          acknowledgeNotIncluded: true,
+        }),
+      ),
+    ).toBe('wrong_password');
+    const file = await reopened.engine.exportLocal({
+      password: PASSWORD,
+      recoveryKey: kit,
+      acknowledgeNotIncluded: true,
+    });
+    expect(file.fileName).toMatch(/^ruvee-export-\d{4}-\d{2}-\d{2}-verified\.ruvee$/);
+    expect(file.notIncluded).toEqual({ pending: 1, conflicts: 0 });
+    expect(file.snapshot.items).toBe(2);
+    const clean = await device(new FakeServer());
+    const view = clean.engine.exportOpen({ text: file.text, recoveryKey: kit });
+    expect(view.items.map((i) => i.title).sort()).toEqual([
+      'After the backup',
+      'Before the backup',
+    ]);
+    expect(view.seq).toBe(file.snapshot.seq);
+    expect(server.received.join('\n')).not.toContain('ruvee-export');
+    expect(await reopened.engine.localState()).toMatchObject({ exported: true });
+  });
+
+  it('starts over only on an explicit, informed request, after an export or an explicit refusal', async () => {
+    const server = new FakeServer();
+    const { a, kit } = await createAccount(server);
+    await a.engine.save({ draft: login('Only here') });
+    await a.engine.sync();
+    const backup = server.snapshot();
+    await a.engine.save({ draft: login('Newer') });
+    await a.engine.sync();
+    server.restoreReviewed(backup, RESTORE_ID);
+    await a.engine.sync();
+
+    const startOver = (p: Partial<Parameters<VaultEngine['startOver']>[0]>) =>
+      code(a.engine.startOver({ confirm: 'erase-this-device', pendingSeen: 0, ...p }));
+    expect(await startOver({})).toBe('export_first');
+    expect(await startOver({ withoutExport: true, pendingSeen: 3 })).toBe('unsynced_changes');
+    expect(await a.store.device()).toBeDefined();
+    await a.engine.exportLocal({ password: PASSWORD, recoveryKey: kit });
+    expect(await startOver({})).toBe('resolved');
+    expect(await a.store.device()).toBeUndefined();
+    expect(await a.engine.phase()).toEqual({ phase: 'new' });
+  });
+
+  it('a device enrolled after the snapshot is unknown to the restored server, and is kept', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    await a.engine.save({ draft: login('Shared') });
+    await a.engine.sync();
+    const backup = server.snapshot();
+    const b = await secondDevice(server, a);
+    await b.engine.sync();
+    server.restoreReviewed(backup, RESTORE_ID);
+
+    const reopened = await device(server, b.factory, b.api);
+    const unlocked = await reopened.engine.unlock({ password: PASSWORD });
+    expect(unlocked.sessionProblem).toBe('device_unknown');
+    expect(unlocked.items.map((i) => i.title)).toEqual(['Shared']);
+    expect(await reopened.store.device()).toBeDefined();
+    expect(reopened.events).not.toContainEqual({ event: 'ended', reason: 'device_revoked' });
+  });
+
+  it('an old session of a device at the snapshot ends; the device signs in again and syncs', async () => {
+    const server = new FakeServer();
+    const { a } = await createAccount(server);
+    await a.engine.save({ draft: login('At the snapshot') });
+    await a.engine.sync();
+    server.restoreReviewed(server.snapshot(), RESTORE_ID);
+    expect((await a.engine.sync()).state).toBe('session_expired');
+    const reopened = await device(server, a.factory, a.api);
+    const unlocked = await reopened.engine.unlock({ password: PASSWORD });
+    expect(unlocked.sessionProblem).toBeUndefined();
+    expect(unlocked.sync.state).toBe('synced');
+    expect(unlocked.sync.serverRestoredAtMs).toBeGreaterThan(0);
+  });
+});
+
 describe('portable encrypted export (backup-restore.md §4, D-13 option A)', () => {
   async function exported() {
     const server = new FakeServer();

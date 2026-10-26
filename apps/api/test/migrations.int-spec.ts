@@ -9,6 +9,7 @@ import {
 
 /** Newest first, the order in which their down scripts run. */
 const MIGRATIONS = [
+  'prisma/migrations/20261026150000_server_restore',
   'prisma/migrations/20261026090000_session_superseded',
   'prisma/migrations/20261025160000_token_sessions',
   'prisma/migrations/20261025150000_secret_key_rotated_event',

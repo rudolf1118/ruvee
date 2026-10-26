@@ -47,12 +47,23 @@ export class AccountController {
       orderBy: { createdAt: 'desc' },
       select: { createdAt: true },
     });
+    // The latest restore of this server, for clients' wording only (backup-restore.md §3.6).
+    const restore = await this.prisma.securityEvent.findFirst({
+      where: { type: 'server_restored' },
+      orderBy: { createdAt: 'desc' },
+      select: { createdAt: true, details: true },
+    });
+    const restoreId = (restore?.details as { restoreId?: unknown } | undefined)?.restoreId;
     return {
       accountId: account.id,
       username: account.usernameNormalized,
       createdAt: iso(account.createdAt),
       passwordChangedAt: iso(account.opaqueCredential.updatedAt),
       lastRecoveryAt: recovery ? iso(recovery.createdAt) : null,
+      lastRestore:
+        restore && typeof restoreId === 'string'
+          ? { restoredAt: iso(restore.createdAt), restoreId }
+          : null,
     };
   }
 

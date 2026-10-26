@@ -15,7 +15,7 @@ evidence for the specific behaviour it exercises, not proof that an invariant ho
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
 | Format, lint, types                                   | `pnpm format:check && pnpm lint && pnpm typecheck`                                               | Pass                                                            |
 | Unit                                                  | `pnpm test`                                                                                      | contracts 34, API 70, web 33, vault 54, extension 27, crypto 60 |
-| Integration (real PostgreSQL)                         | `DATABASE_URL=… pnpm test:integration`                                                           | 55 passed, 3 todo (D-28 placeholders)                           |
+| Integration (real PostgreSQL)                         | `DATABASE_URL=… pnpm test:integration`                                                           | 67 passed (12 restore tests with real dumps)                    |
 | Crypto in browsers                                    | `pnpm --filter @ruvee/crypto test:browsers`                                                      | 24 checks × 6 contexts                                          |
 | Headers, CSP, OPAQUE, local fonts                     | `pnpm --filter @ruvee/web test:headers`                                                          | 33, three engines                                               |
 | Design preview                                        | `pnpm --filter @ruvee/web test:e2e`                                                              | 8 (no network needed since the fonts are local)                 |
@@ -152,30 +152,38 @@ Choices made while building that a reviewer should confirm. None weakens an inva
 - **R-18** (a stolen locked device may hold a live session): for the extension, a refresh token
   in its IndexedDB lives up to 90 days; reuse after rotation ends the session, and removal from
   Devices ends it at once.
-- **Backups:** a restored database copy brings back removed devices and their sessions
-  (`backup-restore.int-spec.ts`); the proposed rule is D-28 ([backup-restore.md](../architecture/backup-restore.md)).
+- **Backups:** a raw restored database copy brings back removed devices and their sessions
+  (`backup-restore.int-spec.ts`); the restore tool's policy (revised D-28, §4a below) undoes
+  that, but only for synthetic data until D-29 (encryption at rest) is implemented.
 
-## 4a. Server restore: risks found while preparing M1 (D-28 open)
+## 4a. Server restore (revised D-28, implemented for synthetic data; D-29, D-30 open)
 
-Characterization tests show what restoring an older database copy does **today**, with no restore
-policy (`apps/api/test/backup-restore*.int-spec.ts`, `packages/vault/src/vault-engine.test.ts`
-"clients after a server restore"):
+What is implemented ([backup-restore.md §3.5 to §3.12](../architecture/backup-restore.md#35-restore-state-machine-and-maintenance-mode)):
+`apps/api/src/admin/server-restore.ts`, `pg-tools.ts`, `cli.ts`,
+`apps/api/src/maintenance/maintenance.service.ts`, the access guard's maintenance check, and the
+clients' `exportLocal`/`localState`/`startOver`. Distinguish **owner-specified requirements**
+(implemented) from **open protocol choices** (not implemented):
 
-| Risk                                                                                                                                  | Evidence                                        | Proposed handling ([backup-restore.md §3.6](../architecture/backup-restore.md#36-recommended-v1-restore-policy-d-28-option-a-as-specified)) |
-| ------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
-| A device removed after the snapshot is active again, with its old session                                                             | Tested                                          | Sessions ended; the owner removes it again (as lost, rotating `SK`)                                                                         |
-| A refresh token rotated after the snapshot works again; the newer one is unknown                                                      | Tested                                          | Every session and so every token family ended                                                                                               |
-| A recovery session ended after the snapshot works again                                                                               | Tested                                          | Ended with every session                                                                                                                    |
-| A snapshot taken before the account existed reopens registration to the holder of its setup token                                     | Tested                                          | Unused setup tokens deleted                                                                                                                 |
-| Security events after the snapshot vanish                                                                                             | Tested                                          | A `server_restored` event; older logs are the operator's                                                                                    |
-| A password, `SK` or Recovery Kit replaced after the snapshot is the old one again on the server; ending sessions does not change that | Reasoned (§3.4, §3.7); `keyset_rollback` tested | Clients stop; the owner repeats each change                                                                                                 |
-| Devices ahead of the snapshot cannot export without the server                                                                        | Code (`exportVault` needs an online step-up)    | Offline encrypted export from the local verified copy                                                                                       |
-| A device added after the snapshot becomes an orphan pending device                                                                    | Code (`loginFinish` for an unknown device id)   | Start over on this device, pair again                                                                                                       |
-| An interrupted restore could be served half-loaded                                                                                    | Design                                          | New database only, completion marker, API refuses without it                                                                                |
-| Old dumps keep old wraps forever                                                                                                      | Design (account-recovery.md §5)                 | Retention guidance; full rotation (Phase 4)                                                                                                 |
+| Risk                                                                                | Handling                                                                                                                   | Evidence                                                           |
+| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| A device removed after the snapshot is active again, with its old session           | Sessions revoked in APPLY POLICY; the review lists devices and revokes them again before opening                           | `restore.int-spec.ts` (revoked device gets `device_revoked`)       |
+| Old cookies, access and refresh tokens, recovery sessions, pairings work again      | Revoked or deleted in one transaction with the guard change                                                                | `restore.int-spec.ts`, before and after the review                 |
+| Login, recovery or registration used while the owner has not reviewed               | Every `/api` request `503 maintenance` until `restore-complete`; health still answers                                      | `restore.int-spec.ts`                                              |
+| A pre-account snapshot reopens registration                                         | Unused setup tokens deleted; after opening, registration needs a new token                                                 | `restore-edges.int-spec.ts`                                        |
+| A half-loaded restore is served                                                     | Guard written before LOAD; anything but `open` is closed; complete refuses outside `review`; a second restore refuses it   | `restore-edges.int-spec.ts` (stopped after prepare, load, migrate) |
+| Restoring over a live database                                                      | Target must have no tables; refused before anything is written                                                             | `restore.int-spec.ts`; source fingerprint unchanged                |
+| A backup carries an "open" state into the next restore                              | The guard table is excluded from dumps                                                                                     | `restore.int-spec.ts` (backup of a restored database)              |
+| Clients erase newer local data, or show a misleading error                          | Maintenance and restore notices; newer data kept read-only; verified-copy export offline; start over only on typed request | `vault-engine.test.ts` "revised D-28"                              |
+| Snapshot-time password and kit are valid again after opening                        | **Open (D-30).** Stated by the review; the owner acknowledges with `--accept-restored-credentials` and repeats the changes | Not enforced                                                       |
+| Dumps hold every wrap and verifier, unencrypted                                     | **Open (D-29), required.** `backup` refuses anything but synthetic test databases                                          | `restore.int-spec.ts` (refusals)                                   |
+| `server_restored` and `restore_id` could be forged or omitted by a malicious server | Wording only; clients rely on their own checkpoints (INV-07, INV-09)                                                       | Design                                                             |
+| Ending sessions or rotating `SK` is read as revoking copied ciphertext or keys      | Stated by the design and by the review's output; it revokes nothing already copied                                         | Design, CLI text                                                   |
 
-For the reviewer: the policy must not be read as making stale decryption or recovery material
-current. It only ends authentication state; key material is repeated by the owner (§3.4).
+**Trust model for the reviewer.** The review and the opening run only as `ruvee-admin` on the
+server host, against `RESTORE_DATABASE_URL`. That operator already holds the database, the setup
+file and `.env`, so the CLI adds no power; no remote administrative endpoint exists, and nothing
+in the review can decrypt anything. The acknowledgements are a safeguard against mistakes, not
+against a malicious host.
 
 ## 5. Scope for the independent review
 
@@ -221,5 +229,10 @@ has been reviewed by anyone other than its authors.
 11. **Web delivery:** CSP and headers, `deploy/Caddyfile`, local fonts, and the trust model of a
     server-served client (D-07, R-01).
 
-Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), server backups (designed in
-[backup-restore.md](../architecture/backup-restore.md), blocked on D-28).
+12. **Server restore** (§4a): the APPLY POLICY transaction, the guard's fail-closed reading in
+    `MaintenanceService`, `completeRestore`'s preconditions, the dump exclusion of the guard, and
+    the clients' `exportLocal` (password checked against the local wrap, the existing format, the
+    self-check) and `startOver` preconditions.
+
+Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), dump encryption (D-29, not
+implemented), a restricted post-restore session (D-30).

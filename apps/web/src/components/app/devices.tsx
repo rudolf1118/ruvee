@@ -357,14 +357,23 @@ export function SecurityPanel({
   client,
   onClose,
   canImport,
+  restoreHelp,
 }: {
   client: VaultClient;
   onClose: () => void;
+  /** Shown first when this device may hold more than a restored server (restore-help.tsx). */
+  restoreHelp?: ReactNode;
   /** The vault has never held an item and no import was started (backup-restore.md §4.4a). */
   canImport: boolean;
 }) {
   return (
     <Panel title="Security" onClose={onClose}>
+      {restoreHelp ? (
+        <>
+          {restoreHelp}
+          <hr className="border-line" />
+        </>
+      ) : null}
       <ChangePasswordSection client={client} onClose={onClose} />
       <hr className="border-line" />
       <SecretKeySection client={client} />

@@ -56,7 +56,14 @@ export interface ConflictView {
 }
 
 export type SyncState =
-  'synced' | 'syncing' | 'offline' | 'pending' | 'session_expired' | 'integrity_error';
+  | 'synced'
+  | 'syncing'
+  | 'offline'
+  | 'pending'
+  | 'session_expired'
+  | 'integrity_error'
+  /** The server is being restored by its owner (backup-restore.md §3.5): local copy, read-only. */
+  | 'maintenance';
 
 export interface SyncStatus {
   readonly state: SyncState;
@@ -68,6 +75,11 @@ export interface SyncStatus {
   readonly integrity?: string;
   /** The Recovery Kit was used at this time and this device has not acknowledged it yet. */
   readonly recoveryUsedAtMs?: number;
+  /**
+   * The server says it was restored from a backup at this time (`server_restored`). For wording
+   * only: it is the server's own claim, never proof of anything (backup-restore.md §3.6).
+   */
+  readonly serverRestoredAtMs?: number;
   /** An import into this vault (backup-restore.md §4.4a). */
   readonly import?: {
     readonly state: 'uploading' | 'complete';
@@ -90,7 +102,14 @@ export interface UnlockedVault {
   readonly items: readonly ItemSummary[];
   readonly sync: SyncStatus;
   /** Set when the server session could not be restored; the vault still works offline. */
-  readonly sessionProblem?: 'login_failed' | 'offline' | 'rate_limited';
+  readonly sessionProblem?:
+    | 'login_failed'
+    | 'offline'
+    | 'rate_limited'
+    /** The server is in restore review (backup-restore.md §3.5). */
+    | 'maintenance'
+    /** The password works, but the server does not know this device (a restored server). */
+    | 'device_unknown';
   /** Set right after a recovery: this device has no trusted checkpoint (sync-protocol §5). */
   readonly recovered?: { readonly lastChange: SyncStatus['lastChange'] };
   /** The local password wrap was replaced because the password changed on another device. */
@@ -140,6 +159,8 @@ export type VaultErrorCode =
   | 'import_in_progress'
   | 'vault_not_empty'
   | 'integrity'
+  | 'server_maintenance'
+  | 'export_first'
   | 'internal';
 
 export interface VaultErrorPayload {
@@ -207,6 +228,29 @@ export interface ExportView {
   readonly items: readonly ItemDetail[];
 }
 
+/** An export made from this device's own verified copy, with no server (backup-restore.md §3.12). */
+export interface LocalExport {
+  readonly fileName: string;
+  readonly text: string;
+  /** Exactly what is in the file: the last snapshot this device verified, and nothing else. */
+  readonly snapshot: { readonly seq: number; readonly asOfMs: number; readonly items: number };
+  /** Changes on this device that are not in the file, because nothing verified them. */
+  readonly notIncluded: { readonly pending: number; readonly conflicts: number };
+}
+
+/** What this device holds that the server has not verified, for the "start over" screen. */
+export interface LocalStateView {
+  readonly snapshot: {
+    readonly seq: number;
+    readonly asOfMs: number | null;
+    readonly items: number;
+  };
+  readonly pending: number;
+  readonly conflicts: number;
+  /** A local export of the current state was made since the last change. */
+  readonly exported: boolean;
+}
+
 export interface SessionView {
   readonly id: string;
   readonly current: boolean;
@@ -271,6 +315,17 @@ export interface VaultMethods {
   exportSecret(params: { id: string }): string;
   exportClose(): true;
   importIntoEmptyVault(): SyncStatus;
+  localState(): LocalStateView;
+  exportLocal(params: {
+    password: string;
+    recoveryKey: string;
+    acknowledgeNotIncluded?: boolean;
+  }): LocalExport;
+  startOver(params: {
+    confirm: 'erase-this-device';
+    withoutExport?: boolean;
+    pendingSeen: number;
+  }): true;
   logout(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;
