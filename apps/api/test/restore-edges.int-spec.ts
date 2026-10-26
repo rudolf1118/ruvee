@@ -7,6 +7,7 @@ import { pgToolsFromEnv } from '../src/admin/pg-tools.js';
 import {
   completeRestore,
   createBackup,
+  type BackupResult,
   knownMigrations,
   restoreBackup,
   reviewRestore,
@@ -14,6 +15,7 @@ import {
 } from '../src/admin/server-restore.js';
 import { startHarness, type Harness } from './support/api-harness.js';
 import { startRegistration } from './support/synthetic-client.js';
+import { testBackupKey, type TestBackupKey } from './support/backup-keys.js';
 import { createTempDatabase, migrate, query, type TempDatabase } from './support/temp-database.js';
 
 /**
@@ -38,7 +40,17 @@ describe('restore edge cases (real database, real dumps)', () => {
   let source: Harness;
   let setupToken: string;
   let outDir: string;
-  let sidecarPath: string;
+  let key: TestBackupKey;
+  let backup: BackupResult;
+  const restoreArgs = (targetDatabaseUrl: string) => ({
+    manifestPath: backup.manifestPath,
+    identityPath: key.identityPath,
+    trustedDigest: backup.digest,
+    targetDatabaseUrl,
+    tools,
+    migrate,
+    knownMigrations: MIGRATIONS,
+  });
   const targets: TempDatabase[] = [];
 
   async function target() {
@@ -52,13 +64,15 @@ describe('restore edge cases (real database, real dumps)', () => {
     source = await startHarness();
     setupToken = await source.bootstrapToken();
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-restore-edges-it-'));
-    ({ sidecarPath } = await createBackup({
+    key = await testBackupKey();
+    backup = await createBackup({
       databaseUrl: source.db.url,
       outDir,
       tools,
+      recipient: key.recipient,
       syntheticTestOnly: true,
       config,
-    }));
+    });
   }, 120_000);
 
   afterAll(async () => {
@@ -66,6 +80,7 @@ describe('restore edge cases (real database, real dumps)', () => {
     for (const db of targets) await db.drop();
     await source.close();
     rmSync(outDir, { recursive: true, force: true });
+    (key as TestBackupKey | undefined)?.drop();
   });
 
   it.each(['prepare', 'load', 'migrate'] as const)(
@@ -73,11 +88,7 @@ describe('restore edge cases (real database, real dumps)', () => {
     async (stopAfter) => {
       const db = await target();
       const result = await restoreBackup({
-        sidecarPath,
-        targetDatabaseUrl: db.url,
-        tools,
-        migrate,
-        knownMigrations: MIGRATIONS,
+        ...restoreArgs(db.url),
         stopAfter,
       });
       expect(result).toMatchObject({ stoppedAfter: stopAfter });
@@ -99,11 +110,7 @@ describe('restore edge cases (real database, real dumps)', () => {
       // And a second restore refuses this half-restored database: it is not empty.
       await expect(
         restoreBackup({
-          sidecarPath,
-          targetDatabaseUrl: db.url,
-          tools,
-          migrate,
-          knownMigrations: MIGRATIONS,
+          ...restoreArgs(db.url),
         }),
       ).rejects.toMatchObject({ stage: 'prepare' });
     },
@@ -114,11 +121,7 @@ describe('restore edge cases (real database, real dumps)', () => {
     // The restored harness owns this database and drops it on close.
     const db = await createTempDatabase();
     const result = await restoreBackup({
-      sidecarPath,
-      targetDatabaseUrl: db.url,
-      tools,
-      migrate,
-      knownMigrations: MIGRATIONS,
+      ...restoreArgs(db.url),
     });
     if (!('removed' in result)) throw new Error('restore stopped');
     expect(result.removed.setupTokens).toBe(1);

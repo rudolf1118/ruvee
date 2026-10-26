@@ -241,7 +241,7 @@ The current state, commands and gaps are kept in [status.md](status.md). In shor
 
 ## Next bounded task
 
-Server restore under the revised D-28 is implemented for synthetic data; M1 waits for D-29 (dump encryption, required) and the remaining restore tests. The encrypted export and its import into a fresh installation (M2) are implemented locally ([backup-restore.md](../architecture/backup-restore.md)). See [status.md](status.md#next-task).
+Encrypted server backups (D-29 B) and the revised D-28 restore are implemented for synthetic data, with an operator guide; M1 waits for D-30, D-19 and a deployment before real data.
 
 ## Changes after architecture validation
 

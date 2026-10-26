@@ -39,6 +39,14 @@ export const envSchema = z.object({
    * Comma-separated `chrome-extension://<id>` origins allowed to call the unauthenticated token
    * endpoints (login, refresh) without a cookie (extension-design.md §2). Empty: none.
    */
+  /**
+   * The age X25519 recipient (public key) `ruvee-admin backup` encrypts to (D-29). Only the public
+   * key is ever configured; the identity that decrypts is held offline (backup-restore.md §3.2).
+   */
+  BACKUP_AGE_RECIPIENT: z
+    .string()
+    .regex(/^age1[02-9ac-hj-np-z]{58}$/, { error: 'Must be an age X25519 recipient (age1…)' })
+    .optional(),
   EXTENSION_ORIGINS: z.preprocess(
     emptyToUndefined,
     z

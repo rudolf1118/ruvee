@@ -109,6 +109,9 @@ The restore tests (`restore*.int-spec.ts`) also run `pg_dump` and `pg_restore`, 
 the server's major version (18). If the host's client is older, run them inside the database
 container: `RUVEE_PG_TOOLS_PREFIX='["docker","exec","-i","-e","PGPASSWORD","<container>"]'
 RUVEE_PG_TOOLS_HOST=127.0.0.1:5432` (the address as seen inside the container).
+`pnpm --filter @ruvee/web test:restore` (R14: encrypted backup, restore and review with two
+browser devices) needs the same variables plus `RUVEE_E2E_ADMIN_DATABASE_URL`. Operators: see
+[docs/guides/server-backup-restore.md](docs/guides/server-backup-restore.md).
 
 For end-to-end tests, either install Playwright's browser once
 (`pnpm --filter @ruvee/web exec playwright install chromium`) or reuse a local Chrome with

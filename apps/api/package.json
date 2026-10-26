@@ -25,6 +25,7 @@
     "@ruvee/contracts": "workspace:*",
     "@ruvee/crypto": "workspace:*",
     "@serenity-kit/opaque": "1.1.0",
+    "age-encryption": "0.3.1",
     "express": "5.3.0",
     "nestjs-pino": "5.3.1",
     "pino": "10.4.0",

@@ -5,8 +5,9 @@
  *   ruvee-admin opaque-setup --out <path>   create the OPAQUE server setup file (mode 0600)
  *   ruvee-admin bootstrap-token             print a single-use setup token valid for 60 minutes
  *   ruvee-admin backup --out <dir> --synthetic-test-only
- *                                           dump DATABASE_URL (synthetic only until D-29)
- *   ruvee-admin restore --sidecar <path>    restore into RESTORE_DATABASE_URL (new, empty)
+ *                                           encrypted dump of DATABASE_URL to BACKUP_AGE_RECIPIENT
+ *   ruvee-admin restore --manifest <file> --identity <file> (--trusted-digest <sha256> | --no-trusted-digest)
+ *                                           restore into RESTORE_DATABASE_URL (new, empty)
  *   ruvee-admin restore-review [--revoke-device <id> --reason lost|retired]
  *   ruvee-admin restore-complete --restore-id <id> --devices-reviewed --accept-restored-credentials
  *
@@ -44,16 +45,30 @@ function restoreUrl(): string {
   return url;
 }
 
+/** SIGINT and SIGTERM stop a backup or restore cleanly instead of killing it mid-write. */
+function interruptible(): AbortSignal {
+  const controller = new AbortController();
+  for (const signal of ['SIGINT', 'SIGTERM'] as const)
+    process.once(signal, () => {
+      controller.abort();
+    });
+  return controller.signal;
+}
+
 async function backup(args: string[]): Promise<void> {
   const url = process.env.DATABASE_URL;
   const out = option(args, '--out');
   if (!url || !out)
-    fail('usage: DATABASE_URL=… ruvee-admin backup --out <dir> --synthetic-test-only');
+    fail(
+      'usage: DATABASE_URL=… BACKUP_AGE_RECIPIENT=age1… ruvee-admin backup --out <dir> --synthetic-test-only',
+    );
   const result = await createBackup({
     databaseUrl: url,
     outDir: out,
     tools: pgToolsFromEnv(),
+    recipient: process.env.BACKUP_AGE_RECIPIENT,
     syntheticTestOnly: args.includes('--synthetic-test-only'),
+    signal: interruptible(),
     config: {
       publicOrigin: process.env.PUBLIC_ORIGIN ?? '',
       sessionCookieSecure: process.env.SESSION_COOKIE_SECURE === 'false' ? 'false' : 'true',
@@ -61,16 +76,31 @@ async function backup(args: string[]): Promise<void> {
     },
   });
   process.stdout.write(
-    `Wrote ${result.dumpPath}\nand ${result.sidecarPath} (SHA-256 ${result.sidecar.dump.sha256}).\n` +
-      'This is an unencrypted synthetic test backup; real-data backups wait for D-29.\n',
+    `Wrote the encrypted backup ${result.manifestPath}\n` +
+      `(snapshot of ${result.snapshotAt}, with ${result.manifest.files.dump.file} and ` +
+      `${result.manifest.files.meta.file}).\n\n` +
+      `Backup digest: ${result.digest}\n\n` +
+      'Record this digest somewhere the backup storage cannot change (for example with the\n' +
+      'offline identity). A restore checks it: it is the only proof that a backup is yours,\n' +
+      'because anyone who knows the public recipient can make a backup that decrypts.\n' +
+      'Synthetic test backup only: real-data backups wait until M1 is accepted (D-19, D-30).\n',
   );
 }
 
 async function restore(args: string[]): Promise<void> {
-  const sidecar = option(args, '--sidecar');
-  if (!sidecar) fail('usage: RESTORE_DATABASE_URL=… ruvee-admin restore --sidecar <path>');
+  const manifest = option(args, '--manifest');
+  const identity = option(args, '--identity');
+  const digest = option(args, '--trusted-digest');
+  const unchecked = args.includes('--no-trusted-digest');
+  if (!manifest || !identity || (!digest && !unchecked) || (digest && unchecked))
+    fail(
+      'usage: RESTORE_DATABASE_URL=… ruvee-admin restore --manifest <file> --identity <file>\n' +
+        '       (--trusted-digest <sha256> | --no-trusted-digest)',
+    );
   const result = await restoreBackup({
-    sidecarPath: sidecar,
+    manifestPath: manifest,
+    identityPath: identity,
+    trustedDigest: digest ?? false,
     targetDatabaseUrl: restoreUrl(),
     tools: pgToolsFromEnv(),
     knownMigrations: knownMigrations(`${apiRoot}prisma/migrations`),
@@ -86,10 +116,13 @@ async function restore(args: string[]): Promise<void> {
   if (!('removed' in result)) return;
   process.stdout.write(
     `Restored the snapshot of ${result.snapshotAt}.\nRestore id: ${result.restoreId}\n` +
+      (result.provenance === 'unchecked'
+        ? `Provenance NOT checked: compare the backup digest ${result.digest} with your own record.\n`
+        : 'The backup digest matched the one you supplied.\n') +
       `Ended ${String(result.removed.sessions)} sessions, deleted ${String(result.removed.pairings)} ` +
       `pairings and ${String(result.removed.setupTokens)} unused setup tokens.\n` +
       'The installation is in maintenance: every API request is refused until you complete the\n' +
-      'review. Next: ruvee-admin restore-review\n',
+      'review. You can now delete the identity file from this host. Next: ruvee-admin restore-review\n',
   );
 }
 
@@ -110,7 +143,10 @@ async function review(args: string[]): Promise<void> {
   const r = await reviewRestore(url);
   const lines = [
     `Restore ${r.restoreId}: ${r.state}`,
-    `Snapshot of ${r.snapshotAt}, dump SHA-256 ${r.dumpSha256}`,
+    `Snapshot of ${r.snapshotAt}, backup digest ${r.backupDigest}`,
+    r.provenance === 'unchecked'
+      ? 'Provenance NOT checked at restore: compare the digest with your own record before opening.'
+      : 'Provenance: the digest matched the operator-supplied record.',
     r.account ? `Account: ${r.account.username}` : 'No account: the snapshot predates the account.',
     '',
     'Devices as of the snapshot (revoke any removed after it, before opening):',

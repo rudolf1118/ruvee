@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
-import { createReadStream, createWriteStream } from 'node:fs';
+import { spawn, type ChildProcess } from 'node:child_process';
+import type { Readable, Writable } from 'node:stream';
 import { z } from 'zod';
 
 /**
@@ -7,14 +7,35 @@ import { z } from 'zod';
  * the server's major version or newer. By default they are found on PATH. `RUVEE_PG_TOOLS_PREFIX`
  * (a JSON array, never a shell string) runs them through another program, such as `docker exec`
  * into the database container; `RUVEE_PG_TOOLS_HOST` is then the host and port as seen from there.
- * The password goes in `PGPASSWORD`, never on a command line.
+ * The password goes in `PGPASSWORD`, never on a command line, and is never in an error message.
+ *
+ * Every tool streams: the plaintext dump goes straight from `pg_dump` into encryption, and from
+ * decryption straight into `pg_restore`. No plaintext dump file is ever written
+ * (backup-restore.md §3.2).
  */
+export interface ToolRun {
+  /** Resolves when the tool exited with status 0; rejects otherwise. */
+  readonly done: Promise<void>;
+  /** Stops the tool at once (SIGKILL), for a failed or interrupted pipeline. */
+  kill(): void;
+}
+
 export interface PgTools {
-  dump(databaseUrl: string, outPath: string, excludeTables: readonly string[]): Promise<void>;
-  restore(databaseUrl: string, inPath: string): Promise<void>;
+  /** `pg_dump --format=custom` of the database to `stdout`. */
+  dump(databaseUrl: string, excludeTables: readonly string[]): ToolRun & { stdout: Readable };
+  /** `pg_restore --single-transaction` into the database, reading the dump from `stdin`. */
+  restore(databaseUrl: string): ToolRun & { stdin: Writable };
+  /** `pg_restore -f -`: the dump as SQL text, with no database (for the R13 scan). */
+  toSql(): ToolRun & { stdin: Writable; stdout: Readable };
 }
 
 const prefixSchema = z.array(z.string().min(1).max(200)).max(20);
+
+/** Tool errors name objects and connection targets, never data; the password is never in them. */
+function redact(text: string, password: string): string {
+  const short = text.trim().slice(0, 2000);
+  return password ? short.split(password).join('[redacted]') : short;
+}
 
 export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
   const prefix = env.RUVEE_PG_TOOLS_PREFIX
@@ -30,42 +51,46 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
     return { url: url.toString(), password };
   };
 
-  const run = (
-    tool: string,
-    args: string[],
-    password: string,
-    io: {
-      stdin?: string;
-      stdout?: string;
-    },
-  ) =>
-    new Promise<void>((resolve, reject) => {
-      const [command, ...before] = prefix.length > 0 ? prefix : [tool];
-      const argv = prefix.length > 0 ? [...before, tool, ...args] : args;
-      const child = spawn(command ?? tool, argv, {
-        env: { ...process.env, PGPASSWORD: password },
-        stdio: [io.stdin ? 'pipe' : 'ignore', io.stdout ? 'pipe' : 'ignore', 'pipe'],
+  const run = (tool: string, args: string[], password: string, stdin: boolean, stdout: boolean) => {
+    const [command, ...before] = prefix.length > 0 ? prefix : [tool];
+    const argv = prefix.length > 0 ? [...before, tool, ...args] : args;
+    const child: ChildProcess = spawn(command ?? tool, argv, {
+      env: { ...process.env, PGPASSWORD: password },
+      stdio: [stdin ? 'pipe' : 'ignore', stdout ? 'pipe' : 'ignore', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr?.on('data', (chunk: Buffer) => {
+      if (stderr.length < 4000) stderr += chunk.toString('utf8');
+    });
+    const done = new Promise<void>((resolve, reject) => {
+      child.on('error', (error) => {
+        reject(new Error(`${tool} could not be started: ${error.message}`));
       });
-      let stderr = '';
-      child.stderr?.on('data', (chunk: Buffer) => {
-        // Kept short: tool errors name objects, not data.
-        if (stderr.length < 4000) stderr += chunk.toString('utf8');
-      });
-      if (io.stdin && child.stdin) createReadStream(io.stdin).pipe(child.stdin);
-      if (io.stdout && child.stdout)
-        // Owner-only: the dump holds every wrap and verifier (backup-restore.md §3.1).
-        child.stdout.pipe(createWriteStream(io.stdout, { flags: 'wx', mode: 0o600 }));
-      child.on('error', reject);
-      child.on('close', (code) => {
+      child.on('close', (code, signal) => {
         if (code === 0) resolve();
-        else reject(new Error(`${tool} failed (exit ${String(code)}): ${stderr.trim()}`));
+        else
+          reject(
+            new Error(
+              `${tool} failed (${signal ? `signal ${signal}` : `exit ${String(code)}`}): ${redact(stderr, password)}`,
+            ),
+          );
       });
     });
+    // A caller that stops early still observes `done`; never an unhandled rejection.
+    done.catch(() => undefined);
+    return {
+      child,
+      done,
+      kill: () => {
+        if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+      },
+    };
+  };
 
   return {
-    async dump(databaseUrl, outPath, excludeTables) {
+    dump(databaseUrl, excludeTables) {
       const { url, password } = target(databaseUrl);
-      await run(
+      const r = run(
         'pg_dump',
         [
           '--format=custom',
@@ -75,12 +100,15 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
           `--dbname=${url}`,
         ],
         password,
-        { stdout: outPath },
+        false,
+        true,
       );
+      if (!r.child.stdout) throw new Error('pg_dump has no output stream');
+      return { stdout: r.child.stdout, done: r.done, kill: r.kill };
     },
-    async restore(databaseUrl, inPath) {
+    restore(databaseUrl) {
       const { url, password } = target(databaseUrl);
-      await run(
+      const r = run(
         'pg_restore',
         [
           '--exit-on-error',
@@ -90,8 +118,16 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
           `--dbname=${url}`,
         ],
         password,
-        { stdin: inPath },
+        true,
+        false,
       );
+      if (!r.child.stdin) throw new Error('pg_restore has no input stream');
+      return { stdin: r.child.stdin, done: r.done, kill: r.kill };
+    },
+    toSql() {
+      const r = run('pg_restore', ['--file=-'], '', true, true);
+      if (!r.child.stdin || !r.child.stdout) throw new Error('pg_restore has no streams');
+      return { stdin: r.child.stdin, stdout: r.child.stdout, done: r.done, kill: r.kill };
     },
   };
 }

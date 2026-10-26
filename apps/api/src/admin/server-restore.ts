@@ -1,34 +1,49 @@
-import { createHash, randomUUID } from 'node:crypto';
-import {
-  createReadStream,
-  existsSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  writeFileSync,
-} from 'node:fs';
-import { basename, dirname, join } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import { existsSync, lstatSync, readdirSync, renameSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
+import { pipeline as streamPipeline, type Readable, type Writable } from 'node:stream';
 import pg from 'pg';
 import { z } from 'zod';
+import {
+  ageFailure,
+  BACKUP_FORMAT,
+  BackupError,
+  backupDigest,
+  checkRecipient,
+  encryptBytesToFile,
+  encryptToFile,
+  fsyncPath,
+  META_FORMAT,
+  newBackupId,
+  openBackup,
+  openNewFile,
+  Tap,
+  verifyDump,
+  type BackupMeta,
+  type Manifest,
+  type OpenOutput,
+} from './backup-files.js';
 import type { PgTools } from './pg-tools.js';
 
 /**
  * Server backup and restore (backup-restore.md §3). Local tooling only: there is no remote
- * administration endpoint, and nothing here can decrypt anything (INV-18).
+ * administration endpoint, and nothing here can decrypt the vault (INV-18). Backups are
+ * encrypted with age to the configured recipient (D-29 option B, backup-files.ts); restoring
+ * needs the owner's offline identity for that one run.
  *
- * Until D-29 (encryption at rest and key custody) is approved, a backup can be taken only of a
- * synthetic, task-owned test database, and a restore accepts only such backups.
+ * Until M1 is accepted for real data (D-19, D-30), a backup can be taken only of a synthetic,
+ * task-owned test database.
  */
 
-export const BACKUP_FORMAT = 'ruvee-server-backup/1';
+export { BACKUP_FORMAT };
 export const GUARD_TABLE = 'ruvee_restore_guard';
 /** Names of the throwaway databases the test suites create; nothing else may be backed up yet. */
 const SYNTHETIC_DATABASE = /^ruvee_(it|e2e)_[0-9a-f]+$/;
 
 export class RestoreError extends Error {
   constructor(
-    readonly stage: 'verify' | 'prepare' | 'load' | 'migrate' | 'policy' | 'review' | 'complete',
+    readonly stage:
+      'backup' | 'verify' | 'prepare' | 'load' | 'migrate' | 'policy' | 'review' | 'complete',
     message: string,
   ) {
     super(message);
@@ -36,24 +51,11 @@ export class RestoreError extends Error {
   }
 }
 
-export const sidecarSchema = z.strictObject({
-  format: z.literal(BACKUP_FORMAT),
-  /** True for every backup until D-29 is approved. */
-  synthetic: z.literal(true),
-  snapshotAt: z.iso.datetime({ offset: false }),
-  dump: z.strictObject({
-    file: z.string().regex(/^[A-Za-z0-9._-]{1,128}\.dump$/),
-    sha256: z.string().regex(/^[0-9a-f]{64}$/),
-    size: z.int().min(1),
-  }),
-  schema: z.strictObject({ migration: z.string().regex(/^[0-9]{14}_[a-z0-9_]{1,100}$/) }),
-  config: z.strictObject({
-    publicOrigin: z.string().max(256),
-    sessionCookieSecure: z.enum(['true', 'false']),
-    extensionOrigins: z.string().max(2000),
-  }),
-});
-export type Sidecar = z.infer<typeof sidecarSchema>;
+const fromBackupError = (error: unknown, fallback: RestoreError['stage']): RestoreError => {
+  if (error instanceof RestoreError) return error;
+  if (error instanceof BackupError) return new RestoreError(error.stage, error.message);
+  return new RestoreError(fallback, error instanceof Error ? error.message : 'failed');
+};
 
 async function withClient<T>(url: string, run: (client: pg.Client) => Promise<T>): Promise<T> {
   const client = new pg.Client({ connectionString: url });
@@ -65,18 +67,6 @@ async function withClient<T>(url: string, run: (client: pg.Client) => Promise<T>
   }
 }
 
-function sha256File(path: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const hash = createHash('sha256');
-    createReadStream(path)
-      .on('data', (chunk) => hash.update(chunk))
-      .on('error', reject)
-      .on('end', () => {
-        resolve(hash.digest('hex'));
-      });
-  });
-}
-
 const databaseName = (url: string) => decodeURIComponent(new URL(url).pathname.slice(1));
 
 // ---- Backup ----
@@ -85,26 +75,60 @@ export interface BackupOptions {
   readonly databaseUrl: string;
   readonly outDir: string;
   readonly tools: PgTools;
-  /** Required until D-29: backups of real data need approved encryption and key custody. */
+  /** The age X25519 recipient (public key) from the server's configuration. */
+  readonly recipient: string | undefined;
+  /** Required until M1 is accepted for real data. */
   readonly syntheticTestOnly: boolean;
-  readonly config: Sidecar['config'];
+  readonly config: BackupMeta['config'];
   readonly now?: () => Date;
+  /** Interruption (SIGINT, SIGTERM): stops every stage and removes what was written. */
+  readonly signal?: AbortSignal;
+  /** For fault injection in tests (a full disk); the default creates owner-only new files. */
+  readonly openOutput?: OpenOutput;
+}
+
+export interface BackupResult {
+  readonly manifestPath: string;
+  readonly dumpPath: string;
+  readonly metaPath: string;
+  /** SHA-256 of the manifest: the operator keeps it apart from backup storage (§3.2a). */
+  readonly digest: string;
+  readonly manifest: Manifest;
+  readonly snapshotAt: string;
 }
 
 /**
- * One `pg_dump` (one repeatable-read snapshot), written as `.partial` and renamed only after its
- * SHA-256 and the sidecar are written. The restore guard is never part of a backup.
+ * One `pg_dump` (one repeatable-read snapshot), streamed into age; the metadata encrypted too;
+ * the manifest written last. Everything is written as `.partial`, owner-only, and renamed only
+ * after every stage succeeded and was flushed: a failed `pg_dump`, a failed encryption, a full
+ * disk or an interruption removes the partial files, and a killed process leaves only
+ * `.partial` files, which nothing treats as a backup. The restore guard is never in a backup.
  */
-export async function createBackup(options: BackupOptions) {
+export async function createBackup(options: BackupOptions): Promise<BackupResult> {
   if (!options.syntheticTestOnly)
     throw new RestoreError(
-      'verify',
-      'backups of real data need an approved encryption and key-custody approach (D-29); ' +
+      'backup',
+      'backups of real data wait until M1 is accepted for real data (D-19, D-30); ' +
         'only --synthetic-test-only is available',
     );
+  const recipient = (() => {
+    try {
+      return checkRecipient(options.recipient);
+    } catch (error) {
+      throw fromBackupError(error, 'backup');
+    }
+  })();
   const name = databaseName(options.databaseUrl);
   if (!SYNTHETIC_DATABASE.test(name))
-    throw new RestoreError('verify', 'only a synthetic ruvee_it_* or ruvee_e2e_* database');
+    throw new RestoreError('backup', 'only a synthetic ruvee_it_* or ruvee_e2e_* database');
+  let outStat;
+  try {
+    outStat = lstatSync(options.outDir);
+  } catch {
+    throw new RestoreError('backup', 'the output directory does not exist');
+  }
+  if (!outStat.isDirectory())
+    throw new RestoreError('backup', 'the output path is not a directory');
   const migration = await withClient(options.databaseUrl, async (c) => {
     const rows = await c.query<{ migration_name: string }>(
       `SELECT migration_name FROM _prisma_migrations WHERE finished_at IS NOT NULL
@@ -112,46 +136,133 @@ export async function createBackup(options: BackupOptions) {
     );
     return rows.rows[0]?.migration_name;
   });
-  if (!migration) throw new RestoreError('verify', 'the database has no applied migrations');
+  if (!migration) throw new RestoreError('backup', 'the database has no applied migrations');
+
   const snapshotAt = (options.now ?? (() => new Date()))();
-  const stamp = snapshotAt.toISOString().replace(/[-:.]/g, '');
-  const file = `ruvee-${stamp}.dump`;
-  const partial = join(options.outDir, `${file}.partial`);
-  const dumpPath = join(options.outDir, file);
-  if (existsSync(dumpPath) || existsSync(partial))
-    throw new RestoreError('verify', 'a backup with that name already exists');
-  await options.tools.dump(options.databaseUrl, partial, [GUARD_TABLE]);
-  const sidecar: Sidecar = {
-    format: BACKUP_FORMAT,
-    synthetic: true,
-    snapshotAt: snapshotAt.toISOString(),
-    dump: { file, sha256: await sha256File(partial), size: statSync(partial).size },
-    schema: { migration },
-    config: options.config,
+  const stem = `ruvee-${snapshotAt.toISOString().replace(/[-:.]/g, '')}`;
+  const final = {
+    dump: join(options.outDir, `${stem}.dump.age`),
+    meta: join(options.outDir, `${stem}.meta.age`),
+    manifest: join(options.outDir, `${stem}.manifest.json`),
   };
-  const sidecarPath = join(options.outDir, `${file}.json`);
-  writeFileSync(sidecarPath, `${JSON.stringify(sidecar, null, 2)}\n`, { flag: 'wx', mode: 0o600 });
-  renameSync(partial, dumpPath);
-  return { dumpPath, sidecarPath, sidecar };
+  const partial = Object.fromEntries(
+    Object.entries(final).map(([k, v]) => [k, `${v}.partial`]),
+  ) as typeof final;
+  for (const path of [...Object.values(final), ...Object.values(partial)])
+    if (existsSync(path))
+      throw new RestoreError('backup', 'a backup with that name already exists');
+
+  const open = options.openOutput ?? openNewFile;
+  const written: string[] = [];
+  const track = (path: string) => {
+    written.push(path);
+    return path;
+  };
+  const run = options.tools.dump(options.databaseUrl, [GUARD_TABLE]);
+  const onAbort = () => {
+    run.kill();
+  };
+  options.signal?.addEventListener('abort', onAbort, { once: true });
+  try {
+    options.signal?.throwIfAborted();
+    const plain = new Tap();
+    // pg_dump's output goes straight into encryption; an error on either side destroys both.
+    const source: Readable = streamPipeline(run.stdout, plain, () => undefined);
+    const [dump] = await Promise.all([
+      encryptToFile(recipient, source, track(partial.dump), open, options.signal),
+      // A pg_dump that fails after writing part of a dump still ends its output normally:
+      // only its exit status says the dump is incomplete.
+      run.done,
+    ]);
+    fsyncPath(partial.dump);
+    const backupId = newBackupId();
+    const meta: BackupMeta = {
+      format: META_FORMAT,
+      backupId,
+      synthetic: true,
+      snapshotAt: snapshotAt.toISOString(),
+      dump: { sha256: plain.digest(), size: plain.bytes },
+      schema: { migration },
+      config: options.config,
+    };
+    options.signal?.throwIfAborted();
+    const metaFile = await encryptBytesToFile(
+      recipient,
+      new TextEncoder().encode(JSON.stringify(meta)),
+      track(partial.meta),
+      open,
+    );
+    fsyncPath(partial.meta);
+    const manifest: Manifest = {
+      format: BACKUP_FORMAT,
+      backupId,
+      recipient,
+      files: {
+        dump: { file: `${stem}.dump.age`, ...dump },
+        meta: { file: `${stem}.meta.age`, ...metaFile },
+      },
+    };
+    const manifestBytes = new TextEncoder().encode(`${JSON.stringify(manifest, null, 2)}\n`);
+    await new Promise<void>((resolve, reject) => {
+      const out: Writable = open(track(partial.manifest));
+      out.on('error', reject);
+      out.end(manifestBytes, () => {
+        resolve();
+      });
+    });
+    fsyncPath(partial.manifest);
+    options.signal?.throwIfAborted();
+    // Publish: the data files first, the manifest last. Only a manifest makes a set complete.
+    renameSync(partial.dump, track(final.dump));
+    renameSync(partial.meta, track(final.meta));
+    renameSync(partial.manifest, track(final.manifest));
+    fsyncPath(options.outDir);
+    return {
+      manifestPath: final.manifest,
+      dumpPath: final.dump,
+      metaPath: final.meta,
+      digest: backupDigest(manifestBytes),
+      manifest,
+      snapshotAt: meta.snapshotAt,
+    };
+  } catch (error) {
+    run.kill();
+    // Only the exact files this run created.
+    for (const path of written) rmSync(path, { force: true });
+    if (options.signal?.aborted)
+      throw new RestoreError('backup', 'interrupted; nothing was published');
+    throw fromBackupError(error, 'backup');
+  } finally {
+    options.signal?.removeEventListener('abort', onAbort);
+  }
 }
 
 // ---- Restore ----
 
 export interface RestoreOptions {
-  readonly sidecarPath: string;
+  readonly manifestPath: string;
+  /** The owner's offline age identity, for this run only; never configuration. */
+  readonly identityPath: string;
+  /** The backup digest the operator kept apart from backup storage, or explicitly none. */
+  readonly trustedDigest: string | false;
   readonly targetDatabaseUrl: string;
   readonly tools: PgTools;
   /** Applies the repository's migrations to the target (prisma migrate deploy). */
   readonly migrate: (url: string) => void | Promise<void>;
   /** The repository's migration directory names, oldest first. */
   readonly knownMigrations: readonly string[];
+  readonly maxDumpBytes?: number;
   /** For tests: stop after a state, as an interruption would. */
   readonly stopAfter?: 'prepare' | 'load' | 'migrate';
+  /** For tests: runs after VERIFY and PREPARE, before LOAD (a file changed in between). */
+  readonly beforeLoad?: () => void | Promise<void>;
 }
 
 export interface RestoreResult {
   readonly restoreId: string;
   readonly snapshotAt: string;
+  readonly digest: string;
+  readonly provenance: 'trusted-digest' | 'unchecked';
   readonly removed: {
     readonly sessions: number;
     readonly pairings: number;
@@ -159,38 +270,70 @@ export interface RestoreResult {
   };
 }
 
-/** VERIFY: everything about the backup, before anything is created. */
-export async function verifyBackup(sidecarPath: string, knownMigrations: readonly string[]) {
-  let sidecar: Sidecar;
+/**
+ * LOAD: decrypts the dump again straight into `pg_restore`. Its input ends only after the last
+ * chunk authenticated and the plaintext's SHA-256 and size matched; on any failure `pg_restore`
+ * is killed before its input is closed, so it never sees a clean end of a bad dump. Whatever
+ * happens, the guard is still `restoring`: nothing here can make the installation openable.
+ */
+async function load(backup: Awaited<ReturnType<typeof openBackup>>, url: string, tools: PgTools) {
+  const run = tools.restore(url);
+  // A pg_restore that exits early makes writes fail; `run.done` reports why.
+  run.stdin.on('error', () => undefined);
+  const { plaintext, tap } = await backup.decryptDump();
   try {
-    sidecar = sidecarSchema.parse(JSON.parse(readFileSync(sidecarPath, 'utf8')));
-  } catch {
-    throw new RestoreError('verify', 'the sidecar is not a valid Ruvee backup description');
+    for await (const chunk of plaintext as AsyncIterable<Buffer>) {
+      if (!run.stdin.write(chunk))
+        await new Promise<void>((resolve, reject) => {
+          run.stdin.once('drain', resolve);
+          run.done.catch(reject);
+        });
+    }
+    if (tap.bytes !== backup.meta.dump.size || tap.digest() !== backup.meta.dump.sha256)
+      throw new RestoreError('load', 'the decrypted dump does not match its metadata');
+  } catch (error) {
+    run.kill();
+    run.stdin.destroy();
+    // Reported as LOAD: the guard says `restoring`, and the target must be discarded.
+    const message =
+      error instanceof RestoreError || error instanceof BackupError
+        ? error.message
+        : ageFailure().message;
+    throw new RestoreError('load', `${message}; discard this database and start again`);
   }
-  const dumpPath = join(dirname(sidecarPath), sidecar.dump.file);
-  if (basename(dumpPath) !== sidecar.dump.file || !existsSync(dumpPath))
-    throw new RestoreError('verify', 'the dump named by the sidecar is missing');
-  if (
-    statSync(dumpPath).size !== sidecar.dump.size ||
-    (await sha256File(dumpPath)) !== sidecar.dump.sha256
-  )
-    throw new RestoreError('verify', 'the dump does not match its sidecar (size or SHA-256)');
-  if (!knownMigrations.includes(sidecar.schema.migration))
-    throw new RestoreError(
-      'verify',
-      'the backup is from a newer or unknown schema; use the same or a newer Ruvee',
-    );
-  return { sidecar, dumpPath };
+  run.stdin.end();
+  try {
+    await run.done;
+  } catch (error) {
+    throw new RestoreError('load', error instanceof Error ? error.message : 'pg_restore failed');
+  }
 }
 
 /**
- * VERIFY → PREPARE → LOAD → MIGRATE → APPLY POLICY (backup-restore.md §3.5, §3.6). Ends in the
- * `review` state: the installation stays closed until `completeRestore`.
+ * VERIFY → PREPARE → LOAD → MIGRATE → APPLY POLICY (backup-restore.md §3.5, §3.6). VERIFY
+ * authenticates and checks the whole backup, every byte of the dump included, before anything is
+ * created. Ends in the `review` state: the installation stays closed until `completeRestore`.
  */
 export async function restoreBackup(
   options: RestoreOptions,
 ): Promise<RestoreResult | { stoppedAfter: string; restoreId: string }> {
-  const { sidecar, dumpPath } = await verifyBackup(options.sidecarPath, options.knownMigrations);
+  let backup;
+  try {
+    backup = await openBackup({
+      manifestPath: options.manifestPath,
+      identityPath: options.identityPath,
+      trustedDigest: options.trustedDigest,
+      ...(options.maxDumpBytes ? { maxDumpBytes: options.maxDumpBytes } : {}),
+    });
+    if (!options.knownMigrations.includes(backup.meta.schema.migration))
+      throw new RestoreError(
+        'verify',
+        'the backup is from a newer or unknown schema; use the same or a newer Ruvee',
+      );
+    await verifyDump(backup);
+  } catch (error) {
+    throw fromBackupError(error, 'verify');
+  }
   const restoreId = randomUUID();
   const url = options.targetDatabaseUrl;
 
@@ -209,22 +352,21 @@ export async function restoreBackup(
       state text NOT NULL CHECK (state IN ('restoring', 'review', 'open')),
       restore_id uuid NOT NULL,
       snapshot_at timestamptz NOT NULL,
-      dump_sha256 text NOT NULL,
+      backup_digest text NOT NULL,
+      provenance text NOT NULL CHECK (provenance IN ('trusted-digest', 'unchecked')),
       started_at timestamptz NOT NULL DEFAULT now(),
       review_completed_at timestamptz
     )`);
     await c.query(
-      `INSERT INTO ${GUARD_TABLE} (id, state, restore_id, snapshot_at, dump_sha256) VALUES (1, 'restoring', $1, $2, $3)`,
-      [restoreId, sidecar.snapshotAt, sidecar.dump.sha256],
+      `INSERT INTO ${GUARD_TABLE} (id, state, restore_id, snapshot_at, backup_digest, provenance)
+       VALUES (1, 'restoring', $1, $2, $3, $4)`,
+      [restoreId, backup.meta.snapshotAt, backup.digest, backup.provenance],
     );
   });
   if (options.stopAfter === 'prepare') return { stoppedAfter: 'prepare', restoreId };
 
-  try {
-    await options.tools.restore(url, dumpPath);
-  } catch (error) {
-    throw new RestoreError('load', error instanceof Error ? error.message : 'pg_restore failed');
-  }
+  await options.beforeLoad?.();
+  await load(backup, url, options.tools);
   if (options.stopAfter === 'load') return { stoppedAfter: 'load', restoreId };
   try {
     await options.migrate(url);
@@ -244,7 +386,16 @@ export async function restoreBackup(
       const badManifests = await c.query<{ n: string }>(
         `SELECT count(*) AS n FROM vault_commits WHERE octet_length(manifest) <> 198`,
       );
-      if (Number(bad.rows[0]?.n) !== 0 || Number(badManifests.rows[0]?.n) !== 0)
+      // Every commit from 1 to current_seq, none missing, none beyond.
+      const gaps = await c.query<{ n: string }>(
+        `SELECT count(*) AS n FROM vaults v
+         WHERE (SELECT count(*) FROM vault_commits WHERE vault_id = v.id) <> v.current_seq`,
+      );
+      if (
+        Number(bad.rows[0]?.n) !== 0 ||
+        Number(badManifests.rows[0]?.n) !== 0 ||
+        Number(gaps.rows[0]?.n) !== 0
+      )
         throw new RestoreError('policy', 'the restored vault history is not consistent');
       const sessions = await c.query(
         `UPDATE sessions SET revoked_at = now(), revoke_reason = 'restored' WHERE revoked_at IS NULL`,
@@ -263,7 +414,9 @@ export async function restoreBackup(
       await c.query('COMMIT');
       return {
         restoreId,
-        snapshotAt: sidecar.snapshotAt,
+        snapshotAt: backup.meta.snapshotAt,
+        digest: backup.digest,
+        provenance: backup.provenance,
         removed: {
           sessions: sessions.rowCount ?? 0,
           pairings: pairings.rowCount ?? 0,
@@ -287,7 +440,9 @@ export interface RestoreReview {
   readonly state: 'restoring' | 'review' | 'open';
   readonly restoreId: string;
   readonly snapshotAt: string;
-  readonly dumpSha256: string;
+  /** SHA-256 of the backup's manifest: compare it with the operator's own record. */
+  readonly backupDigest: string;
+  readonly provenance: 'trusted-digest' | 'unchecked';
   readonly account: { readonly username: string } | null;
   readonly devices: readonly {
     readonly id: string;
@@ -315,8 +470,11 @@ async function guard(c: pg.Client) {
     state: 'restoring' | 'review' | 'open';
     restore_id: string;
     snapshot_at: Date;
-    dump_sha256: string;
-  }>(`SELECT state, restore_id, snapshot_at, dump_sha256 FROM ${GUARD_TABLE} WHERE id = 1`);
+    backup_digest: string;
+    provenance: 'trusted-digest' | 'unchecked';
+  }>(
+    `SELECT state, restore_id, snapshot_at, backup_digest, provenance FROM ${GUARD_TABLE} WHERE id = 1`,
+  );
   const g = row.rows[0];
   if (!g) throw new RestoreError('review', 'the restore guard is incomplete');
   return g;
@@ -351,7 +509,8 @@ export async function reviewRestore(databaseUrl: string): Promise<RestoreReview>
       state: g.state,
       restoreId: g.restore_id,
       snapshotAt: g.snapshot_at.toISOString(),
-      dumpSha256: g.dump_sha256,
+      backupDigest: g.backup_digest,
+      provenance: g.provenance,
       account: account.rows[0] ? { username: account.rows[0].username_normalized } : null,
       devices: devices.rows.map((d) => ({
         id: d.id,

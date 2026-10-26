@@ -124,6 +124,12 @@ jobs:
       - run: pnpm --filter @ruvee/web test:vault
       # Export from one installation, restore into a second, fresh one (two stacks, two databases).
       - run: pnpm --filter @ruvee/web test:import
+      # R14: encrypted backup, restore into a new database and review, under the same origin. The
+      # PostgreSQL 18 tools run inside the service container (apps/api/src/admin/pg-tools.ts).
+      - run: pnpm --filter @ruvee/web test:restore
+        env:
+          RUVEE_PG_TOOLS_PREFIX: '["docker","exec","-i","-e","PGPASSWORD","${{ job.services.postgres.id }}"]'
+          RUVEE_PG_TOOLS_HOST: 127.0.0.1:5432
       - if: failure()
         uses: actions/upload-artifact@v7
         with:

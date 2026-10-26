@@ -2,13 +2,13 @@ import type { Env } from '../config/env.js';
 
 /**
  * What a server backup must account for (backup-restore.md §3.1). Descriptive only: it says what
- * each input is and where it comes from on a restore. It contains no restore policy (D-28 is
- * open) and is not used by any running code yet. A test keeps it complete: a new table or
+ * each input is and where it comes from on a restore. It contains no restore policy (that is
+ * server-restore.ts) and no running code reads it. A test keeps it complete: a new table or
  * configuration variable fails until it is classified here.
  */
 
 export type ConfigHandling =
-  /** Copied into the backup's sidecar: the restored server must use the same value. */
+  /** Copied into the backup's encrypted metadata: the restored server must use the same value. */
   | 'sidecar'
   /** Points to a secret kept apart from the dump; only the path is configuration. */
   | 'separate-secret'
@@ -37,6 +37,10 @@ export const CONFIG_INVENTORY: Record<keyof Env, { handling: ConfigHandling; why
   TRUSTED_PROXY_ADDRESS: {
     handling: 'host',
     why: 'address of the new host’s reverse proxy',
+  },
+  BACKUP_AGE_RECIPIENT: {
+    handling: 'host',
+    why: 'the public key backups are encrypted to; set again on the restoring host. The identity that decrypts is never configuration (D-29)',
   },
   EXTENSION_ORIGINS: {
     handling: 'sidecar',

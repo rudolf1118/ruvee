@@ -45,6 +45,23 @@ describe('validateEnv', () => {
     },
   );
 
+  it('accepts only an age X25519 public key as the backup recipient, never a private key', () => {
+    const recipient = `age1${'q'.repeat(58)}`;
+    expect(validateEnv({ ...required, BACKUP_AGE_RECIPIENT: recipient }).BACKUP_AGE_RECIPIENT).toBe(
+      recipient,
+    );
+    for (const value of [
+      `AGE-SECRET-KEY-1${'Q'.repeat(58)}`,
+      'age1short',
+      `age1pq1${'q'.repeat(58)}`,
+    ]) {
+      const problems = problemsFor({ ...required, BACKUP_AGE_RECIPIENT: value });
+      expect(problems).toEqual(['BACKUP_AGE_RECIPIENT: Must be an age X25519 recipient (age1…)']);
+      // The value itself is never echoed (it might be a secret pasted by mistake).
+      expect(problems.join('\n')).not.toContain(value);
+    }
+  });
+
   it('refuses an insecure session cookie in production', () => {
     expect(
       problemsFor({ ...required, NODE_ENV: 'production', SESSION_COOKIE_SECURE: 'false' }),

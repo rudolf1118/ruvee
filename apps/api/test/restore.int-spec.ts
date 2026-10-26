@@ -14,6 +14,7 @@ import { pgToolsFromEnv } from '../src/admin/pg-tools.js';
 import {
   completeRestore,
   createBackup,
+  type BackupResult,
   knownMigrations,
   restoreBackup,
   RestoreError,
@@ -35,6 +36,7 @@ import {
   syntheticAccount,
   type SyntheticAccount,
 } from './support/synthetic-client.js';
+import { testBackupKey, type TestBackupKey } from './support/backup-keys.js';
 import { createTempDatabase, migrate, query, type TempDatabase } from './support/temp-database.js';
 
 /**
@@ -89,8 +91,8 @@ describe('server restore into a maintenance-mode installation (real database, re
   let otherDevice: { id: string; cookie: string };
   let pairingId: string;
   let outDir: string;
-  let sidecarPath: string;
-  let dumpPath: string;
+  let key: TestBackupKey;
+  let backup: BackupResult;
   let sourceBefore: string;
   let target: TempDatabase;
   let restoreId: string;
@@ -175,27 +177,22 @@ describe('server restore into a maintenance-mode installation (real database, re
     await source.post('/api/v1/pairings', { pairingId }, owner).expect(201);
 
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-restore-it-'));
-    const backup = await createBackup({
+    key = await testBackupKey();
+    backup = await createBackup({
       databaseUrl: source.db.url,
       outDir,
       tools,
+      recipient: key.recipient,
       syntheticTestOnly: true,
       config,
     });
-    sidecarPath = backup.sidecarPath;
-    dumpPath = backup.dumpPath;
     sourceBefore = await fingerprint(source.db.url);
 
     target = await createTempDatabase();
-    const result = await restoreBackup({
-      sidecarPath,
-      targetDatabaseUrl: target.url,
-      tools,
-      migrate,
-      knownMigrations: MIGRATIONS,
-    });
+    const result = await restoreBackup(restoreArgs(backup, target.url));
     if (!('removed' in result)) throw new Error('restore stopped');
     restoreId = result.restoreId;
+    expect(result.provenance).toBe('trusted-digest');
     expect(result.removed.pairings).toBe(1);
     expect(result.removed.sessions).toBeGreaterThanOrEqual(4);
 
@@ -213,76 +210,42 @@ describe('server restore into a maintenance-mode installation (real database, re
     await (restored as Harness | undefined)?.close();
     await (source as Harness | undefined)?.close();
     rmSync(outDir, { recursive: true, force: true });
+    (key as TestBackupKey | undefined)?.drop();
   });
+
+  function restoreArgs(b: BackupResult, targetDatabaseUrl: string) {
+    return {
+      manifestPath: b.manifestPath,
+      identityPath: key.identityPath,
+      trustedDigest: b.digest,
+      targetDatabaseUrl,
+      tools,
+      migrate,
+      knownMigrations: MIGRATIONS,
+    };
+  }
 
   beforeEach(() => {
     clearRestoredThrottle();
   });
 
-  it('refuses to take a backup of anything but a synthetic database, or without D-29', async () => {
+  it('refuses to take a backup of anything but a synthetic database', async () => {
+    const base = { outDir, tools, recipient: key.recipient, config };
     await expect(
-      createBackup({ databaseUrl: source.db.url, outDir, tools, syntheticTestOnly: false, config }),
-    ).rejects.toThrow(/D-29/);
+      createBackup({ ...base, databaseUrl: source.db.url, syntheticTestOnly: false }),
+    ).rejects.toThrow(/synthetic-test-only/);
     const other = new URL(source.db.url);
     other.pathname = '/ruvee';
     await expect(
-      createBackup({
-        databaseUrl: other.toString(),
-        outDir,
-        tools,
-        syntheticTestOnly: true,
-        config,
-      }),
+      createBackup({ ...base, databaseUrl: other.toString(), syntheticTestOnly: true }),
     ).rejects.toThrow(/synthetic/);
   });
 
   it('never restores into a database that is not empty', async () => {
-    await expect(
-      restoreBackup({
-        sidecarPath,
-        targetDatabaseUrl: source.db.url,
-        tools,
-        migrate,
-        knownMigrations: MIGRATIONS,
-      }),
-    ).rejects.toBeInstanceOf(RestoreError);
+    await expect(restoreBackup(restoreArgs(backup, source.db.url))).rejects.toBeInstanceOf(
+      RestoreError,
+    );
     expect(await fingerprint(source.db.url)).toBe(sourceBefore);
-  });
-
-  it('refuses a dump that does not match its sidecar, or a newer schema, before creating anything', async () => {
-    const empty = await createTempDatabase();
-    try {
-      const wrong = JSON.parse(readFileSync(sidecarPath, 'utf8')) as {
-        dump: { sha256: string };
-        schema: { migration: string };
-      };
-      const bad = join(outDir, 'tampered.json');
-      for (const variant of [
-        { ...wrong, dump: { ...wrong.dump, sha256: '0'.repeat(64) } },
-        { ...wrong, schema: { migration: '29991231000000_from_the_future' } },
-      ]) {
-        rmSync(bad, { force: true });
-        await import('node:fs').then((fs) => {
-          fs.writeFileSync(bad, JSON.stringify(variant));
-        });
-        await expect(
-          restoreBackup({
-            sidecarPath: bad,
-            targetDatabaseUrl: empty.url,
-            tools,
-            migrate,
-            knownMigrations: MIGRATIONS,
-          }),
-        ).rejects.toMatchObject({ stage: 'verify' });
-      }
-      const tables = await query<{ n: string }>(
-        empty.url,
-        `SELECT count(*) AS n FROM pg_tables WHERE schemaname = 'public'`,
-      );
-      expect(tables[0]?.n).toBe('0');
-    } finally {
-      await empty.drop();
-    }
   });
 
   it('serves nothing in review: not old cookies or tokens, not login, recovery, registration or pairing', async () => {
@@ -389,11 +352,12 @@ describe('server restore into a maintenance-mode installation (real database, re
 
   it('leaves the original installation and the backup unchanged', async () => {
     expect(await fingerprint(source.db.url)).toBe(sourceBefore);
-    const sidecar = JSON.parse(readFileSync(sidecarPath, 'utf8')) as { dump: { sha256: string } };
-    expect(sha(dumpPath)).toBe(sidecar.dump.sha256);
-    // Readable by the owner only, both of them.
-    expect(statSync(dumpPath).mode & 0o777).toBe(0o600);
-    expect(statSync(sidecarPath).mode & 0o777).toBe(0o600);
+    // The backup set is as written: the same digest, the same ciphertexts, owner-only files.
+    expect(sha(backup.manifestPath)).toBe(backup.digest);
+    expect(sha(backup.dumpPath)).toBe(backup.manifest.files.dump.sha256);
+    expect(sha(backup.metaPath)).toBe(backup.manifest.files.meta.sha256);
+    for (const path of [backup.manifestPath, backup.dumpPath, backup.metaPath])
+      expect(statSync(path).mode & 0o777).toBe(0o600);
   });
 
   it('never carries the restore guard into a backup, so a restored server can be backed up and restored again', async () => {
@@ -401,19 +365,14 @@ describe('server restore into a maintenance-mode installation (real database, re
       databaseUrl: target.url,
       outDir,
       tools,
+      recipient: key.recipient,
       syntheticTestOnly: true,
       config,
       now: () => new Date(Date.now() + 1000),
     });
     const again = await createTempDatabase();
     try {
-      const result = await restoreBackup({
-        sidecarPath: second.sidecarPath,
-        targetDatabaseUrl: again.url,
-        tools,
-        migrate,
-        knownMigrations: MIGRATIONS,
-      });
+      const result = await restoreBackup(restoreArgs(second, again.url));
       expect('removed' in result).toBe(true);
       const state = await query<{ state: string }>(
         again.url,

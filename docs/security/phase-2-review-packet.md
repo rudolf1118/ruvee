@@ -15,7 +15,7 @@ evidence for the specific behaviour it exercises, not proof that an invariant ho
 | ----------------------------------------------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------- |
 | Format, lint, types                                   | `pnpm format:check && pnpm lint && pnpm typecheck`                                               | Pass                                                            |
 | Unit                                                  | `pnpm test`                                                                                      | contracts 34, API 70, web 33, vault 54, extension 27, crypto 60 |
-| Integration (real PostgreSQL)                         | `DATABASE_URL=… pnpm test:integration`                                                           | 67 passed (12 restore tests with real dumps)                    |
+| Integration (real PostgreSQL)                         | `DATABASE_URL=… pnpm test:integration`                                                           | 89 passed (backup and restore with real dumps and age)          |
 | Crypto in browsers                                    | `pnpm --filter @ruvee/crypto test:browsers`                                                      | 24 checks × 6 contexts                                          |
 | Headers, CSP, OPAQUE, local fonts                     | `pnpm --filter @ruvee/web test:headers`                                                          | 33, three engines                                               |
 | Design preview                                        | `pnpm --filter @ruvee/web test:e2e`                                                              | 8 (no network needed since the fonts are local)                 |
@@ -156,7 +156,7 @@ Choices made while building that a reviewer should confirm. None weakens an inva
   (`backup-restore.int-spec.ts`); the restore tool's policy (revised D-28, §4a below) undoes
   that, but only for synthetic data until D-29 (encryption at rest) is implemented.
 
-## 4a. Server restore (revised D-28, implemented for synthetic data; D-29, D-30 open)
+## 4a. Server backup and restore (revised D-28 and D-29 B, implemented for synthetic data; D-30 open)
 
 What is implemented ([backup-restore.md §3.5 to §3.12](../architecture/backup-restore.md#35-restore-state-machine-and-maintenance-mode)):
 `apps/api/src/admin/server-restore.ts`, `pg-tools.ts`, `cli.ts`,
@@ -164,20 +164,25 @@ What is implemented ([backup-restore.md §3.5 to §3.12](../architecture/backup-
 clients' `exportLocal`/`localState`/`startOver`. Distinguish **owner-specified requirements**
 (implemented) from **open protocol choices** (not implemented):
 
-| Risk                                                                                | Handling                                                                                                                   | Evidence                                                           |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
-| A device removed after the snapshot is active again, with its old session           | Sessions revoked in APPLY POLICY; the review lists devices and revokes them again before opening                           | `restore.int-spec.ts` (revoked device gets `device_revoked`)       |
-| Old cookies, access and refresh tokens, recovery sessions, pairings work again      | Revoked or deleted in one transaction with the guard change                                                                | `restore.int-spec.ts`, before and after the review                 |
-| Login, recovery or registration used while the owner has not reviewed               | Every `/api` request `503 maintenance` until `restore-complete`; health still answers                                      | `restore.int-spec.ts`                                              |
-| A pre-account snapshot reopens registration                                         | Unused setup tokens deleted; after opening, registration needs a new token                                                 | `restore-edges.int-spec.ts`                                        |
-| A half-loaded restore is served                                                     | Guard written before LOAD; anything but `open` is closed; complete refuses outside `review`; a second restore refuses it   | `restore-edges.int-spec.ts` (stopped after prepare, load, migrate) |
-| Restoring over a live database                                                      | Target must have no tables; refused before anything is written                                                             | `restore.int-spec.ts`; source fingerprint unchanged                |
-| A backup carries an "open" state into the next restore                              | The guard table is excluded from dumps                                                                                     | `restore.int-spec.ts` (backup of a restored database)              |
-| Clients erase newer local data, or show a misleading error                          | Maintenance and restore notices; newer data kept read-only; verified-copy export offline; start over only on typed request | `vault-engine.test.ts` "revised D-28"                              |
-| Snapshot-time password and kit are valid again after opening                        | **Open (D-30).** Stated by the review; the owner acknowledges with `--accept-restored-credentials` and repeats the changes | Not enforced                                                       |
-| Dumps hold every wrap and verifier, unencrypted                                     | **Open (D-29), required.** `backup` refuses anything but synthetic test databases                                          | `restore.int-spec.ts` (refusals)                                   |
-| `server_restored` and `restore_id` could be forged or omitted by a malicious server | Wording only; clients rely on their own checkpoints (INV-07, INV-09)                                                       | Design                                                             |
-| Ending sessions or rotating `SK` is read as revoking copied ciphertext or keys      | Stated by the design and by the review's output; it revokes nothing already copied                                         | Design, CLI text                                                   |
+| Risk                                                                                                               | Handling                                                                                                                                  | Evidence                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| A device removed after the snapshot is active again, with its old session                                          | Sessions revoked in APPLY POLICY; the review lists devices and revokes them again before opening                                          | `restore.int-spec.ts` (revoked device gets `device_revoked`)                                       |
+| Old cookies, access and refresh tokens, recovery sessions, pairings work again                                     | Revoked or deleted in one transaction with the guard change                                                                               | `restore.int-spec.ts`, before and after the review                                                 |
+| Login, recovery or registration used while the owner has not reviewed                                              | Every `/api` request `503 maintenance` until `restore-complete`; health still answers                                                     | `restore.int-spec.ts`                                                                              |
+| A pre-account snapshot reopens registration                                                                        | Unused setup tokens deleted; after opening, registration needs a new token                                                                | `restore-edges.int-spec.ts`                                                                        |
+| A half-loaded restore is served                                                                                    | Guard written before LOAD; anything but `open` is closed; complete refuses outside `review`; a second restore refuses it                  | `restore-edges.int-spec.ts` (stopped after prepare, load, migrate)                                 |
+| Restoring over a live database                                                                                     | Target must have no tables; refused before anything is written                                                                            | `restore.int-spec.ts`; source fingerprint unchanged                                                |
+| A backup carries an "open" state into the next restore                                                             | The guard table is excluded from dumps                                                                                                    | `restore.int-spec.ts` (backup of a restored database)                                              |
+| Clients erase newer local data, or show a misleading error                                                         | Maintenance and restore notices; newer data kept read-only; verified-copy export offline; start over only on typed request                | `vault-engine.test.ts` "revised D-28"                                                              |
+| Snapshot-time password and kit are valid again after opening                                                       | **Open (D-30).** Stated by the review; the owner acknowledges with `--accept-restored-credentials` and repeats the changes                | Not enforced                                                                                       |
+| Dumps hold every wrap and verifier                                                                                 | age to an X25519 recipient (D-29 B); the server holds the public key only; no plaintext dump on disk; owner-only files                    | `backup-encryption.int-spec.ts`, `backup-confidentiality.int-spec.ts` (R13)                        |
+| A partial or failed backup looks complete                                                                          | `.partial` files, manifest renamed last after every stage and `fsync`; failed `pg_dump`, full disk and interruption remove them           | `backup-encryption.int-spec.ts`                                                                    |
+| A backup is substituted, or forged by anyone who knows the public recipient (age does not authenticate the author) | `--trusted-digest`: the manifest's SHA-256 recorded by the owner apart from storage; `--no-trusted-digest` is recorded as `unchecked`     | `backup-encryption.int-spec.ts` (forged set refused with the digest, accepted and flagged without) |
+| A modified, truncated or mismatched file is restored, or fails only after loading began                            | The whole dump is decrypted and hashed in VERIFY; LOAD ends `pg_restore`'s input only after the hash matches; the guard stays `restoring` | `backup-encryption.int-spec.ts` (including a change between VERIFY and LOAD)                       |
+| A decrypted dump runs hostile SQL                                                                                  | Treated as trusted input: only a digest-checked set, restored by a non-superuser role (backup-restore.md §3.2b)                           | Design; not enforced by code                                                                       |
+| The identity leaks through configuration, arguments or output                                                      | Only the recipient is configuration; the identity is a file path for one run, owner-only, never printed                                   | `backup-encryption.int-spec.ts`, `env.spec.ts`                                                     |
+| `server_restored` and `restore_id` could be forged or omitted by a malicious server                                | Wording only; clients rely on their own checkpoints (INV-07, INV-09)                                                                      | Design                                                                                             |
+| Ending sessions or rotating `SK` is read as revoking copied ciphertext or keys                                     | Stated by the design and by the review's output; it revokes nothing already copied                                                        | Design, CLI text                                                                                   |
 
 **Trust model for the reviewer.** The review and the opening run only as `ruvee-admin` on the
 server host, against `RESTORE_DATABASE_URL`. That operator already holds the database, the setup
@@ -229,10 +234,13 @@ has been reviewed by anyone other than its authors.
 11. **Web delivery:** CSP and headers, `deploy/Caddyfile`, local fonts, and the trust model of a
     server-served client (D-07, R-01).
 
-12. **Server restore** (§4a): the APPLY POLICY transaction, the guard's fail-closed reading in
-    `MaintenanceService`, `completeRestore`'s preconditions, the dump exclusion of the guard, and
-    the clients' `exportLocal` (password checked against the local wrap, the existing format, the
-    self-check) and `startOver` preconditions.
+12. **Server backup and restore** (§4a): `apps/api/src/admin/backup-files.ts` (the use of
+    `age-encryption`, the manifest and metadata checks, bounds, the identity file rules) and
+    `server-restore.ts` (publication order, cleanup on failure, VERIFY before PREPARE, LOAD's
+    end-of-input rule, the APPLY POLICY transaction), the guard's fail-closed reading in
+    `MaintenanceService`, `completeRestore`'s preconditions, and the clients' `exportLocal`
+    (password checked against the local wrap, the existing format, the self-check) and
+    `startOver` preconditions. Also the dependency `age-encryption` 0.3.1 itself.
 
-Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), dump encryption (D-29, not
-implemented), a restricted post-restore session (D-30).
+Not in scope yet: mobile (Phase 6), full key rotation (Phase 4), a restricted post-restore
+session (D-30).
