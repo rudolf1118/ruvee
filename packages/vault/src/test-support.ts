@@ -9,7 +9,8 @@ import type {
   RegisterFinishRequest,
   SyncChangesResponse,
 } from '@ruvee/contracts';
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { initRuveeCrypto, uuidToBytes, type ProofField, type ProofOperation } from '@ruvee/crypto';
 import { ApiError, NetworkError, type Api } from './api.js';
 import { fromB64 } from './bytes.js';
 import type { OpaqueClient } from './vault-engine.js';
@@ -29,7 +30,14 @@ export interface FakeServerState {
   rowVersion: number;
   passwordTag: string | undefined;
   lastRecoveryAt: string | null;
+  devicePublicKeys: Map<string, string>;
+  akVerifyKey: string | undefined;
 }
+
+/** The fake verifies device proofs with the same code as the API (docs/security/device-proof.md). */
+const cryptoReady = initRuveeCrypto();
+const raw = (text: string) => new Uint8Array(Buffer.from(text, 'base64url'));
+const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
 
 export class FakeServer {
   account: RegisterFinishRequest | undefined;
@@ -67,6 +75,11 @@ export class FakeServer {
       .digest('base64url');
   }
   devices = new Map<string, 'pending' | 'active' | 'revoked'>();
+  /** `DPK` per device and the account's `AVPK`, as the API stores them. */
+  devicePublicKeys = new Map<string, string>();
+  akVerifyKey: string | undefined;
+  /** Open proof nonces: value → operation and session (device-proof.md §6). */
+  private nonces = new Map<string, { operation: ProofOperation; sessionId: string }>();
   revokeReasons: string[] = [];
   pairings = new Map<
     string,
@@ -74,6 +87,7 @@ export class FakeServer {
       initiator: string;
       requester?: string;
       epk?: string;
+      devicePublicKey?: string;
       mac?: string;
       ciphertext?: string;
       responseMac?: string;
@@ -92,6 +106,8 @@ export class FakeServer {
       rowVersion: this.rowVersion,
       passwordTag: this.passwordTag,
       lastRecoveryAt: this.lastRecoveryAt,
+      devicePublicKeys: this.devicePublicKeys,
+      akVerifyKey: this.akVerifyKey,
     });
   }
 
@@ -106,6 +122,8 @@ export class FakeServer {
     this.rowVersion = copy.rowVersion;
     this.passwordTag = copy.passwordTag;
     this.lastRecoveryAt = copy.lastRecoveryAt;
+    this.devicePublicKeys = copy.devicePublicKeys;
+    this.akVerifyKey = copy.akVerifyKey;
   }
 
   /**
@@ -117,6 +135,7 @@ export class FakeServer {
     this.generation += 1;
     this.recoverySessions.clear();
     this.pairings.clear();
+    this.nonces.clear();
     this.lastRestore = { restoredAt: new Date().toISOString(), restoreId };
   }
 
@@ -155,6 +174,141 @@ export class FakeServer {
     let reauthTag: string | undefined;
     let reopenLogin = false;
     let reopenVia: 'password' | 'recovery' | undefined;
+    // Proof state of this client's session (device-proof.md §5).
+    let sessionId = randomUUID();
+    let proven = false;
+    let challenge = '';
+    const newSession = (device: string, isProven: boolean) => {
+      sessionDevice = device;
+      sessionGeneration = this.generation;
+      sessionId = randomUUID();
+      proven = isProven;
+    };
+    const accountId = () => this.account?.accountId ?? '';
+    const deviceValid = async (
+      operation: ProofOperation,
+      deviceId: string,
+      binding: Uint8Array,
+      nonce: Uint8Array,
+      fields: readonly ProofField[],
+      signature: string,
+      publicKey: string | undefined,
+    ) => {
+      if (!publicKey) return false;
+      const c = await cryptoReady;
+      try {
+        return c.verifyDeviceProof({
+          operation,
+          accountId: uuidToBytes(accountId()),
+          deviceId: uuidToBytes(deviceId),
+          binding,
+          nonce,
+          payload: c.proofPayload(operation, fields),
+          publicKey: raw(publicKey),
+          signature: raw(signature),
+        });
+      } catch {
+        return false;
+      }
+    };
+    const accountValid = async (
+      operation: ProofOperation,
+      binding: Uint8Array,
+      nonce: Uint8Array,
+      fields: readonly ProofField[],
+      signature: string,
+      publicKey: string | undefined,
+    ) => {
+      const keys = this.account?.keys;
+      if (!publicKey || !keys) return false;
+      const c = await cryptoReady;
+      try {
+        return c.verifyAccountProof({
+          operation,
+          accountId: uuidToBytes(accountId()),
+          accountKeyId: raw(keys.akId),
+          accountKeyEpoch: keys.akEpoch,
+          binding,
+          nonce,
+          payload: c.proofPayload(operation, fields),
+          publicKey: raw(publicKey),
+          signature: raw(signature),
+        });
+      } catch {
+        return false;
+      }
+    };
+    const sessionRef = async () => (await cryptoReady).sessionRef(uuidToBytes(sessionId));
+    /** An operation-bound proof of this session's device (and, for key changes, of AK). */
+    const proveOperation = async (
+      operation: ProofOperation,
+      body: { nonce: string; proof: { device: string; accountKey?: string } },
+      fields: readonly ProofField[],
+      options: { deviceKey?: string; akVerifyKey?: string } = {},
+    ) => {
+      const device = sessionDevice ?? '';
+      const binding = await sessionRef();
+      const nonce = raw(body.nonce);
+      const ok =
+        (await deviceValid(
+          operation,
+          device,
+          binding,
+          nonce,
+          fields,
+          body.proof.device,
+          options.deviceKey ?? this.devicePublicKeys.get(device),
+        )) &&
+        (body.proof.accountKey === undefined ||
+          (await accountValid(
+            operation,
+            binding,
+            nonce,
+            fields,
+            body.proof.accountKey,
+            options.akVerifyKey ?? this.akVerifyKey,
+          )));
+      const open = this.nonces.get(body.nonce);
+      this.nonces.delete(body.nonce);
+      if (!ok || open?.operation !== operation || open.sessionId !== sessionId)
+        this.fail(401, 'device_proof_failed');
+    };
+    const proveCompletion = async (
+      operation: 'recovery_complete' | 'reopen_complete',
+      body: Parameters<Api['recoveryComplete']>[0],
+    ) => {
+      if (this.akVerifyKey && this.akVerifyKey !== body.akVerifyKey)
+        this.fail(409, 'device_key_mismatch');
+      await proveOperation(
+        operation,
+        body,
+        [
+          raw(body.registrationRecord),
+          { u8: body.kdfProfile },
+          raw(body.saltPw),
+          raw(body.wrappedAkPassword),
+          raw(body.recoveryKeyId),
+          raw(body.wrappedAkRecovery),
+          raw(body.recoveryVerifier),
+          { u64: body.expectedRowVersion },
+          body.label === undefined ? null : raw(body.label),
+          raw(body.devicePublicKey),
+          raw(body.akVerifyKey),
+        ],
+        { deviceKey: body.devicePublicKey, akVerifyKey: this.akVerifyKey ?? body.akVerifyKey },
+      );
+    };
+    const issueNonce = async (operation: ProofOperation) => {
+      for (const [value, n] of this.nonces)
+        if (n.sessionId === sessionId && n.operation === operation) this.nonces.delete(value);
+      const nonce = b64(randomBytes(32));
+      this.nonces.set(nonce, { operation, sessionId });
+      return {
+        nonce,
+        sessionRef: b64(await sessionRef()),
+        expiresAt: new Date(Date.now() + 120_000).toISOString(),
+      };
+    };
     const consumeCode = (code: string) => {
       if (this.reopenCode === undefined || code !== this.reopenCode || this.reopenConsumed)
         this.fail(401, 'reopen_failed');
@@ -166,9 +320,21 @@ export class FakeServer {
       if (this.devices.get(sessionDevice) === 'revoked') this.fail(401, 'device_revoked');
       return sessionDevice;
     };
-    const requireActive = () => {
+    /** An active device's session acts as it only after proving its key (§5). */
+    const requireProvenIfActive = () => {
+      const id = requireSession();
+      if (this.devices.get(id) === 'active' && !proven) this.fail(403, 'device_proof_required');
+      return id;
+    };
+    /** The pre-proof allowlist: active, proof not required (`account/keys`). */
+    const requireActiveBeforeProof = () => {
       const id = requireSession();
       if (this.devices.get(id) !== 'active') this.fail(403, 'device_not_enrolled');
+      return id;
+    };
+    const requireActive = () => {
+      const id = requireActiveBeforeProof();
+      if (!proven) this.fail(403, 'device_proof_required');
       return id;
     };
     return {
@@ -177,26 +343,68 @@ export class FakeServer {
         if (this.account) this.fail(404, 'not_found');
         return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
       },
-      registerFinish: (body) => {
+      registerFinish: async (body) => {
         this.check(body);
         if (this.account) this.fail(404, 'not_found');
         this.account = body;
+        const c = await cryptoReady;
+        const fields: ProofField[] = [
+          raw(body.registrationRecord),
+          raw(body.devicePublicKey),
+          raw(body.akVerifyKey),
+          raw(body.keys.wrappedAkPassword),
+          raw(body.keys.wrappedAkRecovery),
+          raw(body.keys.recoveryVerifier),
+          raw(body.keys.keyset),
+          uuidToBytes(body.vault.id),
+        ];
+        const binding = c.setupBinding(raw(body.bootstrapToken));
+        const zeros = new Uint8Array(32);
+        const ok =
+          (await deviceValid(
+            'register',
+            body.device.id,
+            binding,
+            zeros,
+            fields,
+            body.proof.device,
+            body.devicePublicKey,
+          )) &&
+          (await accountValid(
+            'register',
+            binding,
+            zeros,
+            fields,
+            body.proof.accountKey,
+            body.akVerifyKey,
+          ));
+        if (!ok) {
+          this.account = undefined;
+          this.fail(401, 'device_proof_failed');
+        }
         this.passwordTag = body.registrationRecord.slice(0, 43);
         this.devices.set(body.device.id, 'active');
-        sessionDevice = body.device.id;
-        sessionGeneration = this.generation;
-        return Promise.resolve({
+        this.devicePublicKeys.set(body.device.id, body.devicePublicKey);
+        this.akVerifyKey = body.akVerifyKey;
+        newSession(body.device.id, true);
+        return {
           accountId: body.accountId,
-          device: { id: body.device.id, status: 'active' },
-        });
+          device: { id: body.device.id, status: 'active' as const },
+          proven: true,
+        };
       },
       loginStart: (body) => {
         this.check(body);
         loginDevice = body.deviceId;
         loginTag = body.startLoginRequest.slice(0, 43);
-        return Promise.resolve({ loginId: 'L'.repeat(22), loginResponse: 'R'.repeat(427) });
+        challenge = b64(randomBytes(32));
+        return Promise.resolve({
+          loginId: 'L'.repeat(22),
+          loginResponse: 'R'.repeat(427),
+          challenge,
+        });
       },
-      loginFinish: (body) => {
+      loginFinish: async (body) => {
         this.check(body);
         const account = this.account;
         if (!account || loginTag !== this.passwordTag) this.fail(401, 'login_failed');
@@ -207,10 +415,52 @@ export class FakeServer {
           id = randomUUID();
           this.devices.set(id, 'pending');
         }
-        sessionDevice = id;
-        sessionGeneration = this.generation;
         const status = this.devices.get(id) ?? 'pending';
-        return Promise.resolve({ accountId: account.accountId, device: { id, status } });
+        let isProven = false;
+        if (status === 'active' && body.deviceProof !== undefined) {
+          const c = await cryptoReady;
+          isProven = await deviceValid(
+            'login',
+            id,
+            c.loginBinding(raw(body.loginId)),
+            raw(challenge),
+            [raw(body.finishLoginRequest)],
+            body.deviceProof,
+            this.devicePublicKeys.get(id),
+          );
+          if (!isProven) this.fail(401, 'device_proof_failed');
+        }
+        newSession(id, isProven);
+        return { accountId: account.accountId, device: { id, status }, proven: isProven };
+      },
+      proofNonce: (operation) => {
+        this.check({ operation });
+        requireSession();
+        if (!proven && operation !== 'session_proof') this.fail(403, 'device_proof_required');
+        return issueNonce(operation);
+      },
+      sessionProof: async (body) => {
+        this.check(body);
+        requireActiveBeforeProof();
+        if (proven) this.fail(403, 'forbidden');
+        try {
+          await proveOperation('session_proof', body, []);
+        } catch (error) {
+          this.sessionValid = false;
+          throw error;
+        }
+        proven = true;
+      },
+      recoveryProofNonce: () => {
+        this.check({});
+        if (!sessionDevice || !this.recoverySessions.has(sessionDevice))
+          this.fail(401, 'unauthenticated');
+        return issueNonce('recovery_complete');
+      },
+      reopenProofNonce: () => {
+        this.check({}, true);
+        if (!reopenVia) this.fail(401, 'unauthenticated');
+        return issueNonce('reopen_complete');
       },
       logout: () => {
         this.check({});
@@ -221,6 +471,8 @@ export class FakeServer {
         this.check();
         const id = requireSession();
         return Promise.resolve({
+          sessionProven: proven,
+          hasDeviceKey: this.devicePublicKeys.has(id),
           id,
           platform: 'web',
           status: this.devices.get(id) ?? 'pending',
@@ -234,7 +486,7 @@ export class FakeServer {
       },
       accountKeys: () => {
         this.check();
-        requireActive();
+        requireActiveBeforeProof();
         const keys = this.account?.keys;
         if (!keys) this.fail(404, 'not_found');
         const response: AccountKeysResponse = {
@@ -287,7 +539,7 @@ export class FakeServer {
       },
       account: () => {
         this.check();
-        requireSession();
+        requireProvenIfActive();
         const account = this.account;
         if (!account) this.fail(404, 'not_found');
         const at = new Date(0).toISOString();
@@ -309,7 +561,7 @@ export class FakeServer {
           this.fail(401, 'recovery_failed');
         if (!this.devices.has(body.device.id)) this.devices.set(body.device.id, 'pending');
         this.recoverySessions.add(body.device.id);
-        sessionDevice = body.device.id;
+        newSession(body.device.id, false);
         this.lastRecoveryAt = new Date().toISOString();
         return Promise.resolve({
           accountId: account.accountId,
@@ -345,24 +597,43 @@ export class FakeServer {
         loginDevice = body.deviceId;
         loginTag = body.startLoginRequest.slice(0, 43);
         reopenLogin = body.reopenCode === this.reopenCode;
-        return Promise.resolve({ loginId: 'L'.repeat(22), loginResponse: 'R'.repeat(427) });
+        challenge = b64(randomBytes(32));
+        return Promise.resolve({
+          loginId: 'L'.repeat(22),
+          loginResponse: 'R'.repeat(427),
+          challenge,
+        });
       },
-      reopenLoginFinish: (body) => {
+      reopenLoginFinish: async (body) => {
         this.check(body, true);
         const account = this.account;
         const device = loginDevice;
         if (!account || !reopenLogin || loginTag !== this.passwordTag || !device)
           this.fail(401, 'reopen_failed');
         if (this.devices.get(device) !== 'active') this.fail(401, 'reopen_failed');
+        // The device active in the snapshot proves its restored key (device-proof.md §8).
+        const c = await cryptoReady;
+        const ok =
+          body.deviceProof !== undefined &&
+          (await deviceValid(
+            'reopen_login',
+            device,
+            c.loginBinding(raw(body.loginId)),
+            raw(challenge),
+            [raw(body.finishLoginRequest)],
+            body.deviceProof,
+            this.devicePublicKeys.get(device),
+          ));
+        if (!ok) this.fail(401, 'reopen_failed');
         consumeCode(this.reopenCode ?? '');
         reopenVia = 'password';
-        sessionDevice = device;
-        return Promise.resolve({
+        newSession(device, false);
+        return {
           accountId: account.accountId,
           deviceId: device,
-          via: 'password',
+          via: 'password' as const,
           expiresAt: new Date(Date.now() + 1_800_000).toISOString(),
-        });
+        };
       },
       reopenRecoveryStart: (body) => {
         this.check(body, true);
@@ -373,7 +644,7 @@ export class FakeServer {
         consumeCode(body.reopenCode);
         if (!this.devices.has(body.device.id)) this.devices.set(body.device.id, 'pending');
         reopenVia = 'recovery';
-        sessionDevice = body.device.id;
+        newSession(body.device.id, false);
         return Promise.resolve({
           accountId: account.accountId,
           deviceId: body.device.id,
@@ -412,7 +683,7 @@ export class FakeServer {
         if (!reopenVia) this.fail(401, 'unauthenticated');
         return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
       },
-      reopenComplete: (body) => {
+      reopenComplete: async (body) => {
         this.check(body, true);
         const account = this.account;
         const device = sessionDevice;
@@ -420,6 +691,9 @@ export class FakeServer {
           this.fail(401, 'unauthenticated');
         if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
         if (body.recoveryKeyId === account.keys.recoveryKeyId) this.fail(400, 'invalid_request');
+        if (reopenVia === 'password' && this.devicePublicKeys.get(device) !== body.devicePublicKey)
+          this.fail(401, 'device_proof_failed');
+        await proveCompletion('reopen_complete', body);
         this.account = {
           ...account,
           keys: {
@@ -434,16 +708,19 @@ export class FakeServer {
         this.rowVersion++;
         this.passwordTag = body.registrationRecord.slice(0, 43);
         this.devices.set(device, 'active');
+        this.devicePublicKeys.set(device, body.devicePublicKey);
+        this.akVerifyKey ??= body.akVerifyKey;
         this.reopenCode = undefined;
         reopenVia = undefined;
         this.generation++;
-        sessionGeneration = this.generation;
-        return Promise.resolve({
+        newSession(device, true);
+        return {
           accountId: account.accountId,
-          device: { id: device, status: 'active' },
-        });
+          device: { id: device, status: 'active' as const },
+          proven: true,
+        };
       },
-      recoveryComplete: (body) => {
+      recoveryComplete: async (body) => {
         this.check(body);
         const account = this.account;
         const device = sessionDevice;
@@ -451,6 +728,7 @@ export class FakeServer {
           this.fail(401, 'unauthenticated');
         if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
         if (body.recoveryKeyId === account.keys.recoveryKeyId) this.fail(400, 'invalid_request');
+        await proveCompletion('recovery_complete', body);
         this.account = {
           ...account,
           keys: {
@@ -466,13 +744,16 @@ export class FakeServer {
         this.passwordTag = body.registrationRecord.slice(0, 43);
         this.recoverySessions.clear();
         this.devices.set(device, 'active');
+        this.devicePublicKeys.set(device, body.devicePublicKey);
+        this.akVerifyKey ??= body.akVerifyKey;
         // Every other session ends: one generation counter shared by all clients.
         this.generation++;
-        sessionGeneration = this.generation;
-        return Promise.resolve({
+        newSession(device, true);
+        return {
           accountId: account.accountId,
-          device: { id: device, status: 'active' },
-        });
+          device: { id: device, status: 'active' as const },
+          proven: true,
+        };
       },
       pairingCreate: (pairingId) => {
         this.check({ pairingId });
@@ -482,7 +763,7 @@ export class FakeServer {
       },
       pairingState: (pairingId) => {
         this.check();
-        const id = requireSession();
+        const id = requireProvenIfActive();
         const p = this.pairings.get(pairingId);
         if (!p || (p.initiator !== id && p.requester !== id)) this.fail(404, 'not_found');
         const base: PairingStateResponse = {
@@ -491,13 +772,14 @@ export class FakeServer {
           role: p.initiator === id ? 'initiator' : 'requester',
           expiresAt: new Date(Date.now() + 600_000).toISOString(),
         };
-        if (base.role === 'initiator' && p.requester && p.epk && p.mac)
+        if (base.role === 'initiator' && p.requester && p.epk && p.devicePublicKey && p.mac)
           return Promise.resolve({
             ...base,
             request: {
               requesterDeviceId: p.requester,
               platform: 'web',
               epk: p.epk,
+              devicePublicKey: p.devicePublicKey,
               mac: p.mac,
               requestedAt: new Date().toISOString(),
             },
@@ -515,17 +797,31 @@ export class FakeServer {
         const p = this.pairings.get(pairingId);
         if (!p) this.fail(404, 'not_found');
         if (p.state !== 'open') this.fail(409, 'pairing_state');
-        Object.assign(p, { requester: id, epk: body.epk, mac: body.mac, state: 'requested' });
+        Object.assign(p, {
+          requester: id,
+          epk: body.epk,
+          devicePublicKey: body.devicePublicKey,
+          mac: body.mac,
+          state: 'requested',
+        });
         return Promise.resolve(undefined);
       },
-      pairingApprove: (pairingId, body) => {
+      pairingApprove: async (pairingId, body) => {
         this.check(body);
         requireActive();
         const p = this.pairings.get(pairingId);
-        if (!p?.requester) this.fail(404, 'not_found');
+        if (!p?.requester || !p.devicePublicKey) this.fail(404, 'not_found');
+        await proveOperation('pairing_approve', body, [
+          raw(pairingId),
+          uuidToBytes(p.requester),
+          raw(p.devicePublicKey),
+          raw(body.ciphertext),
+          raw(body.mac),
+          body.label === undefined ? null : raw(body.label),
+        ]);
         Object.assign(p, { ciphertext: body.ciphertext, responseMac: body.mac, state: 'approved' });
         this.devices.set(p.requester, 'active');
-        return Promise.resolve(undefined);
+        this.devicePublicKeys.set(p.requester, p.devicePublicKey);
       },
       pairingComplete: (pairingId) => {
         this.check({});
@@ -540,13 +836,17 @@ export class FakeServer {
       },
       reauthStart: (body) => {
         this.check(body);
-        requireSession();
+        requireActive();
         reauthTag = body.startLoginRequest.slice(0, 43);
-        return Promise.resolve({ loginId: 'S'.repeat(22), loginResponse: 'R'.repeat(427) });
+        return Promise.resolve({
+          loginId: 'S'.repeat(22),
+          loginResponse: 'R'.repeat(427),
+          challenge: b64(randomBytes(32)),
+        });
       },
       reauthFinish: (body) => {
         this.check(body);
-        requireSession();
+        requireActive();
         if (reauthTag !== this.passwordTag) this.fail(401, 'login_failed');
         return Promise.resolve({ authAt: new Date().toISOString() });
       },
@@ -592,15 +892,15 @@ export class FakeServer {
         requireActive();
         return Promise.resolve(undefined);
       },
-      revokeDevice: (deviceId, body) => {
+      revokeDevice: async (deviceId, body) => {
         this.check(body);
         const id = requireActive();
         if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
         if (deviceId === id) this.fail(403, 'forbidden');
+        await proveOperation('device_revoke', body, [uuidToBytes(deviceId), { text: body.reason }]);
         if (!this.devices.has(deviceId)) this.fail(404, 'not_found');
         this.devices.set(deviceId, 'revoked');
         this.revokeReasons.push(body.reason);
-        return Promise.resolve(undefined);
       },
       passwordStart: () => {
         this.check({});
@@ -608,11 +908,18 @@ export class FakeServer {
         if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
         return Promise.resolve({ registrationResponse: 'A'.repeat(86) });
       },
-      passwordFinish: (body) => {
+      passwordFinish: async (body) => {
         this.check(body);
         requireActive();
         const account = this.account;
         if (!account) this.fail(404, 'not_found');
+        await proveOperation('password_change', body, [
+          raw(body.registrationRecord),
+          { u8: body.kdfProfile },
+          raw(body.saltPw),
+          raw(body.wrappedAkPassword),
+          { u64: body.expectedRowVersion },
+        ]);
         if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
         this.account = {
           ...account,
@@ -623,7 +930,6 @@ export class FakeServer {
         // Every other session ends; this client's stays.
         this.generation++;
         sessionGeneration = this.generation;
-        return Promise.resolve(undefined);
       },
       activity: () => {
         this.check();
@@ -643,12 +949,18 @@ export class FakeServer {
           nextCursor: null,
         });
       },
-      rotateRecoveryKey: (body) => {
+      rotateRecoveryKey: async (body) => {
         this.check(body);
         requireActive();
         if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
         const account = this.account;
         if (!account) this.fail(404, 'not_found');
+        await proveOperation('recovery_key_rotate', body, [
+          raw(body.recoveryKeyId),
+          raw(body.wrappedAkRecovery),
+          raw(body.recoveryVerifier),
+          { u64: body.expectedRowVersion },
+        ]);
         if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
         if (body.recoveryKeyId === account.keys.recoveryKeyId) this.fail(400, 'invalid_request');
         this.account = {
@@ -661,14 +973,21 @@ export class FakeServer {
           },
         };
         this.rowVersion++;
-        return Promise.resolve(undefined);
       },
-      rotateSecretKey: (body) => {
+      rotateSecretKey: async (body) => {
         this.check(body);
         requireActive();
         if (reauthTag !== this.passwordTag) this.fail(403, 'step_up_required');
         const account = this.account;
         if (!account) this.fail(404, 'not_found');
+        await proveOperation('secret_key_rotate', body, [
+          { u32: body.keysetVersion },
+          raw(body.keyset),
+          { u8: body.kdfProfile },
+          raw(body.saltPw),
+          raw(body.wrappedAkPassword),
+          { u64: body.expectedRowVersion },
+        ]);
         if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
         if (body.keysetVersion !== account.keys.keysetVersion + 1)
           this.fail(400, 'invalid_request');
@@ -683,7 +1002,6 @@ export class FakeServer {
           },
         };
         this.rowVersion++;
-        return Promise.resolve(undefined);
       },
     };
   }

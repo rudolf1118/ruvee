@@ -669,6 +669,14 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       tone: 'caution',
       text: restoreExplanation(status, vault.sessionProblem),
     });
+  // docs/security/device-proof.md §9: a device enrolled before device keys re-enrolls with its
+  // Recovery Kit, which keeps this browser's vault and unsynced changes.
+  if (vault.sessionProblem === 'device_key_missing')
+    out.push({
+      id: 'device-key-missing',
+      tone: 'caution',
+      text: 'This device opened its local copy but must be enrolled again before it can sync: it has no device key the server accepts. Lock it and choose “Use your Recovery Kit” on the lock screen. Everything on this device, including changes not synced yet, is kept.',
+    });
   if (vault.sessionProblem === 'login_failed')
     out.push({
       id: 'login-failed',

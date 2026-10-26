@@ -9995,7 +9995,8 @@
                     "reopen_code_issued",
                     "reopen_started",
                     "reopen_failed",
-                    "restore_reopened"
+                    "restore_reopened",
+                    "device_proof_failed"
                   ]
                 },
                 "deviceId": {

@@ -4,7 +4,7 @@ import {
   commitResponseSchema,
   CSRF_HEADER,
   CSRF_HEADER_VALUE,
-  deviceSchema,
+  currentDeviceResponseSchema,
   devicesResponseSchema,
   errorResponseSchema,
   accountResponseSchema,
@@ -14,6 +14,7 @@ import {
   reopenMaterialResponseSchema,
   reopenStartResponseSchema,
   pairingStateResponseSchema,
+  proofNonceResponseSchema,
   reauthFinishResponseSchema,
   registerStartResponseSchema,
   sessionResponseSchema,
@@ -29,6 +30,8 @@ import {
   type PairingApproveRequest,
   type PairingJoinRequest,
   type PasswordChangeFinishRequest,
+  type ProofNonceOperation,
+  type SessionProofRequest,
   type RecoveryCompleteRequest,
   type RecoveryKeyRotateRequest,
   type RecoveryStartRequest,
@@ -174,7 +177,19 @@ export function createApi(t: Transport) {
       return session;
     },
     logout: () => send('POST', '/auth/logout', null, {}),
-    currentDevice: () => send('GET', '/devices/current', deviceSchema),
+    currentDevice: () => send('GET', '/devices/current', currentDeviceResponseSchema),
+    // Device proof of possession (docs/security/device-proof.md §5, §6).
+    proofNonce: (operation: ProofNonceOperation) =>
+      send('POST', '/auth/proof-nonce', proofNonceResponseSchema, { operation }),
+    sessionProof: (body: SessionProofRequest) => send('POST', '/auth/session-proof', null, body),
+    recoveryProofNonce: () =>
+      send('POST', '/recovery/proof-nonce', proofNonceResponseSchema, {
+        operation: 'recovery_complete',
+      }),
+    reopenProofNonce: () =>
+      send('POST', '/reopen/proof-nonce', proofNonceResponseSchema, {
+        operation: 'reopen_complete',
+      }),
     accountKeys: () => send('GET', '/account/keys', accountKeysResponseSchema),
     vaultState: () => send('GET', '/vault', vaultStateResponseSchema),
     changes: (since: number) =>

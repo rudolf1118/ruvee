@@ -3,6 +3,9 @@ import {
   normalizePassword,
   uuidFromBytes,
   uuidToBytes,
+  type DeviceKeyPair,
+  type ProofField,
+  type ProofOperation,
   type RuveeCrypto,
 } from '@ruvee/crypto';
 import {
@@ -140,6 +143,12 @@ interface SentRecord {
 
 interface Session {
   device: DeviceRecord & { readonly enrolled: EnrolledKeys };
+  /**
+   * `DSK` and `DPK` while unlocked (docs/security/device-proof.md §2): opened from the
+   * `device-key` local record under `K_local`, wiped on lock. Undefined for a device enrolled
+   * before D-31, which must re-enroll.
+   */
+  deviceKey: DeviceKeyPair | undefined;
   readonly accountKey: Uint8Array;
   readonly accountKeyId: Uint8Array;
   readonly deviceIdBytes: Uint8Array;
@@ -249,6 +258,12 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('server_reopening');
       case 'reopen_failed':
         return new VaultError('reopen_failed');
+      // device-proof.md §5, §9: this device cannot prove its key to the server; it re-enrolls.
+      case 'device_proof_required':
+      case 'device_proof_failed':
+        return new VaultError('device_key_missing');
+      case 'device_key_mismatch':
+        return new VaultError('integrity');
       default:
         return new VaultError('internal');
     }
@@ -262,6 +277,8 @@ interface HostPairing {
   request?: {
     readonly deviceId: string;
     readonly epk: Uint8Array;
+    /** B's `DPK`, verified inside `req_mac`; A signs its approval over it. */
+    readonly devicePublicKey: Uint8Array;
     readonly platform: string;
     readonly requestedAtMs: number;
   };
@@ -301,6 +318,8 @@ interface PendingRecovery {
 
 interface JoinPairing {
   readonly secret: Uint8Array;
+  /** Device B's key, in memory only until B holds `AK` to seal it (device-proof.md §8). */
+  readonly deviceKey: DeviceKeyPair;
   readonly pairingId: Uint8Array;
   readonly ephemeralPublicKey: Uint8Array;
   readonly ephemeralPrivateKey: Uint8Array;
@@ -518,6 +537,27 @@ export class VaultEngine {
     return this.exclusive(async () => {
       const setup = this.setup;
       if (!setup?.verified) throw new VaultError('kit_mismatch');
+      const { crypto } = this.deps;
+      // device-proof.md §8, first setup: this device's key and AK's proof key, both proved, bound
+      // to the setup token; the server stores the public halves only.
+      const deviceKey = crypto.generateDeviceKey();
+      const akVerifyKey = crypto.accountProofPublicKey(setup.accountKey);
+      const base = {
+        operation: 'register' as const,
+        accountId: uuidToBytes(setup.accountId),
+        binding: crypto.setupBinding(fromB64(setup.bootstrapToken)),
+        nonce: new Uint8Array(32),
+        payload: crypto.proofPayload('register', [
+          fromB64(setup.registrationRecord),
+          deviceKey.publicKey,
+          akVerifyKey,
+          setup.wrappedAkPassword,
+          setup.wrappedAkRecovery,
+          setup.recoveryVerifier,
+          setup.keyset,
+          uuidToBytes(setup.vaultId),
+        ]),
+      };
       try {
         await this.deps.api.registerFinish({
           bootstrapToken: setup.bootstrapToken,
@@ -538,8 +578,28 @@ export class VaultEngine {
             keyset: toB64(setup.keyset),
           },
           vault: { id: setup.vaultId, vkId: toB64(setup.vaultKeyId) },
+          devicePublicKey: toB64(deviceKey.publicKey),
+          akVerifyKey: toB64(akVerifyKey),
+          proof: {
+            device: toB64(
+              crypto.signDeviceProof({
+                ...base,
+                deviceId: uuidToBytes(setup.deviceId),
+                secretKey: deviceKey.secretKey,
+              }),
+            ),
+            accountKey: toB64(
+              crypto.signAccountProof({
+                ...base,
+                accountKey: setup.accountKey,
+                accountKeyId: setup.accountKeyId,
+                accountKeyEpoch: 1,
+              }),
+            ),
+          },
         });
       } catch (error) {
+        deviceKey.secretKey.fill(0);
         if (error instanceof ApiError && error.code === 'not_found')
           throw new VaultError('registration_closed');
         throw vaultErrorFrom(error);
@@ -572,6 +632,8 @@ export class VaultEngine {
         keysetVersion: 1,
       });
       this.setup = undefined;
+      await this.storeDeviceKey(this.session, deviceKey);
+      deviceKey.secretKey.fill(0);
       await this.persistLocal({ checkpoint: true });
       await this.syncNow();
       return this.unlockedView();
@@ -590,10 +652,15 @@ export class VaultEngine {
       throw new VaultError('login_failed');
     }
     const existing = await this.deps.store.device();
-    const result = await this.opaqueLogin(username, password, existing?.deviceId);
+    let result = await this.opaqueLogin(username, password, existing?.deviceId);
     if (result.device.status === 'active' && existing?.enrolled) {
       return { phase: 'enrolled', username, deviceId: existing.deviceId };
     }
+    // An enrollment interrupted after approval (device-proof.md §8): the server's device is
+    // active, but this browser never stored its key and cannot prove it. Start over as a new
+    // device; the orphan row holds no privilege and is removed under Devices.
+    if (result.device.status === 'active' && !existing?.enrolled)
+      result = await this.opaqueLogin(username, password);
     await this.deps.store.putDevice({
       v: 1,
       accountId: result.accountId,
@@ -605,7 +672,16 @@ export class VaultEngine {
     return { phase: 'pending', username, deviceId: result.device.id };
   }
 
-  private async opaqueLogin(username: string, password: string, deviceId?: string) {
+  /**
+   * OPAQUE login. With `proof`, an enrolled device signs the challenge with its key and the
+   * session is proven (device-proof.md §5); without it, an active device gets a pre-proof session.
+   */
+  private async opaqueLogin(
+    username: string,
+    password: string,
+    deviceId?: string,
+    proof?: { accountId: string; key: DeviceKeyPair },
+  ) {
     const { api, opaque } = this.deps;
     const client = opaque.startLogin(password);
     try {
@@ -618,7 +694,21 @@ export class VaultEngine {
       const finish = opaque.finishLogin(client.clientLoginState, start.loginResponse, password);
       // A wrong password and a tampered server response look the same (authentication.md §4).
       if (finish === undefined) throw new VaultError('login_failed');
-      return await api.loginFinish({ loginId: start.loginId, finishLoginRequest: finish });
+      return await api.loginFinish({
+        loginId: start.loginId,
+        finishLoginRequest: finish,
+        ...(proof && deviceId
+          ? {
+              deviceProof: this.loginProof(
+                'login',
+                { accountId: proof.accountId, deviceId },
+                proof.key,
+                start,
+                finish,
+              ),
+            }
+          : {}),
+      });
     } catch (error) {
       throw vaultErrorFrom(error);
     }
@@ -704,7 +794,8 @@ export class VaultEngine {
       );
       this.session = session;
       await this.loadLocalState();
-      const sessionProblem = await this.restoreSession(device, password);
+      session.deviceKey = await this.loadDeviceKey(session);
+      const sessionProblem = await this.restoreSession(session, password);
       let secretKeyUpdated = false;
       if (sessionProblem === undefined) {
         secretKeyUpdated = await this.refreshKeyset(session, password);
@@ -766,6 +857,7 @@ export class VaultEngine {
       );
       this.session = session;
       await this.loadLocalState();
+      session.deviceKey = await this.loadDeviceKey(session);
       await this.syncNow();
       return this.unlockedView();
     });
@@ -841,12 +933,25 @@ export class VaultEngine {
    * offline and is reported.
    */
   private async restoreSession(
-    device: DeviceRecord,
+    session: Session,
     password: string,
   ): Promise<UnlockedVault['sessionProblem'] | undefined> {
+    const device = session.device;
+    const key = session.deviceKey;
+    const ids = { accountId: device.accountId, deviceId: device.deviceId };
     try {
       const current = await this.deps.api.currentDevice();
-      if (current.id === device.deviceId && current.status === 'active') return undefined;
+      if (current.id === device.deviceId && current.status === 'active') {
+        if (current.sessionProven) return undefined;
+        // A pre-proof session (the password changed elsewhere, step 3 of §5): prove it now.
+        if (!key || !current.hasDeviceKey) return 'device_key_missing';
+        try {
+          await this.proveSession(ids, key);
+          return undefined;
+        } catch {
+          // A failed proof ends that session; log in again below.
+        }
+      }
     } catch (error) {
       const e = vaultErrorFrom(error);
       if (e.code === 'offline') return 'offline';
@@ -856,9 +961,15 @@ export class VaultEngine {
       if (e.code !== 'session_expired') return 'offline';
     }
     try {
-      const result = await this.opaqueLogin(device.username, password, device.deviceId);
+      const result = await this.opaqueLogin(
+        device.username,
+        password,
+        device.deviceId,
+        key ? { accountId: device.accountId, key } : undefined,
+      );
       if (result.device.status === 'active' && result.device.id === device.deviceId)
-        return undefined;
+        // Without a key the session stays pre-proof: usable offline, re-enroll to sync (§9).
+        return result.proven ? undefined : 'device_key_missing';
       // The server took the password but does not know this device: it was restored from a
       // backup older than this device's enrollment. Nothing here is erased (§3.6a).
       return result.device.id === device.deviceId ? 'login_failed' : 'device_unknown';
@@ -1042,6 +1153,7 @@ export class VaultEngine {
   ): Session {
     return {
       device,
+      deviceKey: undefined,
       accountKey,
       accountKeyId: device.enrolled.akId,
       deviceIdBytes: uuidToBytes(device.deviceId),
@@ -1097,6 +1209,129 @@ export class VaultEngine {
         this.deps.crypto.openLocalRecord({ accountKey, accountKeyId, deviceId, name, envelope }),
       ),
     );
+  }
+
+  // ---- Device proof of possession (docs/security/device-proof.md) ----
+
+  /** The device key from its local record, under this session's `K_local`; undefined if none. */
+  private async loadDeviceKey(session: Session): Promise<DeviceKeyPair | undefined> {
+    const envelope = await this.deps.store.local('device-key');
+    if (!envelope) return undefined;
+    const parsed = z
+      .strictObject({ v: z.literal(1), publicKey: z.string(), secretKey: z.string() })
+      .parse(
+        this.openLocal(
+          session.accountKey,
+          session.accountKeyId,
+          session.deviceIdBytes,
+          'device-key',
+          envelope,
+        ),
+      );
+    return { publicKey: fromB64(parsed.publicKey), secretKey: fromB64(parsed.secretKey) };
+  }
+
+  /** Seals the device key under `K_local` and keeps it for this unlocked session. */
+  private async storeDeviceKey(session: Session, key: DeviceKeyPair): Promise<void> {
+    await this.deps.store.apply({
+      local: {
+        'device-key': this.sealLocal(session, 'device-key', {
+          v: 1,
+          publicKey: toB64(key.publicKey),
+          secretKey: toB64(key.secretKey),
+        }),
+      },
+    });
+    session.deviceKey = { publicKey: key.publicKey.slice(), secretKey: key.secretKey.slice() };
+  }
+
+  /** `deviceProof` for a login or reopening login (ops 1 and 10). */
+  private loginProof(
+    operation: 'login' | 'reopen_login',
+    ids: { accountId: string; deviceId: string },
+    key: DeviceKeyPair,
+    start: { loginId: string; challenge: string },
+    finishLoginRequest: string,
+  ): string {
+    const { crypto } = this.deps;
+    return toB64(
+      crypto.signDeviceProof({
+        operation,
+        accountId: uuidToBytes(ids.accountId),
+        deviceId: uuidToBytes(ids.deviceId),
+        binding: crypto.loginBinding(fromB64(start.loginId)),
+        nonce: fromB64(start.challenge),
+        payload: crypto.proofPayload(operation, [fromB64(finishLoginRequest)]),
+        secretKey: key.secretKey,
+      }),
+    );
+  }
+
+  /**
+   * `{ nonce, proof }` for an operation-bound request (§7): the device key over the exact
+   * payload and the session's nonce, and for key replacement `AK`'s own proof as well.
+   */
+  private signed(
+    ids: { accountId: string; deviceId: string },
+    key: DeviceKeyPair,
+    operation: ProofOperation,
+    nonce: { nonce: string; sessionRef: string },
+    fields: readonly ProofField[],
+    account?: { accountKey: Uint8Array; accountKeyId: Uint8Array; accountKeyEpoch: number },
+  ): { nonce: string; proof: { device: string; accountKey: string } } {
+    const { crypto } = this.deps;
+    const base = {
+      operation,
+      accountId: uuidToBytes(ids.accountId),
+      binding: fromB64(nonce.sessionRef),
+      nonce: fromB64(nonce.nonce),
+      payload: crypto.proofPayload(operation, fields),
+    };
+    const device = toB64(
+      crypto.signDeviceProof({
+        ...base,
+        deviceId: uuidToBytes(ids.deviceId),
+        secretKey: key.secretKey,
+      }),
+    );
+    const accountKey = account ? toB64(crypto.signAccountProof({ ...base, ...account })) : '';
+    return { nonce: nonce.nonce, proof: { device, accountKey } };
+  }
+
+  /** As `signed`, for a request that carries only the device proof. */
+  private signedDevice(
+    ids: { accountId: string; deviceId: string },
+    key: DeviceKeyPair,
+    operation: ProofOperation,
+    nonce: { nonce: string; sessionRef: string },
+    fields: readonly ProofField[],
+  ): { nonce: string; proof: { device: string } } {
+    const { nonce: n, proof } = this.signed(ids, key, operation, nonce, fields);
+    return { nonce: n, proof: { device: proof.device } };
+  }
+
+  /** The unlocked session's device key, or the re-enrollment it needs (§9). */
+  private deviceKeyOf(session: Session): DeviceKeyPair {
+    if (!session.deviceKey) throw new VaultError('device_key_missing');
+    return session.deviceKey;
+  }
+
+  /** `AK`'s fields for an `AVSK` proof of this session. */
+  private accountProofOf(session: Session) {
+    return {
+      accountKey: session.accountKey,
+      accountKeyId: session.accountKeyId,
+      accountKeyEpoch: session.device.enrolled.akEpoch,
+    };
+  }
+
+  /** A pre-proof session of this device proves its key (§5 step 3, op 2). */
+  private async proveSession(
+    ids: { accountId: string; deviceId: string },
+    key: DeviceKeyPair,
+  ): Promise<void> {
+    const nonce = await this.deps.api.proofNonce('session_proof');
+    await this.deps.api.sessionProof(this.signedDevice(ids, key, 'session_proof', nonce, []));
   }
 
   private async loadCheckpoint(
@@ -1577,6 +1812,8 @@ export class VaultEngine {
     if (state.state === 'open' || !state.request) return { state: 'waiting' };
     const request = state.request;
     const epk = fromB64(request.epk);
+    const devicePublicKey = fromB64(request.devicePublicKey);
+    // req_mac covers B's device key too (pair-req-2): A approves exactly this key (§8).
     const verified = this.deps.crypto.verifyPairingRequest({
       secret: host.secret,
       accountId: uuidToBytes(session.device.accountId),
@@ -1584,6 +1821,7 @@ export class VaultEngine {
       deviceId: uuidToBytes(request.requesterDeviceId),
       ephemeralPublicKey: epk,
       platform: request.platform,
+      devicePublicKey,
       mac: fromB64(request.mac),
     });
     if (!verified) {
@@ -1595,6 +1833,7 @@ export class VaultEngine {
     host.request = {
       deviceId: request.requesterDeviceId,
       epk,
+      devicePublicKey,
       platform: request.platform,
       requestedAtMs: Date.parse(request.requestedAt),
     };
@@ -1631,9 +1870,26 @@ export class VaultEngine {
         },
       });
       try {
+        // A's own device proof over B's id and key and the reply (op 8).
+        const nonce = await this.deps.api.proofNonce('pairing_approve');
+        const proof = this.signedDevice(
+          { accountId: session.device.accountId, deviceId: session.device.deviceId },
+          this.deviceKeyOf(session),
+          'pairing_approve',
+          nonce,
+          [
+            fromB64(params.pairingId),
+            uuidToBytes(request.deviceId),
+            request.devicePublicKey,
+            reply.ciphertext,
+            reply.mac,
+            null,
+          ],
+        );
         await this.deps.api.pairingApprove(params.pairingId, {
           ciphertext: toB64(reply.ciphertext),
           mac: toB64(reply.mac),
+          ...proof,
         });
       } catch (error) {
         if (error instanceof ApiError && error.code === 'pairing_state')
@@ -1662,6 +1918,7 @@ export class VaultEngine {
   private dropJoining(): void {
     this.joining?.secret.fill(0);
     this.joining?.ephemeralPrivateKey.fill(0);
+    this.joining?.deviceKey.secretKey.fill(0);
     this.joining = undefined;
   }
 
@@ -1687,22 +1944,27 @@ export class VaultEngine {
     } catch {
       throw new VaultError('invalid_pairing_code');
     }
+    // This device's key exists before it holds AK: in memory until enrollment (§8).
+    const deviceKey = crypto.generateDeviceKey();
     const request = crypto.createPairingRequest({
       secret,
       accountId: uuidToBytes(device.accountId),
       deviceId: uuidToBytes(device.deviceId),
       platform: this.deps.platform,
+      devicePublicKey: deviceKey.publicKey,
     });
     const pairingId = toB64(request.pairingId);
     try {
       await api.pairingRequest(pairingId, {
         epk: toB64(request.ephemeralPublicKey),
         platform: this.deps.platform,
+        devicePublicKey: toB64(deviceKey.publicKey),
         mac: toB64(request.mac),
       });
     } catch (error) {
       secret.fill(0);
       request.ephemeralPrivateKey.fill(0);
+      deviceKey.secretKey.fill(0);
       // A pairing with a request already: someone else may have seen the code (§3.2).
       if (error instanceof ApiError && error.code === 'pairing_state')
         throw new VaultError('pairing_used');
@@ -1713,6 +1975,7 @@ export class VaultEngine {
     this.dropJoining();
     this.joining = {
       secret,
+      deviceKey,
       pairingId: request.pairingId,
       ephemeralPublicKey: request.ephemeralPublicKey,
       ephemeralPrivateKey: request.ephemeralPrivateKey,
@@ -1738,6 +2001,7 @@ export class VaultEngine {
       if (!device) throw new VaultError('device_not_enrolled');
       const { crypto, api } = this.deps;
       const pairingId = toB64(join.pairingId);
+      const ids = { accountId: device.accountId, deviceId: device.deviceId };
       let state;
       try {
         state = await api.pairingState(pairingId);
@@ -1746,7 +2010,16 @@ export class VaultEngine {
           this.dropJoining();
           throw new VaultError('pairing_expired');
         }
-        throw vaultErrorFrom(error);
+        // Approved: this device is active now, and its session proves the key it already holds
+        // before it reads anything else (device-proof.md §8).
+        if (error instanceof ApiError && error.code === 'device_proof_required') {
+          try {
+            await this.proveSession(ids, join.deviceKey);
+            state = await api.pairingState(pairingId);
+          } catch (proofError) {
+            throw vaultErrorFrom(proofError);
+          }
+        } else throw vaultErrorFrom(error);
       }
       if (state.state !== 'approved' || !state.response) return { state: 'waiting' } as const;
 
@@ -1853,6 +2126,8 @@ export class VaultEngine {
         manifestHash: payload.checkpoint.manifestHash,
       };
       await this.persistLocal({ checkpoint: true, anchor: true });
+      // Only now can this device seal its key: it holds AK.
+      await this.storeDeviceKey(this.session, join.deviceKey);
       await api.pairingComplete(pairingId).catch(() => undefined);
       this.dropJoining();
       this.pendingPassword = undefined;
@@ -2014,7 +2289,18 @@ export class VaultEngine {
         });
         const finish = opaque.finishLogin(client.clientLoginState, start.loginResponse, password);
         if (finish === undefined) throw new VaultError('reopen_failed');
-        await api.reopenLoginFinish({ loginId: start.loginId, finishLoginRequest: finish });
+        // The device active in the snapshot proves its key (device-proof.md §8, R12).
+        await api.reopenLoginFinish({
+          loginId: start.loginId,
+          finishLoginRequest: finish,
+          deviceProof: this.loginProof(
+            'reopen_login',
+            { accountId: device.accountId, deviceId: device.deviceId },
+            this.deviceKeyOf(session),
+            start,
+            finish,
+          ),
+        });
         material = await api.reopenMaterial();
       } catch (error) {
         throw vaultErrorFrom(error);
@@ -2202,23 +2488,63 @@ export class VaultEngine {
       const r = this.recovery;
       const c = r?.complete;
       if (!r || !c?.verified) throw new VaultError('kit_mismatch');
-      const complete = r.reopen ? this.deps.api.reopenComplete : this.deps.api.recoveryComplete;
+      const { crypto, api } = this.deps;
+      const complete = r.reopen ? api.reopenComplete : api.recoveryComplete;
+      // device-proof.md §8: a recovery (and the kit path of a reopening) enrolls a new device key;
+      // the reopening password path keeps and proves this device's restored one. AK is proved too.
+      const deviceKey =
+        r.reopen === 'password'
+          ? this.deviceKeyOf(this.requireSession())
+          : crypto.generateDeviceKey();
+      const akVerifyKey = crypto.accountProofPublicKey(r.accountKey);
+      const operation = r.reopen ? 'reopen_complete' : 'recovery_complete';
       try {
-        await complete({
+        const nonce = r.reopen ? await api.reopenProofNonce() : await api.recoveryProofNonce();
+        const fields = {
           registrationRecord: c.registrationRecord,
-          kdfProfile: 1,
+          kdfProfile: 1 as const,
           saltPw: toB64(c.saltPw),
           wrappedAkPassword: toB64(c.wrappedAkPassword),
           recoveryKeyId: toB64(c.recoveryKeyId),
           wrappedAkRecovery: toB64(c.wrappedAkRecovery),
           recoveryVerifier: toB64(c.recoveryVerifier),
           expectedRowVersion: r.rowVersion,
+        };
+        await complete({
+          ...fields,
+          devicePublicKey: toB64(deviceKey.publicKey),
+          akVerifyKey: toB64(akVerifyKey),
+          ...this.signed(
+            { accountId: r.accountId, deviceId: r.deviceId },
+            deviceKey,
+            operation,
+            nonce,
+            [
+              fromB64(c.registrationRecord),
+              { u8: 1 },
+              c.saltPw,
+              c.wrappedAkPassword,
+              c.recoveryKeyId,
+              c.wrappedAkRecovery,
+              c.recoveryVerifier,
+              { u64: r.rowVersion },
+              null,
+              deviceKey.publicKey,
+              akVerifyKey,
+            ],
+            {
+              accountKey: r.accountKey,
+              accountKeyId: r.accountKeyId,
+              accountKeyEpoch: r.accountKeyEpoch,
+            },
+          ),
         });
       } catch (error) {
+        if (r.reopen !== 'password') deviceKey.secretKey.fill(0);
         throw vaultErrorFrom(error);
       }
       if (r.reopen === 'password') return this.finishReopenOnThisDevice(c);
-      if (r.keepLocal) return this.finishRecoveryKeepingLocal(r, c);
+      if (r.keepLocal) return this.finishRecoveryKeepingLocal(r, c, deviceKey);
       const device: DeviceRecord & { enrolled: EnrolledKeys } = {
         v: 1,
         accountId: r.accountId,
@@ -2249,6 +2575,8 @@ export class VaultEngine {
       });
       this.recovery = undefined;
       this.pendingPassword = undefined;
+      await this.storeDeviceKey(this.session, deviceKey);
+      deviceKey.secretKey.fill(0);
       // This device ran the recovery, so it does not warn about it. (Assumes the device clock is
       // not minutes behind the server's, which recorded the start before this finish.)
       this.session.recoveryAcknowledgedMs = this.deps.now();
@@ -2277,6 +2605,7 @@ export class VaultEngine {
   private async finishRecoveryKeepingLocal(
     r: PendingRecovery,
     c: NonNullable<PendingRecovery['complete']>,
+    deviceKey: DeviceKeyPair,
   ): Promise<UnlockedVault> {
     const local = await this.deps.store.device();
     if (!local?.enrolled || local.deviceId !== r.deviceId || local.accountId !== r.accountId)
@@ -2304,6 +2633,9 @@ export class VaultEngine {
     });
     await this.loadLocalState();
     const session = this.session;
+    // The recovered device's new key replaces any it had (device-proof.md §8, §9).
+    await this.storeDeviceKey(session, deviceKey);
+    deviceKey.secretKey.fill(0);
     this.recovery = undefined;
     this.pendingPassword = undefined;
     session.recoveryAcknowledgedMs = this.deps.now();
@@ -2486,7 +2818,17 @@ export class VaultEngine {
         throw new VaultError('cannot_revoke_current');
       try {
         await this.stepUp(params.password);
-        await this.deps.api.revokeDevice(params.deviceId, { reason: params.reason });
+        const nonce = await this.deps.api.proofNonce('device_revoke');
+        await this.deps.api.revokeDevice(params.deviceId, {
+          reason: params.reason,
+          ...this.signedDevice(
+            { accountId: session.device.accountId, deviceId: session.device.deviceId },
+            this.deviceKeyOf(session),
+            'device_revoke',
+            nonce,
+            [uuidToBytes(params.deviceId), { text: params.reason }],
+          ),
+        });
       } catch (error) {
         return this.onlineFailure(error);
       }
@@ -2552,12 +2894,27 @@ export class VaultEngine {
         } finally {
           auk.fill(0);
         }
+        const nonce = await api.proofNonce('password_change');
         await api.passwordFinish({
           registrationRecord,
           kdfProfile: 1,
           saltPw: toB64(saltPw),
           wrappedAkPassword: toB64(wrappedAkPassword),
           expectedRowVersion: keys.rowVersion,
+          ...this.signed(
+            { accountId: session.device.accountId, deviceId: session.device.deviceId },
+            this.deviceKeyOf(session),
+            'password_change',
+            nonce,
+            [
+              fromB64(registrationRecord),
+              { u8: 1 },
+              saltPw,
+              wrappedAkPassword,
+              { u64: keys.rowVersion },
+            ],
+            this.accountProofOf(session),
+          ),
         });
         const device = {
           ...session.device,
@@ -2644,6 +3001,7 @@ export class VaultEngine {
     } finally {
       auk.fill(0);
     }
+    const nonce = await api.proofNonce('secret_key_rotate');
     await api.rotateSecretKey({
       keysetVersion,
       keyset: toB64(keyset),
@@ -2651,6 +3009,21 @@ export class VaultEngine {
       saltPw: toB64(saltPw),
       wrappedAkPassword: toB64(wrappedAkPassword),
       expectedRowVersion: keys.rowVersion,
+      ...this.signed(
+        { accountId: session.device.accountId, deviceId: session.device.deviceId },
+        this.deviceKeyOf(session),
+        'secret_key_rotate',
+        nonce,
+        [
+          { u32: keysetVersion },
+          keyset,
+          { u8: 1 },
+          saltPw,
+          wrappedAkPassword,
+          { u64: keys.rowVersion },
+        ],
+        this.accountProofOf(session),
+      ),
     });
     const device = {
       ...session.device,
@@ -2754,11 +3127,25 @@ export class VaultEngine {
         const keys = await this.deps.api.accountKeys();
         if (!same(fromB64(keys.akId), session.device.enrolled.akId))
           throw new VaultError('changed_elsewhere');
+        const nonce = await this.deps.api.proofNonce('recovery_key_rotate');
         await this.deps.api.rotateRecoveryKey({
           recoveryKeyId: toB64(pending.recoveryKeyId),
           wrappedAkRecovery: toB64(pending.wrappedAkRecovery),
           recoveryVerifier: toB64(pending.recoveryVerifier),
           expectedRowVersion: keys.rowVersion,
+          ...this.signed(
+            { accountId: session.device.accountId, deviceId: session.device.deviceId },
+            this.deviceKeyOf(session),
+            'recovery_key_rotate',
+            nonce,
+            [
+              pending.recoveryKeyId,
+              pending.wrappedAkRecovery,
+              pending.recoveryVerifier,
+              { u64: keys.rowVersion },
+            ],
+            this.accountProofOf(session),
+          ),
         });
       } catch (error) {
         return this.onlineFailure(error);
@@ -3477,6 +3864,9 @@ export class VaultEngine {
     if (session) {
       session.accountKey.fill(0);
       session.vault.vaultKey.fill(0);
+      // A locked device cannot sign (device-proof.md §2).
+      session.deviceKey?.secretKey.fill(0);
+      session.deviceKey = undefined;
       session.bodies.clear();
     }
     this.session = undefined;

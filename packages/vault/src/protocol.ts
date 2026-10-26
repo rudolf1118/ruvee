@@ -105,6 +105,11 @@ export interface UnlockedVault {
   readonly sync: SyncStatus;
   /** Set when the server session could not be restored; the vault still works offline. */
   readonly sessionProblem?:
+    /**
+     * The server needs this device to prove its key and it cannot (enrolled before D-31, or
+     * the key is not the server's): usable offline; re-enroll with the Recovery Kit to sync.
+     */
+    | 'device_key_missing'
     | 'login_failed'
     | 'offline'
     | 'rate_limited'
@@ -179,6 +184,8 @@ export type VaultErrorCode =
   | 'local_data_present'
   /** This browser holds another account's vault; recovery here erases it unless confirmed. */
   | 'local_data_other_account'
+  /** This device has no device key the server accepts (docs/security/device-proof.md §9). */
+  | 'device_key_missing'
   | 'export_first'
   | 'internal';
 
