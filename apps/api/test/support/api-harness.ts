@@ -40,7 +40,17 @@ export interface Harness {
  */
 export async function startHarness(options: { database?: TempDatabase } = {}): Promise<Harness> {
   const db = options.database ?? (await createTempDatabase());
-  if (!options.database) migrate(db.url);
+  try {
+    return await start(db, !options.database);
+  } catch (error) {
+    // A harness that never started still drops the database it created.
+    if (!options.database) await db.drop();
+    throw error;
+  }
+}
+
+async function start(db: TempDatabase, fresh: boolean): Promise<Harness> {
+  if (fresh) migrate(db.url);
   process.env.DATABASE_URL = db.url;
   const logs: string[] = [];
   const destination = new Writable({
@@ -85,8 +95,11 @@ export async function startHarness(options: { database?: TempDatabase } = {}): P
       return token;
     },
     async close() {
-      await app.close();
-      await db.drop();
+      try {
+        await app.close();
+      } finally {
+        await db.drop();
+      }
     },
   };
 }

@@ -5,6 +5,8 @@ export default defineConfig({
     globals: true,
     include: ['test/**/*.int-spec.ts'],
     testTimeout: 20_000,
+    globalSetup: ['test/support/db-ledger.global.ts'],
+    setupFiles: ['test/support/db-lifecycle.setup.ts'],
     env: {
       LOG_LEVEL: 'silent',
       OPAQUE_SERVER_SETUP_FILE: 'test/fixtures/opaque-server-setup.test-only',
