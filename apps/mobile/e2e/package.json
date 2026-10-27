@@ -1,0 +1,25 @@
+{
+  "name": "ruvee-mobile-e2e",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "End-to-end tests of the Ruvee mobile app on an Android emulator against a real, isolated API and database, with the real web app in Chromium. Synthetic data only. Own lockfile; not part of the pnpm workspace.",
+  "type": "module",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "test": "node --test --test-concurrency=1 --test-timeout=1800000 'tests/**/*.test.ts'",
+    "appium": "APPIUM_HOME=../../../.mobile-toolchain/appium appium --address 127.0.0.1 --port 4723 --log-level warn"
+  },
+  "dependencies": {
+    "appium": "3.8.0",
+    "pg": "8.23.1",
+    "playwright-core": "1.64.1",
+    "webdriverio": "10.0.2"
+  },
+  "devDependencies": {
+    "@types/node": "24.19.2",
+    "typescript": "6.0.3"
+  }
+}
