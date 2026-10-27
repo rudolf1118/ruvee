@@ -318,6 +318,8 @@ deploy`, whose connect timeout defaults to 5 s.
 
 ## 8. Can a private synthetic deployment rehearsal proceed?
 
+_Updated by §10: F-1 to F-4 are now fixed, so condition 1 is met and condition 4 is no longer needed._
+
 **Not yet; it can after one bounded fix batch.** No finding exposes vault keys or plaintext to the
 server, and nothing here concerns real data, which stays blocked by D-19. But F-1 and F-4 break
 recovery and unlock, which are exactly what a rehearsal exercises, and F-2 and F-3 lose or wedge
@@ -342,3 +344,43 @@ Conditions for the rehearsal:
 4. The connection-failure item (§5.2) stays open until it is observed or ruled out.
 5. D-19: an independent review of `d04e211` plus whatever fixes follow. This report is not one.
 6. The real-data restrictions remain in force.
+
+## 10. Fix batch for F-1 to F-4 (2026-10-27)
+
+Made after this review, on top of `048000d`; the commit that adds this section. It changes
+application code, so a later review covers `d04e211` **plus this commit**. Still not D-19.
+
+| Finding | Change                                                                                                                                                                                                                                                                                                                                                                                          | Test                                                                                                                                                                                                |
+| ------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-1     | `DELETE /sessions/{id}` ends only `cookie` and `token` sessions; a `recovery` session is refused with `forbidden` (account-security.service.ts `endSession`). A new Recovery Kit, which needs the account-key proof, still ends it. The devices screen labels a recovery session and offers no sign-out for it.                                                                                 | `followup-repro.int-spec.ts` F-1 passes without `it.fails`, and now also asserts the 403                                                                                                            |
+| F-2     | The web app runs the vault in one tab per browser profile: the page holds a Web Lock (`apps/web/src/vault/tab-lock.ts`) before it starts the worker. Another tab shows "Ruvee is open in another tab"; **Use it here** asks the holder over a BroadcastChannel to let queued operations finish (`settle`, at most 5 s), lock and let go. A browser without Web Locks is treated as unsupported. | `two-devices.spec.ts` hands the vault to a second tab and back, in Chromium, Firefox and WebKit. The engine-level reproduction stays `it.fails` on purpose: the engine itself remains single-writer |
+| F-3     | Choosing "Keep mine" for a deletion replaces any edit queued for that item during the conflict, so a commit never names an item twice.                                                                                                                                                                                                                                                          | F-3 passes without `it.fails`, and now also checks that the deletion reaches the other device                                                                                                       |
+| F-4     | Before re-wrapping, `changePassword` adopts a newer keyset with `AK` (the same `refreshKeyset` used at unlock), and refuses (`changed_elsewhere`) unless the server's keyset version then equals this device's.                                                                                                                                                                                 | F-4 passes without `it.fails`                                                                                                                                                                       |
+
+What is left after these fixes:
+
+- F-2: the handover discards an unsaved editor draft in the tab that lets go. If an operation
+  takes longer than 5 s, it is cut off the same way a normal lock cuts it off. The extension
+  was not changed: it runs one engine in its service worker.
+- F-4: the server still cannot tell which `SK` is under a new password wrap, so another client
+  could repeat the mistake. Binding the keyset version into the `password_change` proof is a
+  protocol change, and it is left to the owner's decision.
+- F-5 to F-19, S-1 to S-5 and §5.2 are unchanged.
+
+Tests run on this commit:
+
+- vault unit tests: 99 passed, 1 expected fail (F-2 engine), 1 skipped;
+- every other package's unit tests;
+- the API integration suite: 27 files, 183 passed, 1 expected fail (F-6). This was run F2-fixes.
+  Run F1-fixes failed in the restore suites only because the host's `pg_dump` 14 was used
+  (environment; evidence kept);
+- `test:vault`, `test:migrate`, `test:import` and `test:restore` in Chromium, Firefox and WebKit;
+- the default web e2e;
+- lint, typecheck and format.
+
+Every run used a task-owned PostgreSQL 18.6 container with `fsync=off`. Not run: Safari, the
+extension e2e, remote CI.
+
+**Rehearsal:** with this commit, a private synthetic rehearsal can proceed under §8 conditions 2, 3,
+5 and 6. That means synthetic data only, one API process per database, `fsync` on, no pre-D-31
+accounts, and F-5 to F-19 recorded as known issues.

@@ -4,6 +4,7 @@ import '@/vault/zod-config';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { DevicePhase, ItemDetail, ItemSummary, SyncStatus, UnlockedVault } from '@ruvee/vault';
 import { VaultClient, VaultClientError } from '@/vault/client';
+import { askOtherTab, onHandOver, tabLockSupported, takeTabLock } from '@/vault/tab-lock';
 import { messageFor } from './messages';
 import { DevicesIcon, InfoIcon, LogoutIcon } from '../ui/icons';
 import { NavButton } from '../vault/sidebar';
@@ -36,6 +37,7 @@ const POLL_MS = 60_000;
 type Screen =
   | { name: 'starting' }
   | { name: 'unsupported' }
+  | { name: 'elsewhere'; moved: boolean; waiting: boolean }
   | { name: 'welcome' }
   | { name: 'setup' }
   | { name: 'login' }
@@ -51,7 +53,8 @@ function supported(): boolean {
     typeof Worker !== 'undefined' &&
     typeof indexedDB !== 'undefined' &&
     typeof WebAssembly !== 'undefined' &&
-    typeof globalThis.crypto.getRandomValues === 'function'
+    typeof globalThis.crypto.getRandomValues === 'function' &&
+    tabLockSupported()
   );
 }
 
@@ -76,23 +79,49 @@ export function VaultApp() {
     return next;
   }, []);
 
-  useEffect(() => {
-    if (!supported()) return;
-    const c = new VaultClient();
-    clientRef.current = c;
+  /** Starts the worker once this tab holds the vault (tab-lock.ts). */
+  const start = useCallback(() => {
+    const c = freshClient();
     void c.call('phase').then(
       (phase) => {
-        setClient(c);
         setScreen(screenFor(phase));
       },
       () => {
         setScreen({ name: 'unsupported' });
       },
     );
+  }, [freshClient]);
+
+  useEffect(() => {
+    if (!supported()) return;
+    // Another tab asked for the vault: let queued writes finish, then lock and let go.
+    onHandOver(async () => {
+      const c = clientRef.current;
+      await Promise.race([
+        c?.call('settle').catch(() => undefined),
+        new Promise((resolve) => setTimeout(resolve, 5_000)),
+      ]);
+      await clearClipboard();
+      await c?.lock();
+      setScreen({ name: 'elsewhere', moved: true, waiting: false });
+    });
+    let active = true;
+    void takeTabLock(false).then((ours) => {
+      if (!active) return;
+      if (ours) start();
+      else setScreen({ name: 'elsewhere', moved: false, waiting: false });
+    });
     return () => {
+      active = false;
       clientRef.current?.terminate();
     };
-  }, []);
+  }, [start]);
+
+  const takeOver = useCallback(() => {
+    setScreen({ name: 'elsewhere', moved: false, waiting: true });
+    askOtherTab();
+    void takeTabLock(true).then(start);
+  }, [start]);
 
   /** INV-15: drop every key and plaintext, then show the unlock screen with a new worker. */
   const lock = useCallback(
@@ -110,6 +139,29 @@ export function VaultApp() {
     [freshClient],
   );
 
+  if (screen.name === 'elsewhere')
+    return (
+      <AuthCard
+        title={screen.moved ? 'Ruvee moved to another tab' : 'Ruvee is open in another tab'}
+      >
+        <p className="text-body text-ink-muted">
+          Ruvee runs in one tab of this browser at a time, so changes in two tabs can&apos;t
+          overwrite each other.{' '}
+          {screen.moved
+            ? 'This tab was locked. Everything it had saved is kept.'
+            : 'Using it here locks the other tab after it finishes saving.'}
+        </p>
+        <Button
+          className="self-start"
+          aria-disabled={screen.waiting || undefined}
+          onClick={() => {
+            if (!screen.waiting) takeOver();
+          }}
+        >
+          {screen.waiting ? 'Waiting for the other tab…' : 'Use it here'}
+        </Button>
+      </AuthCard>
+    );
   if (screen.name === 'starting' || (!client && screen.name !== 'unsupported'))
     return <main className="min-h-dvh" aria-busy="true" />;
 

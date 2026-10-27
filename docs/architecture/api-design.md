@@ -147,7 +147,7 @@ Specified in [device-enrollment.md](../security/device-enrollment.md). Phase 2.
 | `PATCH /devices/{deviceId}`           | `active`  | `{ label }`                                                                                                                                  |
 | `POST /devices/{deviceId}/revoke`     | `step-up` | `{ reason: "retired" \| "lost" }`. The caller can't revoke itself; it logs out instead.                                                      |
 | `GET /sessions`                       | `active`  | → sessions with device id, kind, created, last used, and expiry times                                                                        |
-| `DELETE /sessions/{sessionId}`        | `active`  | Revokes that session.                                                                                                                        |
+| `DELETE /sessions/{sessionId}`        | `active`  | Revokes that session. A `recovery` session is refused (`forbidden`): only a new Recovery Kit ends it.                                        |
 | `POST /pairings`                      | `active`  | `{ pairingId }` (device A)                                                                                                                   |
 | `GET /pairings/{pairingId}`           | `session` | → state, and for the role of the caller: A gets `{ requesterDeviceId, platform, epk, mac }`, and B gets `{ ciphertext, mac }` after approval |
 | `POST /pairings/{pairingId}/request`  | `session` | `{ epk, platform, mac }` (device B, which must be `pending`). `device_id_B` comes from the session. A second request gets `409`.             |

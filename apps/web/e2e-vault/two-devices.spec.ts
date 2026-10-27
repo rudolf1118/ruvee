@@ -240,6 +240,27 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   await a.getByRole('button', { name: 'Unlock' }).click();
   await expect(a.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
 
+  // ---- Two tabs of one browser: one runs the vault at a time (follow-up review F-2) ----
+  const a2 = await contextA.newPage();
+  await a2.goto('/');
+  await expect(a2.getByRole('heading', { name: 'Ruvee is open in another tab' })).toBeVisible();
+  await expectAccessible(a2);
+  await a2.getByRole('button', { name: 'Use it here' }).click();
+  await expect(a.getByRole('heading', { name: 'Ruvee moved to another tab' })).toBeVisible();
+  await expect(a.getByText('Synthetic Mail (A)')).toHaveCount(0);
+  await expect(a2.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible();
+  await a2.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  await a2.getByRole('button', { name: 'Unlock' }).click();
+  await expect(a2.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
+  // And back to the first tab.
+  await a.getByRole('button', { name: 'Use it here' }).click();
+  await expect(a2.getByRole('heading', { name: 'Ruvee moved to another tab' })).toBeVisible();
+  await a2.close();
+  await expect(a.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible();
+  await a.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  await a.getByRole('button', { name: 'Unlock' }).click();
+  await expect(a.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
+
   // ---- Device C: a new browser recovers with the Recovery Kit (account-recovery.md §3) ----
   const contextC = await browser.newContext();
   const capturedC = capture(contextC);

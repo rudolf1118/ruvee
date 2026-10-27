@@ -50,20 +50,24 @@ describe('FOLLOW-UP reproductions (real database)', () => {
     });
   };
 
-  // F-1: whoever holds a proven session (a stolen one, for example) can end every recovery the
+  // F-1 (fixed): whoever holds a proven session (a stolen one, for example) can end every recovery the
   // owner starts, so the Recovery Kit cannot be used to lock them out.
-  it.fails('a normal session cannot end a recovery in progress', async () => {
+  it('a normal session cannot end a recovery in progress', async () => {
     const started = await startRecovery();
     expect(started.status, started.text).toBe(200);
     const recovery = recoveryCookie(started);
     const listed = (await h.get('/api/v1/sessions', owner).expect(200)).body as {
       sessions: { id: string; kind: string }[];
     };
-    for (const s of listed.sessions.filter((x) => x.kind === 'recovery'))
-      await h
+    const recoveries = listed.sessions.filter((x) => x.kind === 'recovery');
+    expect(recoveries.length).toBeGreaterThan(0);
+    for (const s of recoveries) {
+      const res = await h
         .http()
         .delete(`/api/v1/sessions/${s.id}`)
         .set({ Origin: 'http://127.0.0.1:3100', 'X-Ruvee-Request': '1', Cookie: owner });
+      expectError(res, 'forbidden');
+    }
     // The owner's recovery must still be usable.
     expect((await h.get('/api/v1/recovery/material', recovery)).status).toBe(200);
   });

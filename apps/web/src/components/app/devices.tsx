@@ -207,10 +207,18 @@ export function DevicesPanel({
                   {d.sessions.map((s) => (
                     <li key={s.id} className="flex flex-wrap items-center justify-between gap-2">
                       <span>
-                        {s.current ? 'This session' : 'Signed in'} since{' '}
-                        {relativeTime(s.createdAtMs)}, last used {relativeTime(s.lastUsedAtMs)}
+                        {s.current
+                          ? 'This session'
+                          : s.recovery
+                            ? 'Recovery with the Recovery Kit'
+                            : 'Signed in'}{' '}
+                        since {relativeTime(s.createdAtMs)}, last used{' '}
+                        {relativeTime(s.lastUsedAtMs)}
+                        {s.recovery && !s.current
+                          ? '. If you didn’t start it, make a new Recovery Kit: that ends it.'
+                          : null}
                       </span>
-                      {s.current ? null : (
+                      {s.current || s.recovery ? null : (
                         <Button
                           size="sm"
                           variant="ghost"
@@ -463,8 +471,8 @@ function RecoveryKitSection({ client }: { client: VaultClient }) {
           <p className="text-body text-ink-muted">
             Make a new Recovery Kit if you lost the old one or think someone else has seen it. The
             old kit then stops working with this server. It still works with any backup of the
-            server made before today, and it doesn&apos;t undo a recovery someone already started
-            with it.
+            server made before today, and it ends a recovery someone started with it but
+            doesn&apos;t undo one already completed.
           </p>
           {error ? <Notice>{error}</Notice> : null}
           <Button className="self-start" onClick={begin}>

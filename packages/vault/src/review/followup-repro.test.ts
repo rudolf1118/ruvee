@@ -82,7 +82,10 @@ async function paired(server: FakeServer, a: Awaited<ReturnType<typeof device>>)
 }
 
 describe('FOLLOW-UP reproductions (client engine)', () => {
-  // F-2: two tabs of one browser run two engines on one IndexedDB; each writes its own memory.
+  // F-2: two engines on one IndexedDB each write their own memory. The engine stays single-writer
+  // by design; the web app now lets one tab per browser run it (apps/web/src/vault/tab-lock.ts,
+  // e2e-vault two-devices.spec.ts). This stays `fails` to record that the engine itself does not
+  // merge; the extension runs one engine in its service worker.
   it.fails('two engines on one store keep both tabs’ unsynced edits', async () => {
     const { server, a } = await account();
     await a.engine.sync();
@@ -100,8 +103,8 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     expect(view.items.map((i) => i.title).sort()).toEqual(['Saved in tab 1', 'Saved in tab 2']);
   });
 
-  // F-3: an offline edit of an item in "deleted here, edited elsewhere" conflict, then "mine".
-  it.fails('resolving a conflict never queues two mutations of one item', async () => {
+  // F-3 (fixed): an offline edit of an item in "deleted here, edited elsewhere" conflict, then "mine".
+  it('resolving a conflict never queues two mutations of one item', async () => {
     const { server, a } = await account();
     const x = await a.engine.save({ draft: note('X') });
     await a.engine.sync();
@@ -133,26 +136,27 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
       // The API refuses a commit naming one item twice (sync.service.ts checkCommit).
       expect(new Set(ids).size).toBe(ids.length);
     }
+    // "Keep mine" was the deletion: it reaches the server and the device is synced again.
+    expect(a.engine.items().some((i) => i.id === x.id)).toBe(false);
+    await b.engine.sync();
+    expect(b.engine.items().some((i) => i.id === x.id)).toBe(false);
   });
 
-  // F-4: a password change made on a device that has not seen a Secret Key rotation.
-  it.fails(
-    'a password change from a device with an older Secret Key keeps the account usable',
-    async () => {
-      const { server, a } = await account();
-      await a.engine.sync();
-      const b = await paired(server, a);
-      // A replaces the Secret Key (for example after removing a lost device); B stays unlocked.
-      await a.engine.rotateSecretKey({ password: PASSWORD });
-      const NEW = 'synthetic changed passphrase 8b7e';
-      expect(
-        await code(b.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
-      ).toBe('ok');
-      // A, which holds the current Secret Key, must open the new server wrap with the new password.
-      a.engine.wipeMemory();
-      server.sessionValid = false;
-      const again = await device(server, a.factory);
-      expect(await code(again.engine.unlock({ password: NEW }))).toBe('ok');
-    },
-  );
+  // F-4 (fixed): a password change made on a device that has not seen a Secret Key rotation.
+  it('a password change from a device with an older Secret Key keeps the account usable', async () => {
+    const { server, a } = await account();
+    await a.engine.sync();
+    const b = await paired(server, a);
+    // A replaces the Secret Key (for example after removing a lost device); B stays unlocked.
+    await a.engine.rotateSecretKey({ password: PASSWORD });
+    const NEW = 'synthetic changed passphrase 8b7e';
+    expect(
+      await code(b.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
+    ).toBe('ok');
+    // A, which holds the current Secret Key, must open the new server wrap with the new password.
+    a.engine.wipeMemory();
+    server.sessionValid = false;
+    const again = await device(server, a.factory);
+    expect(await code(again.engine.unlock({ password: NEW }))).toBe('ok');
+  });
 });

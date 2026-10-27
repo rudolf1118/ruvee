@@ -121,11 +121,23 @@ export class AccountSecurityService {
     sessionId: string,
     client: ClientContext,
   ): Promise<void> {
+    // A recovery session is never ended from here: a stolen session could otherwise end every
+    // recovery the owner starts (follow-up review F-1). A new Recovery Kit ends it, with a proof.
     const updated = await this.prisma.session.updateMany({
-      where: { id: sessionId, accountId: session.accountId, revokedAt: null },
+      where: {
+        id: sessionId,
+        accountId: session.accountId,
+        kind: { in: ['cookie', 'token'] },
+        revokedAt: null,
+      },
       data: { revokedAt: new Date(), revokeReason: 'user' },
     });
-    if (updated.count !== 1) throw new ApiException('not_found');
+    if (updated.count !== 1) {
+      const recovery = await this.prisma.session.count({
+        where: { id: sessionId, accountId: session.accountId, kind: 'recovery' },
+      });
+      throw new ApiException(recovery > 0 ? 'forbidden' : 'not_found');
+    }
     await this.events.record('session_revoked', {
       accountId: session.accountId,
       deviceId: session.deviceId,

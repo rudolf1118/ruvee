@@ -1802,7 +1802,9 @@ export class VaultEngine {
       session.conflicts.delete(c.itemId);
       if (params.choice === 'mine') {
         if (local === null) {
-          // "Delete it again", based on the new remote revision.
+          // "Delete it again", based on the new remote revision. It replaces any edit queued
+          // during the conflict: a commit may name an item only once (sync.service checkCommit).
+          session.pending = session.pending.filter((m) => m.itemId !== c.itemId);
           if (remote?.record)
             session.pending.push({ itemId: c.itemId, baseRevision: remote.revision, record: null });
         } else if (remote?.record) {
@@ -2825,6 +2827,7 @@ export class VaultEngine {
           .map((s) => ({
             id: s.id,
             current: s.current,
+            recovery: s.kind === 'recovery',
             createdAtMs: Date.parse(s.createdAt),
             lastUsedAtMs: Date.parse(s.lastUsedAt),
           })),
@@ -2952,12 +2955,17 @@ export class VaultEngine {
       const { crypto, api, opaque } = this.deps;
       try {
         await this.stepUp(params.currentPassword);
+        // The new wrap must be under the current `SK`. Another device may have replaced it since
+        // this one unlocked (D-24): adopt it first, or this change would lock out every
+        // up-to-date device and undo the replacement (follow-up review F-4).
+        await this.refreshKeyset(session, normalizePassword(params.currentPassword));
+        if (session.state === 'integrity_error') throw new VaultError('integrity');
         const keys = await api.accountKeys();
         const enrolled = session.device.enrolled;
         if (
           !same(fromB64(keys.akId), enrolled.akId) ||
           keys.akEpoch !== enrolled.akEpoch ||
-          keys.keysetVersion < enrolled.keysetVersion
+          keys.keysetVersion !== enrolled.keysetVersion
         )
           throw new VaultError('changed_elsewhere');
         const registration = opaque.startRegistration(password);

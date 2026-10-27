@@ -60,6 +60,10 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   exportLocal: (e, p: Parameters<VaultEngine['exportLocal']>[0]) => e.exportLocal(p),
   startOver: (e, p: Parameters<VaultEngine['startOver']>[0]) => e.startOver(p),
   logout: (e) => e.logout(),
+  settle: async (e) => {
+    await e.idle();
+    return true;
+  },
   wipe: (e) => {
     e.wipeMemory();
     return true;

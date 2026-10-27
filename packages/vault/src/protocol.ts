@@ -310,6 +310,8 @@ export interface MigrationReport {
 export interface SessionView {
   readonly id: string;
   readonly current: boolean;
+  /** A recovery in progress: it cannot be signed out; a new Recovery Kit ends it. */
+  readonly recovery: boolean;
   readonly createdAtMs: number;
   readonly lastUsedAtMs: number;
 }
@@ -392,6 +394,8 @@ export interface VaultMethods {
     conflictsSeen: number;
   }): true;
   logout(): true;
+  /** Resolves when every queued operation has finished, so nothing is mid-write (F-2). */
+  settle(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */
   wipe(): true;
 }
