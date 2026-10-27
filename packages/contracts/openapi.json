@@ -8612,7 +8612,9 @@
             "type": "string",
             "enum": [
               "web",
-              "extension"
+              "extension",
+              "ios",
+              "android"
             ]
           }
         },
@@ -10712,7 +10714,9 @@
             "type": "string",
             "enum": [
               "web",
-              "extension"
+              "extension",
+              "ios",
+              "android"
             ]
           },
           "devicePublicKey": {

@@ -82,7 +82,7 @@ export interface EngineDeps {
   readonly opaque: OpaqueClient;
   readonly origin: string;
   /** What this client logs in and pairs as; registration and recovery are web-only. */
-  readonly platform: 'web' | 'extension';
+  readonly platform: 'web' | 'extension' | 'ios' | 'android';
   readonly now: () => number;
   readonly emit: (event: VaultEvent) => void;
 }

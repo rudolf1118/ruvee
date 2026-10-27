@@ -49,10 +49,11 @@ export const uuidSchema = z
   .regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
 
 /**
- * Platforms that can log in. `web` gets a cookie session; `extension` gets bearer tokens
- * (authentication.md §5). Mobile arrives in Phase 6.
+ * Platforms that can log in. `web` gets a cookie session; `extension`, `ios` and `android` get
+ * bearer tokens (authentication.md §5). The pairing request MAC already codes all four
+ * (`PLATFORM_CODES` in @ruvee/crypto).
  */
-export const platformSchema = z.enum(['web', 'extension']);
+export const platformSchema = z.enum(['web', 'extension', 'ios', 'android']);
 /** Registration and recovery use cookie sessions, so they happen in the web app. */
 export const webPlatformSchema = z.literal('web');
 export const devicePlatformSchema = z.enum(['web', 'extension', 'ios', 'android']);

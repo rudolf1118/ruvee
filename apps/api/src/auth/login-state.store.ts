@@ -12,7 +12,7 @@ export interface PendingLogin {
   /** Null for an unknown username; such a login can never succeed. */
   readonly accountId: string | null;
   readonly deviceId: string | undefined;
-  readonly platform: 'web' | 'extension';
+  readonly platform: 'web' | 'extension' | 'ios' | 'android';
   /** Set for `reauth`: the state can only finish on this session. */
   readonly sessionId?: string;
   /** Set for a reopening (backup-restore.md §3.13): finishes only at /reopen/login/finish. */
