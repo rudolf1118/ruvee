@@ -120,7 +120,9 @@ export function DevicesPanel({
     <Panel title="Devices" onClose={onClose}>
       <p className="text-body text-ink-muted">
         Every device that can open your vault holds its own copy of your keys. Add a device with a
-        pairing code; remove one you no longer use or have lost.
+        pairing code; remove one you no longer use or have lost. Devices have no names: the type,
+        when it was last seen and the short ID come from the server, to tell devices apart. They
+        don&apos;t prove which physical device is which.
       </p>
       <Button
         variant="primary"
