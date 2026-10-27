@@ -58,8 +58,12 @@ review. It does not complete D-19, and nothing in it is approved by being listed
       `packages/vault/src/review/r5-r6-client.test.ts`).
 - [ ] Keyset version never decreases (INV-09), including through recovery (R20).
 - [ ] Recovery on a browser that holds the account keeps its records, pending edits, conflicts,
-      import state and floors (R6), and migration of several pre-D-31 devices in turn keeps each
-      device's pending edit (`d31-device-proof.test.ts`).
+      import state and floors (R6).
+- [ ] A refused recovery or reopening of a pre-D-31 account changes nothing on the server or in
+      the browser: records, pending edits, conflicts, kit and reopening code
+      (`legacy-migration.test.ts`, `legacy-avpk.int-spec.ts`, `reopen.int-spec.ts`).
+- [ ] The migration report names every pending edit and conflict, and the local export refuses
+      to leave them out unacknowledged (`legacy-migration.test.ts`, `test:migrate`).
 - [ ] Start-over erases only with the pending and conflict counts the user saw (R22).
 - [ ] An import batch is fed only into an empty queue with nothing in flight (R22).
 - [ ] A lock during any engine operation: the operation cannot write or leave a session afterwards
@@ -83,17 +87,29 @@ review. It does not complete D-19, and nothing in it is approved by being listed
   - [ ] reopening: the password path proves the restored key at login (op 10) and completion
         (op 11); the Recovery Kit path enrolls a new key on a fresh browser and leaves the snapshot
         device's key and the `AVPK` unchanged (`reopen.int-spec.ts`);
-  - [ ] migration: an account without `AVPK` accepts no tier-3+ change; the first recovery sets
-        `AVPK` (this is a known limitation for development accounts; see review §12).
+  - [ ] accounts from before D-31 (device-proof.md §9): no `AVPK` is ever established. With
+        `ak_verify_key` null, `recovery/start` and `reopen/recovery/start` answer
+        `migration_required` before creating a device, session or spending the code;
+        `proveCompletion` refuses before verifying anything; completions no longer write
+        `ak_verify_key` at all; tier-3+ needs a stored `AVPK`. Try an `AVSK` made with a key of
+        your choosing, with `AK`'s own key, and a password-only session (`legacy-avpk.int-spec.ts`).
+        Grep every write of `ak_verify_key`: registration only.
+  - [ ] migration path: export of the last verified snapshot, import into a fresh installation
+        under new keys, the new account's `AVPK` from bootstrap only
+        ([legacy-account-migration.md](../guides/legacy-account-migration.md)).
 - [ ] **Nonces:** issued under the session row lock (one open per session and operation),
       consumed in the operation's own transaction, expired after 2 minutes, burnt by an invalid
       proof, deleted on restore; a replay after a lost reply changes nothing
       (`p2-api.int-spec.ts`, `r2-r3-login.int-spec.ts`).
 - [ ] **Key lifecycle:** `DSK` sealed under `K_local`; loaded on unlock and resume; zeroed on lock
       and logout; never in a WebCrypto key or extension storage; a locked engine cannot sign.
-- [ ] **Bypass search:** no password-only or `RAK`-only path registers a `DPK` or `AVPK`; no route
-      other than registration, recovery completion and reopening completion writes either; a
-      pre-proof session cannot obtain a nonce for anything but its own proof.
+- [ ] **Bypass search:** no password-only or `RAK`-only path registers a `DPK` or `AVPK`; only
+      registration writes `AVPK`; only registration, pairing approval, recovery completion and
+      reopening completion write a `DPK`; a pre-proof session cannot obtain a nonce for anything
+      but its own proof.
+- [ ] **Device names:** none in V1 (device-enrollment.md §1). The pairing confirmation depends on
+      the MAC-covered platform and the user's own code entry, not on a name; the Devices screen
+      does not present the short id or server times as proof.
 - [ ] **Claims not made:** a valid signature proves possession for one payload, not that a wrap
       decrypts (device-proof.md §3).
 
@@ -108,5 +124,5 @@ pnpm --filter @ruvee/api test:integration
 ```
 
 Browser suites per engine (`RUVEE_E2E_BROWSER` = `chromium`, `firefox`, `webkit`; WebKit is
-Playwright's build, not Safari): `test:vault`, `test:restore`, `test:import`; Chromium only:
+Playwright's build, not Safari): `test:vault`, `test:restore`, `test:import`, `test:migrate`; Chromium only:
 `test:headers`, the extension suite, `test:e2e`; and `test:caddy`.

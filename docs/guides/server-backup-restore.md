@@ -44,11 +44,11 @@ restored (it opens only through its reopening, §5) or is already initialized.
 
 Every device holds its own Ed25519 key and proves it when it signs in
 ([device-proof.md](../security/device-proof.md)); the password alone signs in only with a short,
-restricted session. A device set up before this change (synthetic development data only) opens its
-local copy but cannot sync until it re-enrolls: lock it and choose **Use your Recovery Kit** on
-the lock screen. Its local vault and unsynced edits are kept. A restored server has the device keys
-of its snapshot; a snapshot from before device keys can only be reopened with the Recovery Kit
-path (§5).
+restricted session. An account set up before this change (synthetic development data only) can
+no longer sync and can't be enrolled again: its browser keeps the local copy, and its items move to
+a new account ([legacy-account-migration.md](legacy-account-migration.md)). A restored server has
+the device keys of its snapshot; a snapshot from before device keys can't be reopened at all. Keep
+its devices' local copies and move them the same way.
 
 ## 2. Make the key pair (once, offline)
 

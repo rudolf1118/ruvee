@@ -35,7 +35,9 @@ are in [r2-device-proof-decision.md](../security/r2-device-proof-decision.md).
   `crypto_sign_verify_detached`, and the KDF context `rvakver1`.
 - The pairing request MAC changes (`pair-req-2`): the pairing review (device-enrollment.md §3.4)
   must cover it.
-- Devices enrolled before this change must re-enroll with the Recovery Kit (development only).
+- Accounts created before this change never get an `AVPK` (owner decision, 2026-10-27): they
+  stay synthetic-only, and their data moves to a new account by export and import
+  (device-proof.md §9). Recovery and reopening never write `AVPK`.
 - A password holder can still read the encrypted key material during a pre-proof session; it is
   useless without `SK` and already in every database copy.
 - XSS in the unlocked origin can still sign (T-18, T-19); this raises the bar from "password plus

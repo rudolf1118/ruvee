@@ -4,7 +4,8 @@
 > per-device Ed25519 key whose private half is sealed under `K_local` and usable only while
 > unlocked. This document is the protocol for that direction. It is **not reviewed**: it needs
 > the independent review of D-19 (§12) before real data. ADR: [ADR-0011](../adr/0011-device-proof-of-possession.md).
-> It answers predeployment-review R2 and R12.
+> It answers predeployment-review R2 and R12. **Amended 2026-10-27** by owner decision: accounts
+> from before D-31 never acquire an `AVPK` and move to a new account instead (§9).
 
 ## 1. What it changes, in one paragraph
 
@@ -113,8 +114,10 @@ genuine device out (R2).
 4. If the server's keyset is newer than the local one (`SK` rotated elsewhere) and the password
    also changed, the client asks for the previous password (`previous_password_required`, as
    today): the old local wrap gives `AK`, hence `DSK`, and step 2 applies.
-5. A device with no `device-key` record (enrolled before D-31) cannot prove anything: it stays
-   usable offline, with all its local data, and is told to re-enroll (§9).
+5. A device with no `device-key` record cannot prove anything: it stays usable offline, with all
+   its local data. If its account has an `AVPK` it re-enrolls with the Recovery Kit (§8); if not
+   (an account from before D-31), it is told to move to a new account (§9). `GET
+/devices/current` says which (`accountHasVerifyKey`).
 
 **Pre-proof session.** A cookie or token session of an `active` device with `proven_at` null.
 
@@ -194,26 +197,43 @@ reason: it costs a re-login, nothing more. `account/password/start`, `reauth/*` 
 - **Recovery.** The recovering device generates a new `DSK` before `recovery/complete`, which
   carries `DPK` (op 9, signed by the new `DSK`) and an `AVSK` proof. If the account has an
   `AVPK`, the `AVSK` proof is checked against it, so a party that learned only `RAK` (R-08)
-  cannot install wraps any more; if it has none (an account from before D-31), the recovery
-  establishes it. The device's key is replaced and its new session is proven.
+  cannot install wraps any more. The device's key is replaced and its new session is proven.
+  Recovery never writes `AVPK`. An account with none (from before D-31) is refused with
+  `migration_required` at `recovery/start`, before a device or session exists, and again at
+  completion (§9).
 - **Reopening a restored server.** The `DPK`s and `AVPK` are restored as of the snapshot. The
   password path proves the device with its restored `DPK` at `reopen/login/finish` (op 10) and
   at completion (op 11) together with an `AVSK` proof, which closes R12. The Recovery Kit path is
-  a recovery (new `DPK`). A snapshot from before D-31 has no keys: only the kit path reopens it.
-- **No password-only path enrolls a key.** Keys are accepted only with the setup token, an
-  approving device's proof, the Recovery Key, or a reopening.
+  a recovery (new `DPK`). Reopening never writes `AVPK`. A snapshot from before D-31 has none, so
+  it reopens by neither path: the kit path is refused at its start, without spending the code,
+  and every completion is refused (`migration_required`, §9).
+- **No password-only path enrolls a key.** `DPK`s are accepted only with the setup token, an
+  approving device's proof, or a recovery or reopening checked against the stored `AVPK`. `AVPK`
+  is written only by registration, with the setup token.
 
-## 9. Development migration (synthetic data only)
+## 9. Accounts from before D-31 (synthetic data only)
+
+**Owner decision (2026-10-27): fresh-account migration.** An account from before D-31 has no
+`AVPK`, and nothing gives it one: not a recovery, not a reopening, not a password, not even a
+proof made with `AK`, because the server would have to take the presented key on trust. Such an
+account stays synthetic-only and is never made eligible for real data. This replaces the earlier
+rule that the first recovery established `AVPK`.
 
 - The migration adds `devices.public_key`, `account_keys.ak_verify_key`, `sessions.proven_at`
   and `proof_nonces`; it changes no existing row. Every existing session is therefore unproven
   and older than 10 minutes, so none keeps any privilege.
-- An existing device has no `device-key` record. It keeps working offline with its local data
-  and pending edits. To enroll a key, use **Use your Recovery Kit** on that device: recovery keeps
-  this browser's vault (R6), registers its `DPK`, and the first one also the account's `AVPK`.
-  Each recovery issues a new Recovery Kit; finish one device before starting the next.
-- Nothing is reset or erased automatically. An existing **database** needs no step beyond the
-  migration.
+- Every tier-3 or higher operation already needs a proven session, and those that replace key
+  material also an `AVSK` proof against the stored `AVPK` (§7): with none stored, they fail.
+- `recovery/start` and `reopen/recovery/start` answer `409 migration_required` after the
+  Recovery Key (and the code) checked out, before anything is created or spent; the two
+  completions answer the same if the `AVPK` is gone by then. Nothing is changed.
+- The browser keeps its local copy, pending edits and conflicts, and works offline. Its data
+  moves by the existing export and import:
+  [legacy-account-migration.md](../guides/legacy-account-migration.md). The local export holds
+  only the last verified snapshot, so the client lists every pending edit and conflict by item
+  for the user to copy by hand; nothing is deleted, reset or replaced in place.
+- An account created since D-31 has its `AVPK` from registration, and a device of it without a
+  key re-enrolls with the Recovery Kit as before (§8).
 
 ## 10. Restore
 
@@ -226,7 +246,8 @@ server.
 
 `403 device_proof_required` (a pre-proof session outside the allowlist), `401
 device_proof_failed` (a bad or reused proof, an expired nonce), `409 device_key_mismatch` (an
-`AVPK` that does not match the account's).
+`AVPK` that does not match the account's), `409 migration_required` (an account from before
+D-31, which has no `AVPK`; §9).
 
 ## 12. Claims that need independent review (D-19)
 
@@ -239,4 +260,4 @@ device_proof_failed` (a bad or reused proof, an expired nonce), `409 device_key_
 - The nonce lifecycle: issue, bind, consume atomically with the effect, expire, delete on
   restore.
 - That no password-only or `RAK`-only path can register a `DPK` or `AVPK`, including on the
-  migration and reopening paths.
+  reopening paths, and that an account without `AVPK` gets one by no path at all (§9).
