@@ -1,0 +1,42 @@
+{
+  "name": "ruvee-mobile",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Ruvee's React Native client (Phase 6, development build). Not part of the pnpm workspace: it has its own npm lockfile and consumes @ruvee/crypto, @ruvee/vault and @ruvee/contracts from their TypeScript sources through Metro. Synthetic data only.",
+  "engines": {
+    "node": ">=24 <25"
+  },
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@op-engineering/op-sqlite": "19.0.1",
+    "@serenity-kit/opaque": "1.1.0",
+    "libsodium-sumo": "0.8.4",
+    "libsodium-wrappers-sumo": "0.8.4",
+    "react": "19.3.0",
+    "react-native": "0.88.0",
+    "react-native-keychain": "10.0.0",
+    "react-native-libsodium": "1.7.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@babel/core": "7.29.7",
+    "@babel/plugin-transform-export-namespace-from": "7.27.1",
+    "@babel/preset-env": "7.29.7",
+    "@babel/runtime": "7.29.10",
+    "@react-native-community/cli": "20.2.0",
+    "@react-native-community/cli-platform-android": "20.2.0",
+    "@react-native-community/cli-platform-ios": "20.2.0",
+    "@react-native/babel-preset": "0.88.0",
+    "@react-native/metro-config": "0.88.0",
+    "@react-native/typescript-config": "0.88.0",
+    "@types/react": "19.2.14",
+    "typescript": "6.0.3"
+  }
+}

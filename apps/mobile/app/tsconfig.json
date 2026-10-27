@@ -1,0 +1,21 @@
+{
+  "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"],
+    "types": [],
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "noImplicitOverride": true,
+    "noFallthroughCasesInSwitch": true,
+    "exactOptionalPropertyTypes": true,
+    "paths": {
+      "@ruvee/crypto": ["../../../packages/crypto/src/index.ts"],
+      "@ruvee/vault": ["../../../packages/vault/src/index.ts"],
+      "@ruvee/contracts": ["../../../packages/contracts/src/index.ts"],
+      "@ruvee/crypto-internal/*": ["../../../packages/crypto/src/*.ts"],
+      "zod": ["./node_modules/zod"]
+    }
+  },
+  "include": ["index.d.ts", "src/**/*.ts", "src/**/*.tsx", "e2e/**/*.ts"],
+  "exclude": ["**/node_modules", "**/Pods", "android", "ios"]
+}

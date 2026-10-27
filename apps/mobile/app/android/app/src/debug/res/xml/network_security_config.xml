@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Debug builds only (this file replaces the main one in the debug variant). The one exception:
+  plain HTTP to the developer's own machine through loopback: the device's loopback, which
+  `adb reverse` forwards (the local test API), and 10.0.2.2, the Android Emulator's fixed alias
+  for the host's loopback, which React Native uses for Metro on an emulator. Nothing else may use
+  cleartext, and HTTPS still trusts only the system CAs.
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>
