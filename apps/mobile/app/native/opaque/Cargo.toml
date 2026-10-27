@@ -1,0 +1,30 @@
+[package]
+name = "ruvee-opaque"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "UNLICENSED"
+description = "OPAQUE client for the Ruvee mobile app: a JNI binding of opaque-ke 4.0.1 with the D-02 configuration of @serenity-kit/opaque 1.1.0. Development build, not reviewed."
+
+[lib]
+name = "ruvee_opaque"
+crate-type = ["cdylib", "rlib"]
+
+# Exact pins (cryptographic dependencies are never floated). opaque-ke 4.0.1 is the version
+# compiled into @serenity-kit/opaque 1.1.0 (docs/security/authentication.md §2.1).
+[dependencies]
+opaque-ke = { version = "=4.0.1", default-features = false, features = ["ristretto255"] }
+argon2 = { version = "=0.5.3", default-features = false, features = ["alloc"] }
+sha2 = { version = "=0.10.9", default-features = false }
+generic-array = "=0.14.7"
+rand_core = { version = "=0.6.4", features = ["getrandom"] }
+base64 = { version = "=0.22.1", default-features = false, features = ["alloc"] }
+zeroize = { version = "=1.8.2", default-features = false }
+jni = { version = "=0.21.1", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = "symbols"
