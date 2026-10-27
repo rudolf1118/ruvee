@@ -11,6 +11,11 @@ not complete D-19.** It looks for defects before the synthetic private deploymen
 > from before D-31 and closed R23's device-label item by amending the spec. No finding is open.
 > D-31's protocol is unreviewed, D-19 is open and real-data use stays blocked. §13.5 has the
 > current disposition of all 23 findings.
+>
+> **Superseded in part (2026-10-27):** a fresh follow-up review of `d04e211`,
+> [followup-review.md](followup-review.md), found R15, R17, R18, R19 and four R23 items only partly
+> fixed, and confirmed new findings (four Medium). Its disposition replaces §13.5 where they
+> differ.
 
 ## 1. What was reviewed
 

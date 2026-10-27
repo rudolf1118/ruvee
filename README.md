@@ -119,6 +119,13 @@ The browser checks need Playwright's engines once
 `pnpm test:integration` reads `DATABASE_URL` from the environment, e.g.
 `set -a; . ./.env; set +a; pnpm test:integration` (open a new shell afterwards so
 `NODE_ENV=development` does not leak into `next build`).
+Each test file creates and drops its own databases, and PostgreSQL forces a checkpoint for every
+`DROP DATABASE`. On slow storage (Docker Desktop's disk, for example) with the default worker
+count, those checkpoints can take tens of seconds and teardown hooks time out; connection setup
+also stalls meanwhile (measured in
+[docs/security/followup-review.md](docs/security/followup-review.md#5-test-instability)). Use a
+throwaway server started with `-c fsync=off`, or run with `--maxWorkers=3`; never a server that
+holds data you want to keep.
 The restore tests (`restore*.int-spec.ts`) also run `pg_dump` and `pg_restore`, which must have
 the server's major version (18). If the host's client is older, run them inside the database
 container: `RUVEE_PG_TOOLS_PREFIX='["docker","exec","-i","-e","PGPASSWORD","<container>"]'

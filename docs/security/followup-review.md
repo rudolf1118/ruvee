@@ -1,0 +1,344 @@
+# Follow-up security review (2026-10-27)
+
+**This is an AI-assisted code review, not an independent professional audit. It does not complete
+D-19, and it is not a statement of production readiness.** It re-examines the code from scratch
+instead of relying on the dispositions in [predeployment-review.md](predeployment-review.md), and
+it investigates the test instability that report left open (§13.4 there).
+
+## 1. What was reviewed
+
+| Item                      | Value                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| ------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Application code reviewed | `d04e211e4603b0dbbc1342e7cf76a958f8ef5238` (`d04e211`), branch `vault/web-vault`                                                                                                                                                                                                                                                                                                                                                                 |
+| Later commits             | `11cda6a`, `e0a8586`: `git diff --name-only d04e211 e0a8586` lists only `docs/` files (verified)                                                                                                                                                                                                                                                                                                                                                 |
+| This review's own commit  | Tests, the README and this report only; no application code changed (§5, §9)                                                                                                                                                                                                                                                                                                                                                                     |
+| Specifications read       | predeployment-review.md, follow-up-review-checklist.md, device-proof.md, ADR-0011, device-enrollment.md, account-recovery.md, threat-model.md, security-invariants.md, backup-restore.md, legacy-account-migration.md                                                                                                                                                                                                                            |
+| Method                    | Five read-only reviewer passes, each given the code and the original findings but not the earlier conclusions: D-31 end to end; client engine and extension; routing, CSRF, gate and instance lock; restore, backups and throttles (one earlier server pass stopped before reporting and was replaced by the last two). Every finding below marked **confirmed** was then checked against the code by hand, and the Medium ones were reproduced. |
+| Data                      | Synthetic only. Task-owned PostgreSQL 18.6 containers; no deployment, push or remote CI.                                                                                                                                                                                                                                                                                                                                                         |
+
+## 2. Confirmed findings, by severity
+
+Each reproduction is a test that states the **correct** behaviour and is marked `it.fails` while
+the defect exists, so the suite stays green and vitest reports when a fix makes it pass. Each was
+first run without the mark and failed on the stated assertion.
+
+### F-1 (Medium). A proven session can end the owner's Recovery Kit recovery, indefinitely
+
+- **Where:** `GET /sessions` lists recovery sessions
+  (`apps/api/src/account/account-security.service.ts:96`); `DELETE /sessions/:id` ends any session
+  of the account, of any kind, at tier 2 (`:119-128`); a revoked recovery session is refused
+  (`apps/api/src/sessions/session.service.ts:190`).
+- **Attack:** whoever holds a proven cookie or a refresh token (a lost laptop's extension keeps one
+  for up to 90 days, and it survives lock) polls `GET /sessions` and deletes every `recovery` row.
+  The owner's recovery fails as unauthenticated each time. Without another device the owner cannot
+  revoke the thief (revocation needs step-up and a device key), and there is no operator command
+  to end sessions.
+- **Reproduction:** `apps/api/test/review/followup-repro.int-spec.ts`, "a normal session cannot
+  end a recovery in progress": after the owner's session ends the recovery session,
+  `GET /recovery/material` with the recovery cookie returns `401` (expected `200`).
+- **Impact:** availability of the last-resort recovery against an attacker who already holds a
+  session; no key or plaintext exposure. device-proof.md §7 rates ending sessions as "a re-login,
+  nothing more", which misses this.
+
+### F-2 (Medium). Two tabs of one browser overwrite each other's unsynced edits
+
+- **Where:** each tab runs its own worker and engine on the same IndexedDB
+  (`apps/web/src/vault/worker/vault.worker.ts:45-60`); `DeviceStore` has no cross-tab
+  coordination (`packages/vault/src/store.ts:85-98`); `persistLocal`
+  (`packages/vault/src/vault-engine.ts:1499`) writes the whole pending list from that engine's
+  memory.
+- **Reproduction:** `packages/vault/src/review/followup-repro.test.ts`, "two engines on one store
+  keep both tabs' unsynced edits": tab 1 and tab 2 each save one item offline; after both lock,
+  the store holds only tab 2's (`['Saved in tab 2']`).
+- **Impact:** silent loss of unsynced edits (INV-08). By reading, the same pattern can write back a
+  stale device record or checkpoint from the other tab. Reproduced in the engine with
+  `fake-indexeddb`; not yet in two real browser tabs.
+
+### F-3 (Medium). Resolving one conflict can queue two mutations of one item and stop sync
+
+- **Where:** `resolveConflict('mine')` for a local deletion appends a tombstone without removing an
+  existing pending edit of the same item (`packages/vault/src/vault-engine.ts:1804-1807`); the API
+  refuses a commit naming one item twice with `400 invalid_request`
+  (`apps/api/src/vault/sync.service.ts:57-58`); the client maps that to `internal`, then `offline`
+  (`vault-engine.ts:275-276`).
+- **Sequence:** A deletes X offline; B edits X; A syncs and gets `edited_after_delete`; A edits X
+  offline, then chooses "mine".
+- **Reproduction:** `followup-repro.test.ts`, "resolving a conflict never queues two mutations of
+  one item": the next commit names X twice. The fake server accepts it, which is why the existing
+  suite cannot see this; the real API's refusal is confirmed by reading.
+- **Impact (by reading):** the in-flight commit is re-sent on every sync and always refused, so the
+  device never syncs again; the only exits erase local changes. Not reproduced end to end against
+  the real API.
+
+### F-4 (Medium). A password change from a device with an outdated Secret Key locks the account out and undoes a Secret Key rotation
+
+- **Where:** `changePassword` refuses only when the server's keyset is older than the local one
+  (`packages/vault/src/vault-engine.ts:2960-2962`), then wraps `AK` under the local, possibly
+  outdated `SK`.
+- **Sequence:** device A replaces the Secret Key (D-24, for example after removing a lost device);
+  device B, unlocked since before, changes the password.
+- **Reproduction:** `followup-repro.test.ts`, "a password change from a device with an older
+  Secret Key keeps the account usable": afterwards device A, which holds the current `SK`, gets
+  `wrong_password` with the new password.
+- **Impact:** every device with the current `SK` (and any newly paired one) is locked out until
+  the Recovery Kit is used; and the server's password wrap is again under the **old** `SK`, which
+  undoes what D-24's rotation was for (a copy of the server data plus the lost device's `SK`).
+
+### F-5 (Low). If the worker started at lock fails to load, the app offers "Create an account" on a browser that holds a vault
+
+- **Where:** `apps/web/src/components/app/vault-app.tsx:103` treats any failure of the new
+  worker's `phase` call as a new device; any startup failure in the worker (WASM init,
+  IndexedDB open, script load) becomes such a failure (`vault.worker.ts:45-60`), and the failed
+  start is cached for that worker.
+- **Reproduction:** a temporary Playwright test (kept with the evidence, §5.3) aborted every
+  request after setup and pressed **Lock now**: Chromium, Firefox and Playwright WebKit all showed
+  the welcome screen while IndexedDB still held the device record. A reload shows the lock screen.
+- **Impact:** confusing and alarming, not data loss: setup refuses a browser with a device record
+  (`vault-engine.ts:447`), recovery keeps this browser's vault, and V1's one account per server
+  stops "log in" from overwriting the record with another account's (`vault-engine.ts:709-724`,
+  `apps/api/src/auth/auth.service.ts:285`). This is the defect behind the WebKit test failure
+  (§5.3).
+
+### F-6 (Low). Any bearer-shaped `Authorization` header skips the CSRF checks of unauthenticated routes
+
+- **Where:** `apps/api/src/sessions/access.guard.ts:107-111` sets `bearer` for any 43-character
+  value, which skips the CSRF block, and `:134` returns for `none` routes without using it.
+- **Reproduction:** `followup-repro.int-spec.ts`, "an unauthenticated route refuses a request
+  without Origin and X-Ruvee-Request": `POST /recovery/start` with `Authorization: Bearer AAA…`
+  and no `Origin` reaches the handler (`401 recovery_failed`, expected `403 csrf_rejected`).
+- **Impact:** web pages cannot send the header cross-origin (no CORS, so the preflight fails); any
+  browser extension with host permission can call registration, login, recovery and reopening
+  start routes, defeating the R23 per-route extension restriction. No ambient credential is used.
+
+### Low, confirmed by reading (not reproduced)
+
+| ID   | Issue                                                                                                                                                                                                                                                     | Where                                                                            |
+| ---- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| F-7  | A `TRUSTED_PROXY_ADDRESS` written differently from the peer address (upper-case or expanded IPv6, or an IPv4 value while the proxy connects over IPv6) never matches, silently: every client is keyed as the proxy (the R17 symptom, without the warning) | `apps/api/src/sessions/client-info.ts:10,20-24`; `config/env.ts:37`              |
+| F-8  | The per-address limiter clears its whole table when it reaches 10,000 entries; an attacker with that many IPv6 /64s resets every client's window                                                                                                          | `apps/api/src/auth/throttle.service.ts:106-110`                                  |
+| F-9  | Extension fill (R18) still fills fields hidden by `filter: opacity(0)` on an ancestor, transparent text and background, `clip-path`, or an overlay with `pointer-events: none` (which `elementFromPoint` looks through)                                   | `apps/extension/src/fill.ts:23-44`                                               |
+| F-10 | Pairing fails if B logged in more than 10 minutes before A approves: once B's device is active, its unproven session lapses by creation time                                                                                                              | `apps/api/src/sessions/session.service.ts:384-389`                               |
+| F-11 | `refresh` does not apply the 10-minute pre-proof lapse, so a password-only token session of an active device can be refreshed for its full lifetime (it stays restricted to the pre-proof allowlist, but keeps "last seen" fresh)                         | `session.service.ts` `refresh`                                                   |
+| F-12 | Unlock and resume install the session before loading the device key; if that load throws, the call fails but the engine stays unlocked with `AK` in memory                                                                                                | `packages/vault/src/vault-engine.ts:860-862`                                     |
+| F-13 | A lock that lands before an operation's later write leaves its session installed when that write is refused (`exclusive` clears only on success): rotated keyset at unlock, revocation, pairing and setup finishes                                        | `vault-engine.ts:408-427`, `:1128`, `:2221`, `:690`                              |
+| F-14 | Enrollment is saved in several transactions (device, then checkpoint and anchor, then key); an interruption leaves an active device with no anchor (no rollback floor on its first pull) and no key                                                       | `vault-engine.ts:2207-2223`, `:682-692`, `:2664-2744`                            |
+| F-15 | Any non-contract error body (a proxy's 502 page) during pairing is treated as a MAC failure: the pairing is burned and a false `pairing_mac_failed` event recorded. Introduced by the previous batch's own R23 fix (`82183d7`)                            | `packages/vault/src/api.ts:123-125`; `vault-engine.ts:1897`                      |
+| F-16 | A conflict draft is replaced without notice when the same item conflicts again (INV-08)                                                                                                                                                                   | `vault-engine.ts:3831`                                                           |
+| F-17 | Every `device_proof_failed` (an expired or replaced nonce included) is shown as "re-enroll with your Recovery Kit", which forces a new password and kit                                                                                                   | `vault-engine.ts:266-269`; `apps/web/src/components/app/messages.ts:78`          |
+| F-18 | Recovery completion does not re-check its session or device under a lock; a device revoked between authentication and the transaction is set active again (the caller still needs `RAK` and `AK`)                                                         | `apps/api/src/recovery/recovery.service.ts:172-210`                              |
+| F-19 | Remaining key-zeroing gaps: `recoveryBegin` refusals before its `try` leave `RWK`/`RAK`; the reopen password finish drops second copies of `AK`/`SK`/`VK`; `revoked()`, failed `pairingWait`, `adoptServerKeys` and failed unlock paths leave copies      | `vault-engine.ts:2253-2264`, `:2773`, `:1207-1212`, `:2173`, `:1177`, `:836-858` |
+
+**Info (by reading):** F-20 a save that completes after the user opened another editor replaces
+that editor without notice (seen in a Firefox test run, §5.3). F-21 the extension's allow-list
+includes `detail`, which the popup never uses (`apps/extension/src/messages.ts:9-21`). F-22
+request bodies are parsed before authentication and the gate (`app.module.ts:42-45`). F-23 the
+op-3 payload does not sign every stored registration field (`saltPw`, `keysetVersion`,
+`vault.vkId`, `username`); only a setup-token holder on the path could exploit it, and they could
+re-sign anyway. F-24 consumed and expired `proof_nonces` rows are never deleted. F-25 the API must
+run as the restore admin role, which owns `ruvee_control` (backup-restore.md speaks of a separate
+application role).
+
+## 3. Suspected issues (not confirmed)
+
+- **S-1 (Low).** The instance-lock connection has no keep-alive and is never re-checked; a
+  silently dropped connection could free the advisory lock while the process still believes it
+  holds it, letting a second process serve (`instance-lock.service.ts:76-99`).
+- **S-2 (Low).** After LOAD, restored tables are checked by kind and name only, not by column,
+  constraint or default definitions (`restore-control.ts:85-158`). A forged backup could alter an
+  allowed table's constraints. Ordinary grants in the archive are **not** applied (`pg_restore
+--no-owner --no-privileges`, `pg-tools.ts:112-113`), which refutes the reviewer's broader claim;
+  SQL embedded in other archive entries was not tested.
+- **S-3 (Low).** R15 variant: `pg_restore` may commit a forged archive that ends before its last
+  encrypted chunk (trailing bytes) before the hash check fails. The guard stays `restoring`, so
+  this is defence in depth, as in the original finding.
+- **S-4 (Info).** An operation whose effect fails rolls back its nonce consumption, so the same
+  signed request is replayable for up to 2 minutes. No state was found where a retry turns a
+  failure into a success.
+- **S-5 (Info).** A malicious server can make a browser's recovery take the "another account"
+  path (by answering with another device, key or vault id); one checkbox then erases pending edits
+  and the R20 floors.
+
+## 4. Disposition of the original 23 findings
+
+| Finding                   | Verdict            | Notes                                                                                                                                                                                                                     |
+| ------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| R1 path case              | Fixed              | Strict, case-sensitive routing; decisions from handler metadata. Tests would also pass with a prefix check (gap).                                                                                                         |
+| R2 device proof           | Fixed (D-31)       | See §6.                                                                                                                                                                                                                   |
+| R3 username throttle      | Fixed              | Atomic `INSERT … ON CONFLICT`; no parallel test for the reopen password finish.                                                                                                                                           |
+| R5 checkpoint             | Fixed (one engine) | Two tabs can still lower the stored floor (F-2).                                                                                                                                                                          |
+| R6 recovery keeps data    | Fixed (one engine) | S-5; untested: in-flight commit, anchor, import state.                                                                                                                                                                    |
+| R7 backup target          | Fixed              | `RUVEE_PG_TOOLS_HOST` can point the tools at another host (operator configuration).                                                                                                                                       |
+| R8 restore isolation      | Fixed, with S-2    | Definitions of allowed tables are not compared.                                                                                                                                                                           |
+| R9 verified bytes         | Fixed              |                                                                                                                                                                                                                           |
+| R10 headers               | Fixed              | Checked briefly.                                                                                                                                                                                                          |
+| R11 reopening code        | Fixed              |                                                                                                                                                                                                                           |
+| R12 reopen proof          | Fixed (D-31)       |                                                                                                                                                                                                                           |
+| R13 reopen race           | Fixed              | Recovery completion lacks the same re-check (F-18).                                                                                                                                                                       |
+| R14 gate cache            | Fixed              |                                                                                                                                                                                                                           |
+| R15 `pg_restore` input    | Partly             | S-3.                                                                                                                                                                                                                      |
+| R16 session limit         | Fixed              | Tested for cookie sessions only.                                                                                                                                                                                          |
+| R17 proxy                 | Partly             | F-7.                                                                                                                                                                                                                      |
+| R18 fill visibility       | Partly             | F-9.                                                                                                                                                                                                                      |
+| R19 lock races            | Partly             | F-12, F-13.                                                                                                                                                                                                               |
+| R20 recovery floors       | Fixed              | Anchor floor after recovery untested.                                                                                                                                                                                     |
+| R21 pairing limit         | Fixed              |                                                                                                                                                                                                                           |
+| R22 start-over and import | Fixed              | Related: F-3.                                                                                                                                                                                                             |
+| R23 (10 items)            | 6 fixed, 4 partly  | Partly: CSRF per route (F-6), empty-target kinds (collations, operators, text search objects, default and database ACLs, role settings not counted), key zeroing (F-19), malformed pairing requests (false alarms, F-15). |
+
+The legacy-account hardening (predeployment-review §13) holds: `ak_verify_key` is written only by
+registration (`apps/api/src/auth/auth.service.ts:167-181`), and `recovery/start`,
+`reopen/recovery/start` and `proveCompletion` refuse a null one.
+
+## 5. Test instability
+
+Evidence is kept per run under unique identifiers in this session's scratchpad
+(`flake-evidence/int-<id>/`: vitest JSON, console output, per-step timings, host load and server
+connections every 2 s, and the server log for that window; `flake-evidence/*webkit*`,
+`*-firefox-*`: Playwright output and traces). It is local to this machine and not in the
+repository. The timing instrumentation was temporary and reverted; its diff is kept there too.
+
+### 5.1 Integration teardown timeouts (explained)
+
+- **Mechanism, measured.** In run A1 (default 9 workers): `app.close()` was fast (p90 1.3 s), but
+  `DROP DATABASE … WITH (FORCE)` took up to 132 s and `CREATE DATABASE` up to 102 s. The server
+  log shows 40 checkpoints, every one `immediate force wait`, each 27–74 s, dominated by `fsync`
+  of 2,500–3,900 files (e.g. `sync=53.084 s`); the checkpointer was busy 343 of the run's 351 s.
+- **Which statement forces it.** On an idle server, `CREATE DATABASE` forced no checkpoint and
+  `DROP DATABASE` forced one (16 ms when idle). So every test-file teardown waits for a full
+  checkpoint of all concurrent databases' dirty data; drops queue, and a hook with a 10 s limit
+  times out.
+- **Interventions.** Same suite, one run each: 3 workers → all 26 files pass, worst checkpoint
+  2.2 s; default workers on a server with `fsync=off` → all pass, checkpoint sync 0.001 s, worst
+  drop 1.8 s; default workers again with `fsync` on (A2) → pass, worst checkpoint 4.8 s.
+- **Not machine load as measured.** The mean 1-minute load average was 15.7–17.0 in all four runs
+  (and about 17 with no tests running, from Spotlight indexing), yet A1 took 385 s and A2 50 s.
+  What varied was storage latency during checkpoints (sync phases of 22–53 s in A1, at most 4.2 s
+  in A2). What made storage slow during A1 was not identified.
+- **Disposition.** Explained; not a product defect. No timeout or retry was added. The README now
+  states the constraint and the two measured mitigations (a throwaway server with `-c fsync=off`,
+  or `--maxWorkers=3`). Whether to change the default worker count is left open.
+
+### 5.2 Transient database connection failure (partly explained, open)
+
+- The earlier failure was Prisma's `P1001` ("Can't reach database server") during `migrate
+deploy`, whose connect timeout defaults to 5 s.
+- In A1 the server logged 1,241 connections: p50 17 ms from arrival to authentication, but 7 took
+  over 5 s (worst 43 s), and **all 7 fell inside forced checkpoints**. Peak client connections were
+  58 of 100, so the limit was not reached.
+- No `P1001` occurred in the four instrumented runs, so the link is strongly suggested, not
+  observed. Open.
+
+### 5.3 WebKit migration test showing the welcome screen (explained)
+
+- **Cause.** `test:migrate` locks while the browser context is offline, and locking starts a new
+  worker whose script must load. In a passing trace, that script request started at 14.860 s and
+  the context came back online at 14.863 s. Making the test wait for the lock screen before going
+  online turned the race into a reliable failure in WebKit (welcome screen while offline, 1 of 1).
+  When the load fails, the app shows the welcome screen (F-5, reproduced in all three engines).
+- **Earlier tally.** 1 failure in 10 runs; the next 9 passed.
+- **Test fix.** The spec now reloads the page online after the offline lock, before unlocking, so
+  it starts from stored state. Two other attempts were tried and rejected, with evidence kept:
+  waiting for the lock screen (reproduces F-5) and blocking only the API origin (Chromium's
+  worker-originated requests bypass the context route, so the note synced). With the reload:
+  Chromium, Firefox and WebKit pass, and 3 more WebKit runs pass.
+- **F-5 stays open** as an application defect; whether real Safari fails the offline worker load
+  was not tested.
+- **Also found.** A Firefox run timed out (240 s) waiting for a Save button: the test opened the
+  next editor before the previous save finished, and the late completion replaced the editor
+  (F-20). The spec now waits for the save. Afterwards all three engines pass.
+
+## 6. D-31 assessment
+
+**Traced:**
+
+- normal and pre-proof login;
+- changed-password unlock, including the previous-password path;
+- setup;
+- pairing;
+- fresh-browser recovery;
+- both reopening paths;
+- revocation, including a replay after a lost reply, and refresh;
+- device-key storage, lock and extension resume;
+- where `AVSK` is required;
+- the transcripts.
+
+**Results:**
+
+- No authorization bypass was found. No password-only or `RAK`-only path registers a `DPK` or
+  `AVPK`.
+- `AVPK` is written only by registration.
+- For every operation, client and server payload fields match one for one, and they cover every
+  field the server writes. Op 3 omits some stored fields (F-23).
+- `DSI` and `AKSI` are domain-separated. Payloads are length-prefixed and include the op code.
+- Nonces are hashed and bound to a session and an operation. They expire after 2 minutes, are
+  issued under the session row lock, and are consumed in the effect's transaction. They are
+  deleted on restore.
+- No circular dependency was found: the changed-password path uses the pre-proof `GET
+/account/keys` to reach `DSK`.
+
+**Mismatches with device-proof.md, none a vulnerability:**
+
+- §8's pairing order: the code proves B's session before reading the reply.
+- §5 step 4: the previous-password login is unproven, then op 2.
+- §5 table: an active device with no `DPK` that sends a proof gets `401`.
+- §6 "never reuse": see S-4.
+- §9: `recovery/start` charges the recovery throttle before answering `migration_required`.
+- Reopening a pre-D-31 snapshot by the password path answers `reopen_failed` and counts against
+  the code, not `migration_required`.
+
+**Limitations as designed** (these are properties of D-31, not defects):
+
+- Possession is proven once per session, not per request. Stolen proven sessions keep tier 2
+  (F-1 builds on this).
+- `AK` never rotates, so anyone who ever held it keeps the account-key proof.
+- `DSK` is protected only by `K_local`, which every `AK` holder can derive.
+- Code running in an unlocked origin can sign.
+- A valid signature proves possession of a key for one payload. It does not prove that an uploaded
+  wrap or envelope decrypts correctly: an `AK` holder can still install garbage wraps.
+- A malicious server or database writer ignores proofs. Clients verify nothing D-31-specific.
+
+## 7. Coverage gaps
+
+- **Missing tests:**
+  - two engines or tabs on one store (F-2);
+  - a fake server that refuses duplicate items like the API does (F-3);
+  - a password change on a device holding an older keyset (F-4);
+  - the guard's fail-closed paths (a handler without `@Access`, recovery or reopen levels outside
+    their controllers);
+  - losing and re-taking the instance lock while running;
+  - restore with changed table definitions;
+  - R15's truncated-archive variant;
+  - CSRF on all six other `none` routes;
+  - R16 for token, recovery and reopen sessions;
+  - recovery keeping an in-flight commit, an anchor or an import;
+  - zeroing on reopen, pairing and revocation;
+  - a 5xx with a non-contract body during pairing.
+- **Not run:** Safari, the extension outside Chromium, two API processes, fuzzing, load tests,
+  remote CI.
+
+## 8. Can a private synthetic deployment rehearsal proceed?
+
+**Not yet; it can after one bounded fix batch.** No finding exposes vault keys or plaintext to the
+server, and nothing here concerns real data, which stays blocked by D-19. But F-1 and F-4 break
+recovery and unlock, which are exactly what a rehearsal exercises, and F-2 and F-3 lose or wedge
+local changes in normal use.
+
+Conditions for the rehearsal:
+
+1. F-1 to F-4 are fixed, and their reproductions pass without `it.fails`. Alternatively, the owner
+   explicitly accepts each one for the rehearsal.
+2. Synthetic data only, and one API process per database.
+3. The production database keeps `fsync` on. The `fsync=off` advice is for throwaway test servers
+   only.
+4. One open tab per browser profile until F-2 is fixed.
+5. No accounts from before D-31.
+6. The rehearsal records F-5 to F-19 as known issues.
+
+## 9. Remaining blockers
+
+1. F-1, F-2, F-3, F-4 (Medium): before the rehearsal, or explicitly accepted by the owner.
+2. F-5 to F-19 (Low): before real data, each fixed or explicitly accepted.
+3. S-1 to S-3: confirm or refute.
+4. The connection-failure item (§5.2) stays open until it is observed or ruled out.
+5. D-19: an independent review of `d04e211` plus whatever fixes follow. This report is not one.
+6. The real-data restrictions remain in force.
