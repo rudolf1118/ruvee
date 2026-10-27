@@ -19,3 +19,11 @@ spikes/*/package-lock.json
 tools/crypto-validation/vectors
 tools/crypto-validation/results
 tools/crypto-validation/package-lock.json
+# Mobile (apps/mobile): npm lockfiles and native build output, like tools/crypto-validation's.
+apps/mobile/*/package-lock.json
+apps/mobile/app/android/app/build
+apps/mobile/app/android/build
+apps/mobile/app/native/opaque/target
+/.mobile-toolchain
+apps/mobile/app/android/app/.cxx
+apps/mobile/app/src/compat/generated
