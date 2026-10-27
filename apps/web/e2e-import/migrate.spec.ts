@@ -90,6 +90,8 @@ test('move a pre-D-31 account from installation A to a fresh account on B', asyn
   await a.getByLabel('Website').fill('https://portal.example');
   await a.getByRole('textbox', { name: 'Password', exact: true }).fill(PORTAL_PASSWORD);
   await a.getByRole('button', { name: 'Save' }).click();
+  // Wait for the save to finish: a save that completes later replaces an editor opened meanwhile.
+  await expect(a.getByRole('heading', { level: 2, name: 'Synthetic Legacy Portal' })).toBeVisible();
   await addNote(a, 'Synthetic Legacy Note');
   await expect(a.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
     timeout: 15_000,
@@ -102,6 +104,10 @@ test('move a pre-D-31 account from installation A to a fresh account on B', asyn
   execFileSync('node', ['../api/scripts/e2e-make-legacy.mjs', INSTALLS.a.state], {
     env: process.env,
   });
+  // The lock above restarted the worker while offline; Playwright WebKit can fail that load and
+  // then shows the welcome screen (follow-up review, finding F-5, reproduced on its own). Load the
+  // page again online so this test starts from what is stored, not from that race.
+  await a.reload();
   await dropLocalDeviceKey(a);
 
   // ---- The browser keeps its copy offline and says it must move, not re-enroll ----
