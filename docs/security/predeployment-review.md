@@ -6,9 +6,11 @@ not complete D-19.** It looks for defects before the synthetic private deploymen
 > **Remediation (2026-10-26):** milestone 1 fixed R1, R7, R8, R9 and R10 (§9); milestone 2 fixed
 > R3, R5, R6, R11, R13, R14, R15, R16, R17 and R20 (§10); the D-31 milestone fixed R2 and R12
 > with device proof of possession (§11); the final batch fixed R18, R19, R21, R22 and every R23
-> item but one (§12). Their reproductions are now regression tests. **Open:** R23's device-label
-> item (needs a decision). D-31's protocol is unreviewed, D-19 is open and real-data use stays
-> blocked. §12 has the disposition of all 23 findings.
+> item but one (§12). Their reproductions are now regression tests. On 2026-10-27 the owner
+> decided the two open questions; §13 removed the trust-on-first-recovery fallback for accounts
+> from before D-31 and closed R23's device-label item by amending the spec. No finding is open.
+> D-31's protocol is unreviewed, D-19 is open and real-data use stays blocked. §13.5 has the
+> current disposition of all 23 findings.
 
 ## 1. What was reviewed
 
@@ -72,7 +74,7 @@ Synthetic data only.
 | R20 | Low                                       | **Fixed** (a916561); §10            | Recovery on a device that already holds data drops its rollback floors                                    |
 | R21 | Low                                       | **Fixed** (5d1f571); §12            | Concurrent pairing creates can exceed `MAX_OPEN_PAIRINGS`                                                 |
 | R22 | Low                                       | **Fixed** (56731e2); §12            | `startOver` ignores the conflict count; `feedImport` can queue duplicates                                 |
-| R23 | Info                                      | 9 of 10 fixed; 1 open; §12          | Smaller items (§2.23)                                                                                     |
+| R23 | Info                                      | **Fixed** (10 of 10); §12, §13      | Smaller items (§2.23)                                                                                     |
 
 ### R1. A change of case bypasses the maintenance gate, CSRF checks and bearer parsing (High)
 
@@ -795,18 +797,18 @@ help, and import integrity.
 
 **R23. Info items, one by one.**
 
-| Item                                                          | Disposition                                                                                                                                                                                                       |
-| ------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `EXTENSION_ORIGINS` passes CSRF on every `none` route         | **Fixed** (`5d1f571`): only `@ExtensionMayCall` handlers (login start and finish, refresh). Test: registration, recovery and reopening from the extension origin are `csrf_rejected`.                             |
-| The empty-target check counts only `pg_tables`                | **Fixed in milestone 1** (R8 work); regression added (`5d1f571`): a function, view, type, domain, schema, sequence or large object alone makes the target non-empty. Failed against a `pg_tables`-only check.     |
-| Guard tables queried unqualified                              | **Fixed in milestone 1** (R8): every query names `ruvee_control`; the existing regression plants `public.restore_guard` (`r7-r8-backup.int-spec.ts`).                                                             |
-| Key-zeroing gaps (`recovery`, `kitRotation`, `openKeyset`)    | **Fixed** (`56731e2`): `wipeMemory` zeroes an unfinished setup and recovery and drops a kit rotation; failed unlocks, recoveries and reopenings zero what they opened. Tests in `p2-client.test.ts`.              |
-| The approval sends no device `label`                          | **Open, requires a decision.** No client names devices yet; the device list shows the platform. Implementing it is a product feature (naming on A, encrypting, displaying). Decide: implement, or amend the spec. |
-| `requestedAt` is not covered by the request MAC               | **Fixed** without a protocol change (`82183d7`): A shows the time it received the verified request, not the server's. The MAC format (`pair-req-2`, D-31) is unchanged.                                           |
-| Malformed `epk` or platform is not burned and leaves no event | **Fixed** (`82183d7`): a key of the wrong size, an unknown platform or an unparsable reply counts as a failed MAC: burned, cancelled with `mac_failed`.                                                           |
-| The extension design says `sender.tab` messages are dropped   | **Fixed** (`74ab988`): the document describes the `sender.id` and `sender.origin` check, and why `sender.tab` cannot be used.                                                                                     |
+| Item                                                          | Disposition                                                                                                                                                                                                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `EXTENSION_ORIGINS` passes CSRF on every `none` route         | **Fixed** (`5d1f571`): only `@ExtensionMayCall` handlers (login start and finish, refresh). Test: registration, recovery and reopening from the extension origin are `csrf_rejected`.                         |
+| The empty-target check counts only `pg_tables`                | **Fixed in milestone 1** (R8 work); regression added (`5d1f571`): a function, view, type, domain, schema, sequence or large object alone makes the target non-empty. Failed against a `pg_tables`-only check. |
+| Guard tables queried unqualified                              | **Fixed in milestone 1** (R8): every query names `ruvee_control`; the existing regression plants `public.restore_guard` (`r7-r8-backup.int-spec.ts`).                                                         |
+| Key-zeroing gaps (`recovery`, `kitRotation`, `openKeyset`)    | **Fixed** (`56731e2`): `wipeMemory` zeroes an unfinished setup and recovery and drops a kit rotation; failed unlocks, recoveries and reopenings zero what they opened. Tests in `p2-client.test.ts`.          |
+| The approval sends no device `label`                          | **Closed in §13** by owner decision: device names deferred for V1, spec amended (`d04e211`). (Until then: open, requires a decision.)                                                                         |
+| `requestedAt` is not covered by the request MAC               | **Fixed** without a protocol change (`82183d7`): A shows the time it received the verified request, not the server's. The MAC format (`pair-req-2`, D-31) is unchanged.                                       |
+| Malformed `epk` or platform is not burned and leaves no event | **Fixed** (`82183d7`): a key of the wrong size, an unknown platform or an unparsable reply counts as a failed MAC: burned, cancelled with `mac_failed`.                                                       |
+| The extension design says `sender.tab` messages are dropped   | **Fixed** (`74ab988`): the document describes the `sender.id` and `sender.origin` check, and why `sender.tab` cannot be used.                                                                                 |
 
-That is ten R23 items: nine closed, one open.
+That is ten R23 items: nine closed in this batch, the tenth in §13.
 
 ### 12.2 D-31 verification
 
@@ -849,6 +851,7 @@ Traced through the engine, the API and the browser suites:
   `AK`, could therefore register their own `AVPK` there (device-proof.md §8). No account created
   since D-31 has this property. **Not accepted here:** recorded for D-19, and it has to be closed
   or explicitly accepted by the owner before any account from before D-31 holds real data.
+  **Closed in §13:** the owner chose a fresh-account migration, and the fallback is removed.
 
 ### 12.3 Deployment topology
 
@@ -894,7 +897,7 @@ therefore not exercised. The guarantees they would need do not exist in V1.
 - The service-worker stop during a fill accepts either outcome (filled once, or not at all). The
   run here does not show which one happened.
 
-### 12.5 Disposition of all 23 findings
+### 12.5 Disposition of all 23 findings (superseded by §13.5)
 
 **Fixed and tested:** R1, R7, R8, R9, R10 (§9); R3, R5, R6, R11, R13, R14, R15, R16, R17, R20
 (§10); R2, R12 (§11); R18, R19, R21, R22 (§12); R23 except the device label (nine items, §12.1).
@@ -919,3 +922,149 @@ encrypted key material; code running in the unlocked origin can sign; a stolen p
 commit until it is revoked; D-31 is unreviewed.
 
 Real-data use stays blocked: D-19 is open, and nothing in this report is a security approval.
+
+## 13. Legacy-account migration hardening (2026-10-27)
+
+Owner decisions of 2026-10-27, recorded in
+[open-decisions.md](../architecture/open-decisions.md#changes-after-the-pre-deployment-remediation-2026-10-27):
+accounts from before D-31 must not acquire a trusted `AVPK` by any path and move to a fresh
+account instead; device names are deferred for V1. Local commits on `vault/web-vault`, none
+pushed.
+
+| Commit    | Scope       | Change                                                                                    |
+| --------- | ----------- | ----------------------------------------------------------------------------------------- |
+| `6e9ebeb` | D-31 legacy | No `AVPK` fallback; `migration_required`; migration report and "Move to a new account" UI |
+| `d04e211` | R23 label   | Device names deferred; Devices screen wording; enrollment spec amended                    |
+| `11cda6a` | docs        | device-proof.md §9 rewritten, ADR-0011, migration guide, checklist                        |
+
+### 13.1 The trust-on-first-recovery fallback (from §12.2)
+
+**Issue.** Boundary: who may establish an account's trust anchor. When `account_keys.
+ak_verify_key` was null, `proveCompletion` verified the `AVSK` proof against the `AVPK` the
+request carried and recovery and reopening completion stored it. A caller holding only `RAK`
+(R-08), without `AK`, could pick a key, sign with it and install their own wraps and `AVPK`.
+
+**Reproduced** on the code before the fix (`6164089`), real PostgreSQL: with the stored `AVPK`
+cleared, a recovery completion signed with an attacker-chosen key returned `200` with a proven
+session; `recovery/start` and `reopen/recovery/start` accepted the account; a kit-path reopen
+completion returned `200`.
+
+**Fix** (`6e9ebeb`), without changing any signed transcript:
+
+- `recovery/start` and `reopen/recovery/start` answer `409 migration_required` once the
+  Recovery Key (and the code) checked out, before a device row or session is created and before
+  the code is consumed.
+- `proveCompletion` refuses with `migration_required` when no `AVPK` is stored, before any proof
+  check, and always verifies against the stored key. Recovery and reopening completion no longer
+  write `ak_verify_key`: only registration does.
+- Tier-3+ operations already refused an account without `AVPK` (§12.2); unchanged.
+- Client: `GET /devices/current` reports `accountHasVerifyKey`; an unlock of such an account
+  reports `migration_required` (not "re-enroll with the Recovery Kit"); the engine maps the API
+  error, and every refused path leaves local records, pending edits and conflicts untouched.
+
+**Regression tests**, each run against the previous source and failing there unless noted:
+
+- `apps/api/test/review/legacy-avpk.int-spec.ts`: recovery start refused with nothing created
+  (old: `200`); a completion signed with an attacker-chosen key, and one signed with `AK` itself,
+  refused with `account_keys` and devices byte-identical (old: `200`, proven); a password-only
+  caller gets no proven session and no tier-3 route (already held before: guard); a D-31 account
+  refuses an `AVPK` replacement (already held before: guard).
+- `apps/api/test/reopen.int-spec.ts`, "a snapshot from before D-31": the kit path is refused at
+  its start with the code unspent and no device created (old: `200`); a recovery-path and a
+  password-path completion are refused with the keys row unchanged and the installation still
+  `reopening` (old: `200`).
+- `packages/vault/src/review/legacy-migration.test.ts` (engine, fake server applying the same
+  rule): unlock reports `migration_required` with every local change kept; recovery on the same
+  and on a fresh browser is refused, the server state is equal before and after, the kit is not
+  rotated; a legacy snapshot reopens by neither path and its code stays. All failed on the old
+  engine and fake server (recovery began: `ok`).
+
+**Residual.** An account from before D-31 can still log in with its password into a 10-minute
+pre-proof session and read its encrypted key material (T-14, as for every account). It can never
+sync again or be made eligible for real data.
+
+### 13.2 Migration path
+
+Documented in [legacy-account-migration.md](../guides/legacy-account-migration.md). It uses only
+existing safe paths: the offline local export of the last verified snapshot (backup-restore.md
+§3.12), a D-31 bootstrap on a separate installation (V1 has one account per server), and the
+existing import, which re-encrypts every item under new keys. No server mutation was added for
+it, and nothing is deleted, reset or replaced in place; the migration screen has no erase button.
+
+- **Pending edits and conflicts.** The export format holds only verified state, so a new
+  local-only `migrationReport` lists each pending edit (new, edited, deleted) and each conflict
+  by item id and title. The export requires them to be acknowledged; the screen and the guide say
+  the move is not complete until each is copied by hand. Keeping a conflict's local draft works
+  offline and keeps it listed.
+- **Tests.** Engine: report contents, export refused until acknowledged, import into a fresh
+  account with new ids and records, the new account's `AVPK` set by bootstrap and kept through a
+  recovery, source server and browser unchanged afterwards. Browser (`test:migrate`, new):
+  a real account made pre-D-31 in its database (`e2e-make-legacy.mjs`, refuses any database
+  `e2e-stack` did not create), offline unlock with the notice, the Recovery Kit refused and the
+  copy unchanged, the pending note listed, the verified copy downloaded and imported on a second
+  installation, the new account syncing, the old browser still holding all three items.
+- **Limits.** Pending edits and conflict drafts move only by hand; item history, devices and the
+  activity log stay behind; a browser that never synced since enrolling has no verified copy.
+
+### 13.3 R23 device label
+
+Checked before amending: the Devices screen distinguishes entries by platform, "This device",
+status, how each was added, last-seen time and the first 8 characters of the device id. The
+pairing confirmation rests on the MAC-covered platform, A's own receipt time and the user having
+just typed the code; it never used a name (a name would have been chosen on A anyway, so it
+proves nothing about B). Removing naming therefore removes no security-relevant confirmation.
+
+- **Disposition: closed by spec amendment** (`d04e211`). device-enrollment.md §1, step 7, step 8
+  and the threat table now describe V1 as built: no names. The optional encrypted `label` field
+  and its place in A's op-8 proof are unchanged and unused; no transcript changed.
+- The Devices screen now says that type, last-seen time and short id are server metadata for
+  telling devices apart, not proof of which physical device is which. No name is invented.
+- Residual: two browsers of the same platform differ only by last-seen time and short id.
+
+### 13.4 Checks run
+
+2026-10-27, at `d04e211`, task-owned PostgreSQL 18 container (`ruvee-task-mig-pg`):
+
+- `pnpm format:check`, `pnpm lint`, `pnpm typecheck`, `pnpm build`: pass.
+- `pnpm test`: pass. contracts 42, crypto 67, API 84, extension 29, web 43, vault 97 (+1
+  skipped).
+- `pnpm test:integration`: 26 files, 182 tests, all passing with three workers. With the default
+  worker count, three full runs each had every test passing but one or two files failing in a
+  teardown hook (`h.close()` or `DROP DATABASE` over the 10-second hook limit), a different file
+  each time, plus once a momentary `P1001` from Prisma. The host was loaded (load average about
+  12 on 10 cores, from work outside this task). Each failed file passed on its own. **Not
+  proven to be load alone**; recorded as open (§13.5).
+- `test:migrate` (new): pass in Chromium and Firefox. Playwright WebKit (not Safari): 4 of 5
+  runs passed; the first run timed out with the page on the welcome screen before the first
+  unlock, while the device record was later confirmed present. Not reproduced in four reruns, and
+  the failing run's trace was overwritten. **Unexplained; open.**
+- Rerun at `d04e211`, because the engine and shared web components changed: `test:vault` 1,
+  `test:restore` 2 and `test:import` 1 in Chromium, Firefox and Playwright WebKit; Chromium only:
+  `test:headers` 33, `test:e2e` 8 (+4 skipped as before), the extension suite 13; `test:caddy`
+  (Caddy 2.11.7) 87 checks: all pass.
+- Not run: Safari itself, the extension outside Chromium, two API processes (§12.3), fuzzing
+  and load tests.
+- Remote CI: not run; status unchanged.
+
+### 13.5 Disposition of all 23 findings
+
+**Fixed and tested:** R1, R7, R8, R9, R10 (§9); R3, R5, R6, R11, R13, R14, R15, R16, R17, R20
+(§10); R2, R12 (§11); R18, R19, R21, R22 (§12); R23 nine items (§12.1).
+
+**Closed by decision and spec amendment:** R23 device label (§13.3).
+
+**Also fixed in this batch, beyond the 23:** the D-31 trust-on-first-recovery fallback (§13.1).
+
+**Open:** no finding. Two verification observations: the integration teardown timeouts under
+the default worker count and the single WebKit `test:migrate` failure (§13.4).
+
+**Accepted limitation with explicit existing authorization:** none is accepted in this report.
+Limitations resting on owner decisions recorded elsewhere: D-27, D-21, D-30 (§12.5), and since
+2026-10-27 the fresh-account migration (accounts from before D-31 stay synthetic-only) and V1
+without device names. Each is still subject to D-19.
+
+**Requires a decision:** D-19, who reviews and when. The checklist, pinned to `d04e211`, is
+[follow-up-review-checklist.md](follow-up-review-checklist.md).
+
+This report is an AI-assisted code review, not an independent professional audit. Real-data use
+stays blocked.

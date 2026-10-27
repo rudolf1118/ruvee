@@ -243,6 +243,8 @@ The current state, commands and gaps are kept in [status.md](status.md). In shor
 
 Encrypted server backups (D-29 B), the revised D-28 restore and the reopening after a restore (D-30 B) are implemented for synthetic data, with an operator guide; real data waits for D-19 and a private deployment rehearsal.
 
+The pre-deployment review's findings are all closed for development (predeployment-review.md §13.5, 2026-10-27), including the removal of the D-31 trust-on-first-recovery fallback: accounts from before D-31 move to a fresh account ([guide](../guides/legacy-account-migration.md)). Device names are deferred for V1. The next step is the independent review (D-19) of the exact commit in [follow-up-review-checklist.md](../security/follow-up-review-checklist.md); that review has not happened, and the earlier AI-assisted review is not one.
+
 ## Changes after architecture validation
 
 Status remains **Proposed**. Changes made on 2026-10-22 from

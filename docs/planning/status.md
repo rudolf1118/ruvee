@@ -1,6 +1,6 @@
 # Status and handoff
 
-Updated 2026-10-26. Everything is **local**: nothing has been pushed, and remote CI has never run.
+Updated 2026-10-27. Everything is **local**: nothing has been pushed, and remote CI has never run.
 This is a development build with synthetic data only. Nothing here has been independently
 reviewed, and it must not hold real secrets (D-19).
 
@@ -123,7 +123,9 @@ self-review.
 Approved by the owner **for development only** on 2026-10-25: D-02 (OPAQUE), D-21 (pairing),
 D-22 (`RAK` recovery verifier), D-24 (`SK` rotation on lost removal, offered after recovery), D-27 (extension `AK` in
 `chrome.storage.session`), D-13 option A (export format, 2026-10-26), D-29 option B (age-encrypted server backups, 2026-10-26), D-30 option B (reopening after a restore, 2026-10-26),
-and the product defaults D-17, D-09, D-06, D-08, D-10, D-23.
+and the product defaults D-17, D-09, D-06, D-08, D-10, D-23. On 2026-10-27: accounts from
+before D-31 never get an `AVPK` and move to a new account
+([guide](../guides/legacy-account-migration.md)), and V1 has no device names.
 Earlier: D-25, D-01, D-04, D-20. D-16 resolved for development by evidence. Interpretations made
 while building, to confirm in review:
 
@@ -149,11 +151,14 @@ D-07, D-05, D-11 to D-15, D-18.
 backup` still refuses real databases: D-19 is open and nothing is deployed.
 - **Not built:** importing into a vault that already holds items (merge),
   the pairing
-  QR code, device labels (`DEVICE_LABEL` rule undecided), the password generator, cards and
+  QR code, device names (deferred for V1, 2026-10-27), the password generator, cards and
   identities, SSE push, re-seeding, full key rotation, mobile.
 - **A raw database copy** (not through `ruvee-admin restore`) still brings back devices removed
   after it, with their sessions (`apps/api/test/backup-restore.int-spec.ts`); only the restore
   tool applies the D-28 policy.
+- **Accounts from before D-31** (synthetic only) can't sync, re-enroll, recover or reopen; they
+  move to a fresh account by export and import, with pending edits and conflicts copied by hand
+  ([legacy-account-migration.md](../guides/legacy-account-migration.md)).
 - Common-password rejection (part of D-09) needs a reviewed list.
 - The web client is trusted code served by the server (D-07, T-18): a malicious server could
   serve code that reads secrets.

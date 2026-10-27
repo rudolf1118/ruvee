@@ -3,11 +3,12 @@
 **For a fresh review of one exact commit.** This is a checklist for an independent reviewer, not a
 review. It does not complete D-19, and nothing in it is approved by being listed.
 
-- **Commit under review:** `773626b` on `vault/web-vault` (the last code commit; later
-  commits change documentation only). Check it out detached and review that tree, not a branch
+- **Commit under review:** `d04e211` on `vault/web-vault` (the last code commit; later
+  commits change documentation only). It adds the legacy-account hardening of review §13 to
+  `773626b`, the commit of the previous checklist. Check it out detached and review that tree, not a branch
   tip.
 - **Findings and their evidence:** [predeployment-review.md](predeployment-review.md), §2 and the
-  dispositions in §12. **Protocol under review:** [device-proof.md](device-proof.md),
+  dispositions in §12 and §13. **Protocol under review:** [device-proof.md](device-proof.md),
   [ADR-0011](../adr/0011-device-proof-of-possession.md).
 - **Ground rules:** synthetic data only; throwaway PostgreSQL databases (`ruvee_it_*`,
   `ruvee_e2e_*`); no deployment. Each item names where to look and what would refute it.
