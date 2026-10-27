@@ -77,6 +77,8 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return 'This browser holds a vault of another account. Recovering here erases that vault from this browser, including any changes it has not uploaded yet; its own server and devices still have what they had. To keep it, export it from that account first or use another browser.';
     case 'device_key_missing':
       return "This device can't prove its device key to the server, so it won't sync. Lock it and choose “Use your Recovery Kit” on the lock screen to enroll it again; everything on this device is kept.";
+    case 'migration_required':
+      return "This account was created before device keys and can't be enrolled on a device again, so the Recovery Kit can't be used with it here. Nothing was changed. Move its items to a new account: unlock it on a device that has it and open Security → Move to a new account.";
     case 'local_data_present':
       return 'This browser holds a vault. Reopen from it with your master password instead, or use a browser with no Ruvee data for the Recovery Kit.';
     case 'export_first':

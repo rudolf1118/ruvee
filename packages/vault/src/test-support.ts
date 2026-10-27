@@ -289,8 +289,9 @@ export class FakeServer {
       operation: 'recovery_complete' | 'reopen_complete',
       body: Parameters<Api['recoveryComplete']>[0],
     ) => {
-      if (this.akVerifyKey && this.akVerifyKey !== body.akVerifyKey)
-        this.fail(409, 'device_key_mismatch');
+      // As the API: an account without AVPK never takes the presented one (device-proof.md §9).
+      if (!this.akVerifyKey) this.fail(409, 'migration_required');
+      if (this.akVerifyKey !== body.akVerifyKey) this.fail(409, 'device_key_mismatch');
       await proveOperation(
         operation,
         body,
@@ -307,7 +308,7 @@ export class FakeServer {
           raw(body.devicePublicKey),
           raw(body.akVerifyKey),
         ],
-        { deviceKey: body.devicePublicKey, akVerifyKey: this.akVerifyKey ?? body.akVerifyKey },
+        { deviceKey: body.devicePublicKey, akVerifyKey: this.akVerifyKey },
       );
     };
     const issueNonce = async (operation: ProofOperation) => {
@@ -485,6 +486,7 @@ export class FakeServer {
         return Promise.resolve({
           sessionProven: proven,
           hasDeviceKey: this.devicePublicKeys.has(id),
+          accountHasVerifyKey: this.akVerifyKey !== undefined,
           id,
           platform: 'web',
           status: this.devices.get(id) ?? 'pending',
@@ -571,6 +573,7 @@ export class FakeServer {
         // The fake compares RAK through the verifier the client registered.
         if (this.verifier(body.recoveryAuthKey) !== account.keys.recoveryVerifier)
           this.fail(401, 'recovery_failed');
+        if (!this.akVerifyKey) this.fail(409, 'migration_required');
         if (!this.devices.has(body.device.id)) this.devices.set(body.device.id, 'pending');
         this.recoverySessions.add(body.device.id);
         newSession(body.device.id, false);
@@ -653,6 +656,7 @@ export class FakeServer {
         if (account?.username !== body.username) this.fail(401, 'reopen_failed');
         if (this.verifier(body.recoveryAuthKey) !== account.keys.recoveryVerifier)
           this.fail(401, 'reopen_failed');
+        if (!this.akVerifyKey) this.fail(409, 'migration_required');
         consumeCode(body.reopenCode);
         if (!this.devices.has(body.device.id)) this.devices.set(body.device.id, 'pending');
         reopenVia = 'recovery';
@@ -721,7 +725,6 @@ export class FakeServer {
         this.passwordTag = body.registrationRecord.slice(0, 43);
         this.devices.set(device, 'active');
         this.devicePublicKeys.set(device, body.devicePublicKey);
-        this.akVerifyKey ??= body.akVerifyKey;
         this.reopenCode = undefined;
         reopenVia = undefined;
         this.generation++;
@@ -757,7 +760,6 @@ export class FakeServer {
         this.recoverySessions.clear();
         this.devices.set(device, 'active');
         this.devicePublicKeys.set(device, body.devicePublicKey);
-        this.akVerifyKey ??= body.akVerifyKey;
         // Every other session ends: one generation counter shared by all clients. The new one is
         // valid, as the real server's is.
         this.generation++;

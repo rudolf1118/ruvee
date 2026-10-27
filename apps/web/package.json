@@ -17,6 +17,7 @@
     "test:headers": "node scripts/build-diagnostics.mjs && playwright test -c playwright.headers.config.ts",
     "test:vault": "playwright test -c playwright.vault.config.ts",
     "test:import": "playwright test -c playwright.import.config.ts",
+    "test:migrate": "RUVEE_E2E_SPEC=migrate.spec.ts RUVEE_E2E_IMPORT_PORT=3131 playwright test -c playwright.import.config.ts",
     "test:restore": "playwright test -c playwright.restore.config.ts"
   },
   "dependencies": {

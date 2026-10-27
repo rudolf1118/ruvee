@@ -526,6 +526,74 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     });
   });
 
+  describe('a snapshot from before D-31 (no AVPK) reopens by neither path (device-proof.md §9)', () => {
+    let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
+    const keysRow = (url: string) =>
+      query<Record<string, unknown>>(
+        url,
+        `SELECT row_version, wrapped_ak_password, wrapped_ak_recovery, recovery_verifier,
+                ak_verify_key FROM account_keys`,
+      );
+    const dropAvpk = () => query(r.db.url, 'UPDATE account_keys SET ak_verify_key = NULL');
+
+    beforeAll(async () => {
+      r = await restoredAndReviewed();
+    }, 120_000);
+    afterAll(async () => {
+      await (r as typeof r | undefined)?.h.close();
+    });
+    beforeEach(() => {
+      r.clearThrottle();
+    });
+
+    it('refuses the kit path at its start and leaves the code unspent', async () => {
+      await dropAvpk();
+      const deviceId = account.crypto.generateUuid();
+      expectError(await reopenWithKit(r.h, account, r.code, { deviceId }), 'migration_required');
+      expect(await codes(r.db.url)).toEqual([
+        { failed_attempts: 0, revoked: false, consumed: false },
+      ]);
+      expect(await query(r.db.url, 'SELECT 1 FROM devices WHERE id = $1', [deviceId])).toEqual([]);
+      expect(await guardState(r.db.url)).toBe('reopening');
+      await query(r.db.url, 'UPDATE account_keys SET ak_verify_key = $1', [
+        Buffer.from(account.akVerifyKey),
+      ]);
+    });
+
+    for (const via of ['recovery', 'password'] as const)
+      it(`refuses a ${via}-path completion even with AK's own proof, and changes nothing`, async () => {
+        const deviceId = account.crypto.generateUuid();
+        const started =
+          via === 'recovery'
+            ? await reopenWithKit(r.h, account, r.code, { deviceId })
+            : (await reopenWithPassword(r.h, account, r.code)).finish;
+        expect(started?.status, started?.text).toBe(200);
+        const cookie = reopenCookie(started as request.Response);
+        const material = await reopenMaterial(r.h, cookie);
+        // The AVPK is gone between the start and the completion, as in a pre-D-31 snapshot.
+        await dropAvpk();
+        const before = await keysRow(r.db.url);
+        const { body } = await reopenCompleteBody(
+          r.h,
+          account,
+          cookie,
+          material,
+          unwrapReopenMaterial(account, material, {}),
+          NEW_PASSWORD,
+          via === 'recovery'
+            ? { device: { key: account.crypto.generateDeviceKey(), id: deviceId } }
+            : {},
+        );
+        expectError(await r.h.post('/api/v1/reopen/complete', body, cookie), 'migration_required');
+        expect(await keysRow(r.db.url)).toEqual(before);
+        expect(await guardState(r.db.url)).toBe('reopening');
+        await query(r.db.url, 'UPDATE account_keys SET ak_verify_key = $1', [
+          Buffer.from(account.akVerifyKey),
+        ]);
+        r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      });
+  });
+
   describe('REVIEW R11 (regression): wrong codes cannot keep the installation closed', () => {
     let r: Awaited<ReturnType<typeof restoredAndReviewed>>;
 

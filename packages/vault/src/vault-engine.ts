@@ -36,6 +36,7 @@ import type {
   ItemSummary,
   LocalExport,
   LocalStateView,
+  MigrationReport,
   RecoveryKitView,
   SyncStatus,
   UnlockedVault,
@@ -268,6 +269,9 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('device_key_missing');
       case 'device_key_mismatch':
         return new VaultError('integrity');
+      // device-proof.md §9: an account from before D-31 never gets a trust anchor; it migrates.
+      case 'migration_required':
+        return new VaultError('migration_required');
       default:
         return new VaultError('internal');
     }
@@ -1005,6 +1009,7 @@ export class VaultEngine {
       if (current.id === device.deviceId && current.status === 'active') {
         if (current.sessionProven) return undefined;
         // A pre-proof session (the password changed elsewhere, step 3 of §5): prove it now.
+        if (!current.accountHasVerifyKey) return 'migration_required';
         if (!key || !current.hasDeviceKey) return 'device_key_missing';
         try {
           await this.proveSession(ids, key);
@@ -1029,8 +1034,8 @@ export class VaultEngine {
         key ? { accountId: device.accountId, key } : undefined,
       );
       if (result.device.status === 'active' && result.device.id === device.deviceId)
-        // Without a key the session stays pre-proof: usable offline, re-enroll to sync (§9).
-        return result.proven ? undefined : 'device_key_missing';
+        // Without a key the session stays pre-proof: usable offline (§9).
+        return result.proven ? undefined : await this.unprovenReason();
       // The server took the password but does not know this device: it was restored from a
       // backup older than this device's enrollment. Nothing here is erased (§3.6a).
       return result.device.id === device.deviceId ? 'login_failed' : 'device_unknown';
@@ -1369,6 +1374,19 @@ export class VaultEngine {
   ): { nonce: string; proof: { device: string } } {
     const { nonce: n, proof } = this.signed(ids, key, operation, nonce, fields);
     return { nonce: n, proof: { device: proof.device } };
+  }
+
+  /**
+   * Why a pre-proof session of this device stays unproven: an account from before D-31 must
+   * migrate; otherwise this device re-enrolls (device-proof.md §9).
+   */
+  private async unprovenReason(): Promise<'device_key_missing' | 'migration_required'> {
+    try {
+      const current = await this.deps.api.currentDevice();
+      return current.accountHasVerifyKey ? 'device_key_missing' : 'migration_required';
+    } catch {
+      return 'device_key_missing';
+    }
   }
 
   /** The unlocked session's device key, or the re-enrollment it needs (§9). */
@@ -3337,20 +3355,59 @@ export class VaultEngine {
   }
 
   localState(): Promise<LocalStateView> {
+    return this.exclusive(() => this.localStateOf(this.requireSession()));
+  }
+
+  private async localStateOf(session: Session): Promise<LocalStateView> {
+    const manifest = await this.deps.store.manifest();
+    return {
+      snapshot: {
+        seq: session.checkpoint.seq,
+        asOfMs:
+          manifest?.seq === session.checkpoint.seq ? (session.lastChange?.atMs ?? null) : null,
+        items: [...session.synced.values()].filter((i) => i.record !== null).length,
+      },
+      pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
+      conflicts: session.conflicts.size,
+      exported: session.localExportMark === this.localMark(session),
+    };
+  }
+
+  /**
+   * Local only, for a move to a new account (device-proof.md §9): each pending change and each
+   * conflict, by item and title, so none is left behind unnoticed. Titles are what the item list
+   * already shows; no secret field and nothing from the server.
+   */
+  migrationReport(): Promise<MigrationReport> {
     return this.exclusive(async () => {
       const session = this.requireSession();
-      const manifest = await this.deps.store.manifest();
-      return {
-        snapshot: {
-          seq: session.checkpoint.seq,
-          asOfMs:
-            manifest?.seq === session.checkpoint.seq ? (session.lastChange?.atMs ?? null) : null,
-          items: [...session.synced.values()].filter((i) => i.record !== null).length,
-        },
-        pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
-        conflicts: session.conflicts.size,
-        exported: session.localExportMark === this.localMark(session),
+      const local = await this.localStateOf(session);
+      const title = (id: string, revision: number, record: Uint8Array | null) => {
+        const synced = session.synced.get(id);
+        const body = record
+          ? this.openBody(session, id, revision, record)
+          : synced?.record
+            ? this.body(session, id, synced.revision, synced.record)
+            : null;
+        return body?.title ?? 'Unreadable item';
       };
+      const changes = [...(session.inflight?.mutations ?? []), ...session.pending].map((m) => ({
+        id: m.itemId,
+        title: title(m.itemId, m.baseRevision + 1, m.record),
+        change:
+          m.record === null
+            ? ('deleted' as const)
+            : m.baseRevision === 0
+              ? ('created' as const)
+              : ('edited' as const),
+      }));
+      const conflicts = [...session.conflicts.values()].map((c) => ({
+        id: c.itemId,
+        title: title(c.itemId, c.localRevision, c.localRecord),
+        kind: c.kind,
+        localDeleted: c.localRecord === null,
+      }));
+      return { snapshot: local.snapshot, changes, conflicts, exported: local.exported };
     });
   }
 

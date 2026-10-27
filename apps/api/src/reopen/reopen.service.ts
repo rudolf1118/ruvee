@@ -257,12 +257,15 @@ export class ReopenService {
     await this.throttle.reserveRecoveryAttempt(body.username);
     const account = await this.prisma.account.findUnique({
       where: { usernameNormalized: body.username },
-      include: { accountKeys: { select: { recoveryVerifier: true } } },
+      include: { accountKeys: { select: { recoveryVerifier: true, akVerifyKey: true } } },
     });
     const stored = account?.accountKeys?.recoveryVerifier ?? DUMMY_VERIFIER;
     const matches = timingSafeEqual(sha256(fromBase64url(body.recoveryAuthKey)), stored);
     if (!account?.accountKeys || !matches || account.id !== code.account_id)
       return this.fail(client, code.id, code.account_id);
+    // device-proof.md §9: a snapshot from before D-31 has no AVPK to check AK against, so it
+    // cannot be reopened; the code is left as it was.
+    if (!account.accountKeys.akVerifyKey) throw new ApiException('migration_required');
     const existing = await this.prisma.device.findUnique({ where: { id: body.device.id } });
     if (existing && (existing.accountId !== account.id || existing.status === 'revoked'))
       return this.fail(client, code.id, account.id);
@@ -401,7 +404,6 @@ export class ReopenService {
           recoveryKeyId,
           wrappedAkRecovery,
           recoveryVerifier: fromBase64url(body.recoveryVerifier),
-          akVerifyKey: proof.akVerifyKey,
           rowVersion: { increment: 1 },
           updatedAt: now,
         },

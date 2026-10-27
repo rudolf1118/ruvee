@@ -100,11 +100,18 @@ export class AccountController {
   async currentDevice(
     @CurrentSession() session: AuthenticatedSession,
   ): Promise<CurrentDeviceResponse> {
-    const device = await this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } });
+    const [device, keys] = await Promise.all([
+      this.prisma.device.findUniqueOrThrow({ where: { id: session.deviceId } }),
+      this.prisma.accountKeys.findUnique({
+        where: { accountId: session.accountId },
+        select: { akVerifyKey: true },
+      }),
+    ]);
     return {
       ...toDevice(device),
       sessionProven: session.proven,
       hasDeviceKey: device.publicKey !== null,
+      accountHasVerifyKey: Boolean(keys?.akVerifyKey),
     };
   }
 

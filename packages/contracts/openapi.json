@@ -9129,6 +9129,9 @@
           },
           "hasDeviceKey": {
             "type": "boolean"
+          },
+          "accountHasVerifyKey": {
+            "type": "boolean"
           }
         },
         "required": [
@@ -9142,7 +9145,8 @@
           "lastSeenAt",
           "revokedAt",
           "sessionProven",
-          "hasDeviceKey"
+          "hasDeviceKey",
+          "accountHasVerifyKey"
         ],
         "additionalProperties": false
       },
@@ -11378,6 +11382,34 @@
             "properties": {
               "statusCode": {
                 "type": "number",
+                "const": 409
+              },
+              "error": {
+                "type": "string",
+                "const": "migration_required"
+              },
+              "message": {
+                "type": "string",
+                "const": "This account predates device keys and cannot establish one; move it to a new account."
+              },
+              "requestId": {
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]{1,64}$"
+              }
+            },
+            "required": [
+              "statusCode",
+              "error",
+              "message",
+              "requestId"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "statusCode": {
+                "type": "number",
                 "const": 404
               },
               "error": {
@@ -12285,6 +12317,34 @@
           "message": {
             "type": "string",
             "const": "The account verification key does not match this account."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]{1,64}$"
+          }
+        },
+        "required": [
+          "statusCode",
+          "error",
+          "message",
+          "requestId"
+        ],
+        "additionalProperties": false
+      },
+      "ErrorMigrationRequired": {
+        "type": "object",
+        "properties": {
+          "statusCode": {
+            "type": "number",
+            "const": 409
+          },
+          "error": {
+            "type": "string",
+            "const": "migration_required"
+          },
+          "message": {
+            "type": "string",
+            "const": "This account predates device keys and cannot establish one; move it to a new account."
           },
           "requestId": {
             "type": "string",

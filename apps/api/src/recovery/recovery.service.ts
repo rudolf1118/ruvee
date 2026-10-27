@@ -47,7 +47,7 @@ export class RecoveryService {
     await this.throttle.reserveRecoveryAttempt(body.username);
     const account = await this.prisma.account.findUnique({
       where: { usernameNormalized: body.username },
-      include: { accountKeys: { select: { recoveryVerifier: true } } },
+      include: { accountKeys: { select: { recoveryVerifier: true, akVerifyKey: true } } },
     });
     const stored = account?.accountKeys?.recoveryVerifier ?? DUMMY_VERIFIER;
     const matches = timingSafeEqual(sha256(fromBase64url(body.recoveryAuthKey)), stored);
@@ -56,6 +56,12 @@ export class RecoveryService {
       throw new ApiException('recovery_failed');
     }
     const accountId = account.id;
+    // device-proof.md §9: an account from before D-31 has no AVPK, and nothing the Recovery Key
+    // proves can establish one. Refused before a device or session exists.
+    if (!account.accountKeys.akVerifyKey) {
+      await this.events.record('recovery_failed', { accountId, ...client });
+      throw new ApiException('migration_required');
+    }
     const existing = await this.prisma.device.findUnique({ where: { id: body.device.id } });
     // A device of another account, or a revoked one, cannot recover (same generic failure).
     if (existing && (existing.accountId !== accountId || existing.status === 'revoked')) {
@@ -174,7 +180,6 @@ export class RecoveryService {
           recoveryKeyId,
           wrappedAkRecovery,
           recoveryVerifier: fromBase64url(body.recoveryVerifier),
-          akVerifyKey: proof.akVerifyKey,
           rowVersion: { increment: 1 },
           updatedAt: now,
         },

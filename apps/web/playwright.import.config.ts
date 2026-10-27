@@ -28,6 +28,8 @@ const device = { chromium: 'Desktop Chrome', firefox: 'Desktop Firefox', webkit:
 
 export default defineConfig({
   testDir: './e2e-import',
+  // One spec per run: each needs both installations fresh (`test:import`, `test:migrate`).
+  testMatch: process.env.RUVEE_E2E_SPEC ?? 'import.spec.ts',
   fullyParallel: false,
   workers: 1,
   forbidOnly: !!process.env.CI,

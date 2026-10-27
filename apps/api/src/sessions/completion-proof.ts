@@ -15,9 +15,10 @@ export interface CompletionKeys {
  * device-proof.md §8, recovery and reopening: the completion carries the device key the device
  * will use from now on and the account's `AVPK`, with a `DSK` proof and an `AVSK` proof over the
  * same fields (op 9 or 11). `deviceKey` is the key the `DSK` proof must verify with: the new key
- * for a recovery, the restored key for the reopening password path. If the account has an `AVPK`
- * the `AVSK` proof is checked against it, so only a holder of `AK` replaces the wraps; an account
- * from before D-31 gets the one presented here. Checked before anything changes; the caller
+ * for a recovery, the restored key for the reopening password path. The `AVSK` proof is checked
+ * against the account's stored `AVPK`, so only a holder of `AK` replaces the wraps. An account
+ * from before D-31 has none, and the presented one is never taken as the trust anchor: it must
+ * move to a new account (device-proof.md §9). Checked before anything changes; the caller
  * consumes `nonce` in its transaction.
  */
 export async function proveCompletion(
@@ -30,7 +31,8 @@ export async function proveCompletion(
 ): Promise<CompletionKeys> {
   const devicePublicKey = fromBase64url(body.devicePublicKey);
   const akVerifyKey = fromBase64url(body.akVerifyKey);
-  if (keys.akVerifyKey && !constantTimeEqual(keys.akVerifyKey, akVerifyKey))
+  if (!keys.akVerifyKey) throw new ApiException('migration_required');
+  if (!constantTimeEqual(keys.akVerifyKey, akVerifyKey))
     throw new ApiException('device_key_mismatch');
   const nonce = fromBase64url(body.nonce);
   await proofs.verifyBound(
@@ -57,7 +59,7 @@ export async function proveCompletion(
       accountKey: {
         akId: keys.akId,
         akEpoch: keys.akEpoch,
-        publicKey: keys.akVerifyKey ?? akVerifyKey,
+        publicKey: keys.akVerifyKey,
         signature: fromBase64url(body.proof.accountKey),
       },
     },

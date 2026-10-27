@@ -14,6 +14,7 @@ import { LockScreen, LoginScreen, WelcomeScreen } from './entry-screens';
 import { ActivityPanel } from './activity';
 import { ExportViewer } from './export';
 import { DevicesPanel, SecurityPanel } from './devices';
+import { MigrationSection } from './migrate';
 import { needsRestoreHelp, restoreExplanation, RestoreHelpSection } from './restore-help';
 import { ItemEditor } from './item-editor';
 import { LiveItemDetail } from './live-item-detail';
@@ -541,7 +542,9 @@ function UnlockedApp({
                     // A hint only: the worker refuses any vault that ever held an item.
                     canImport={items.length === 0 && status.import === undefined}
                     restoreHelp={
-                      restoreHelp ? (
+                      vault.sessionProblem === 'migration_required' ? (
+                        <MigrationSection client={client} status={status} />
+                      ) : restoreHelp ? (
                         <RestoreHelpSection
                           client={client}
                           status={status}
@@ -669,8 +672,14 @@ function vaultNotices(vault: UnlockedVault, status: SyncStatus): VaultNotice[] {
       tone: 'caution',
       text: restoreExplanation(status, vault.sessionProblem),
     });
-  // docs/security/device-proof.md §9: a device enrolled before device keys re-enrolls with its
-  // Recovery Kit, which keeps this browser's vault and unsynced changes.
+  // docs/security/device-proof.md §9: an account from before device keys moves to a new account;
+  // a device whose key the server does not accept re-enrolls with its Recovery Kit.
+  if (vault.sessionProblem === 'migration_required')
+    out.push({
+      id: 'migration-required',
+      tone: 'caution',
+      text: 'This account was created before device keys and can no longer sync: the server cannot verify a device key for it. Your local copy is kept and works offline. Open Security → Move to a new account to download it and see the changes you will need to copy by hand.',
+    });
   if (vault.sessionProblem === 'device_key_missing')
     out.push({
       id: 'device-key-missing',

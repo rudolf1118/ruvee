@@ -37,45 +37,34 @@ export function restoreExplanation(status: SyncStatus, sessionProblem?: string):
   return `${why} This device holds newer changes than the server, so nothing from it was applied. Your local copy is unchanged and read-only.`;
 }
 
-function errorText(e: unknown): string {
+export function errorText(e: unknown): string {
   return e instanceof VaultClientError
     ? messageFor(e.code, e.retryAfterSeconds)
     : messageFor('internal');
 }
 
-const plural = (n: number, one: string, many: string) => `${String(n)} ${n === 1 ? one : many}`;
+export const plural = (n: number, one: string, many: string) =>
+  `${String(n)} ${n === 1 ? one : many}`;
 
 /**
- * Security → after a server restore: an offline export of this device's verified copy, then,
- * only if the user asks for it, erasing this device to start over (backup-restore.md §3.12).
+ * An offline export of this device's verified copy (backup-restore.md §3.12): the form, and what
+ * the file holds and leaves out. Shared by the restore help and the move to a new account.
  */
-export function RestoreHelpSection({
+export function LocalExportForm({
   client,
-  status,
-  sessionProblem,
-  onErased,
+  local,
+  onSaved,
 }: {
   client: VaultClient;
-  status: SyncStatus;
-  sessionProblem?: string;
-  onErased: () => void;
+  local: LocalStateView | null;
+  onSaved: () => void;
 }) {
-  const [local, setLocal] = useState<LocalStateView | null>(null);
   const [recoveryKey, setRecoveryKey] = useState('');
   const [password, setPassword] = useState('');
   const [acknowledged, setAcknowledged] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState<string | null>(null);
-  const [confirmText, setConfirmText] = useState('');
-  const [withoutExport, setWithoutExport] = useState(false);
-
-  const refresh = useCallback(() => {
-    void client.call('localState').then(setLocal, () => {
-      setLocal(null);
-    });
-  }, [client]);
-  useEffect(refresh, [refresh, status]);
 
   const notIncluded = local ? local.pending + local.conflicts : 0;
 
@@ -98,7 +87,7 @@ export function RestoreHelpSection({
                 ? ` Not in the file: ${plural(file.notIncluded.pending, 'change', 'changes')} waiting to sync and ${plural(file.notIncluded.conflicts, 'conflict', 'conflicts')}. They stay on this device.`
                 : ''),
           );
-          refresh();
+          onSaved();
         },
         (e: unknown) => {
           setError(errorText(e));
@@ -108,6 +97,87 @@ export function RestoreHelpSection({
         setBusy(false);
       });
   };
+
+  return (
+    <>
+      {saved ? <Notice tone="brand">{saved}</Notice> : null}
+      <form className="flex flex-col gap-4" onSubmit={exportLocal}>
+        <TextField
+          label="Recovery Key for this export"
+          value={recoveryKey}
+          autoComplete="off"
+          spellCheck={false}
+          placeholder="RK1-…"
+          inputClassName="font-mono"
+          onChange={(e) => {
+            setRecoveryKey(e.target.value);
+          }}
+        />
+        <PasswordField
+          label="Master password on this device"
+          value={password}
+          autoComplete="current-password"
+          onChange={(e) => {
+            setPassword(e.target.value);
+          }}
+        />
+        {notIncluded > 0 ? (
+          <label className="flex items-start gap-2.5 rounded-menu border border-line bg-canvas px-3.5 py-3 text-body">
+            <input
+              type="checkbox"
+              className="mt-1 size-4 accent-brand"
+              checked={acknowledged}
+              onChange={(e) => {
+                setAcknowledged(e.target.checked);
+              }}
+            />
+            <span>
+              I understand that {plural(notIncluded, 'change', 'changes')} on this device will not
+              be in the file.
+            </span>
+          </label>
+        ) : null}
+        {error ? <Notice>{error}</Notice> : null}
+        <Button
+          variant="primary"
+          type="submit"
+          className="self-end"
+          aria-disabled={busy || undefined}
+        >
+          Download verified copy
+        </Button>
+      </form>
+    </>
+  );
+}
+
+/**
+ * Security → after a server restore: an offline export of this device's verified copy, then,
+ * only if the user asks for it, erasing this device to start over (backup-restore.md §3.12).
+ */
+export function RestoreHelpSection({
+  client,
+  status,
+  sessionProblem,
+  onErased,
+}: {
+  client: VaultClient;
+  status: SyncStatus;
+  sessionProblem?: string;
+  onErased: () => void;
+}) {
+  const [local, setLocal] = useState<LocalStateView | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+  const [withoutExport, setWithoutExport] = useState(false);
+
+  const refresh = useCallback(() => {
+    void client.call('localState').then(setLocal, () => {
+      setLocal(null);
+    });
+  }, [client]);
+  useEffect(refresh, [refresh, status]);
 
   const startOver = () => {
     if (busy || !local || confirmText !== 'erase this device') return;
@@ -153,52 +223,7 @@ export function RestoreHelpSection({
         it. Changes waiting to sync and unresolved conflicts were never verified, so they are not in
         the file: they stay on this device until you erase it.
       </p>
-      {saved ? <Notice tone="brand">{saved}</Notice> : null}
-      <form className="flex flex-col gap-4" onSubmit={exportLocal}>
-        <TextField
-          label="Recovery Key for this export"
-          value={recoveryKey}
-          autoComplete="off"
-          spellCheck={false}
-          placeholder="RK1-…"
-          inputClassName="font-mono"
-          onChange={(e) => {
-            setRecoveryKey(e.target.value);
-          }}
-        />
-        <PasswordField
-          label="Master password on this device"
-          value={password}
-          autoComplete="current-password"
-          onChange={(e) => {
-            setPassword(e.target.value);
-          }}
-        />
-        {notIncluded > 0 ? (
-          <label className="flex items-start gap-2.5 rounded-menu border border-line bg-canvas px-3.5 py-3 text-body">
-            <input
-              type="checkbox"
-              className="mt-1 size-4 accent-brand"
-              checked={acknowledged}
-              onChange={(e) => {
-                setAcknowledged(e.target.checked);
-              }}
-            />
-            <span>
-              I understand that {plural(notIncluded, 'change', 'changes')} on this device will not
-              be in the file.
-            </span>
-          </label>
-        ) : null}
-        <Button
-          variant="primary"
-          type="submit"
-          className="self-end"
-          aria-disabled={busy || undefined}
-        >
-          Download verified copy
-        </Button>
-      </form>
+      <LocalExportForm client={client} local={local} onSaved={refresh} />
 
       <h4 className="text-body font-semibold">2. Start over on this device (optional)</h4>
       <p className="text-body text-ink-muted">

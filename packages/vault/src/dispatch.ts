@@ -56,6 +56,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   exportClose: (e) => e.exportClose(),
   importIntoEmptyVault: (e) => e.importIntoEmptyVault(),
   localState: (e) => e.localState(),
+  migrationReport: (e) => e.migrationReport(),
   exportLocal: (e, p: Parameters<VaultEngine['exportLocal']>[0]) => e.exportLocal(p),
   startOver: (e, p: Parameters<VaultEngine['startOver']>[0]) => e.startOver(p),
   logout: (e) => e.logout(),

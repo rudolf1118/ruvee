@@ -251,6 +251,8 @@ export type Device = z.infer<typeof deviceSchema>;
 export const currentDeviceResponseSchema = deviceSchema.extend({
   sessionProven: z.boolean(),
   hasDeviceKey: z.boolean(),
+  /** Whether the account has an `AVPK`; one from before D-31 has none and must migrate (§9). */
+  accountHasVerifyKey: z.boolean(),
 });
 export type CurrentDeviceResponse = z.infer<typeof currentDeviceResponseSchema>;
 

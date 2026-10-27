@@ -106,10 +106,15 @@ export interface UnlockedVault {
   /** Set when the server session could not be restored; the vault still works offline. */
   readonly sessionProblem?:
     /**
-     * The server needs this device to prove its key and it cannot (enrolled before D-31, or
-     * the key is not the server's): usable offline; re-enroll with the Recovery Kit to sync.
+     * The server needs this device to prove its key and it cannot (the key is not the server's):
+     * usable offline; re-enroll with the Recovery Kit to sync.
      */
     | 'device_key_missing'
+    /**
+     * The account was created before D-31 and has no `AVPK`, so nothing can enroll a key for it:
+     * usable offline; its data moves to a new account (docs/guides/legacy-account-migration.md).
+     */
+    | 'migration_required'
     | 'login_failed'
     | 'offline'
     | 'rate_limited'
@@ -186,6 +191,8 @@ export type VaultErrorCode =
   | 'local_data_other_account'
   /** This device has no device key the server accepts (docs/security/device-proof.md §9). */
   | 'device_key_missing'
+  /** The account predates D-31 and cannot establish a trusted `AVPK` (device-proof.md §9). */
+  | 'migration_required'
   | 'export_first'
   | 'internal';
 
@@ -277,6 +284,29 @@ export interface LocalStateView {
   readonly exported: boolean;
 }
 
+/**
+ * What a move to a new account must carry by hand (device-proof.md §9): every change this device
+ * holds that no export can, by item. Read from this device only.
+ */
+export interface MigrationReport {
+  readonly snapshot: LocalStateView['snapshot'];
+  /** Edits waiting to sync: in the export at their last verified version, or not at all. */
+  readonly changes: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly change: 'created' | 'edited' | 'deleted';
+  }[];
+  /** Unresolved conflicts: this device's version is in no export. */
+  readonly conflicts: readonly {
+    readonly id: string;
+    readonly title: string;
+    readonly kind: ConflictKind;
+    /** This device's version deletes the item. */
+    readonly localDeleted: boolean;
+  }[];
+  readonly exported: boolean;
+}
+
 export interface SessionView {
   readonly id: string;
   readonly current: boolean;
@@ -349,6 +379,7 @@ export interface VaultMethods {
   exportClose(): true;
   importIntoEmptyVault(): SyncStatus;
   localState(): LocalStateView;
+  migrationReport(): MigrationReport;
   exportLocal(params: {
     password: string;
     recoveryKey: string;

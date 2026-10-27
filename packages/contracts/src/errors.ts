@@ -30,6 +30,11 @@ export const API_ERRORS = {
     status: 409,
     message: 'The account verification key does not match this account.',
   },
+  migration_required: {
+    status: 409,
+    message:
+      'This account predates device keys and cannot establish one; move it to a new account.',
+  },
   not_found: { status: 404, message: 'The requested resource does not exist.' },
   seq_conflict: { status: 409, message: 'The vault has changed; pull and try again.' },
   revision_conflict: { status: 409, message: 'An item has changed on the server.' },
