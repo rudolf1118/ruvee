@@ -164,6 +164,20 @@ AND expires_at > now()`. Exactly one concurrent request can consume it; the othe
   `401 device_proof_failed`.
 - A request with an invalid signature burns its nonce. A failure for any reason leaves the client
   to fetch a new nonce; retries never reuse one.
+- **What a nonce authorizes, as built (follow-up review S-4, §15 there):**
+  - The nonce authorizes **one committed effect**, not one attempt. A refusal after the
+    signatures verified (`409`, `404`, `pairing_state`, a revoked device or session) rolls the
+    consumption back with the rest of the transaction, and so does a database failure. The nonce
+    stays open until it is used, replaced or expired.
+  - The exact same request then gets the same refusal for every payload an honest client signs.
+    Every check after consumption tests a value that only moves one way: row and keyset
+    versions, revocation, a pairing's state, expiry, the restore guard. A restore deletes every
+    nonce.
+  - A transient failure can be retried with the identical request, and it applies once.
+  - Not covered: a payload made to pass a check later, such as a future `expectedRowVersion`. It
+    can apply within the nonce's 2 minutes once that state arrives, and so can a different
+    payload signed under the same open nonce. Both need the keys that signed the request.
+  - Whether a refusal should also spend the nonce is an open decision (S-4).
 - The login `challenge` is the nonce of op 1 and 10: in memory, single-use with the login state.
 - `proof_nonces` is never trusted after a restore: APPLY POLICY deletes every row, as it deletes
   pairings, and ends every session.

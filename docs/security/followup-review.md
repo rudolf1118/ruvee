@@ -429,13 +429,13 @@ rewritten; review the batch as a whole.
   - **What that means for LOAD:** holding back the last chunk is not a commit barrier. A Ruvee backup whose dump is a complete archive followed by 256 KiB of extra bytes restored successfully; the extra bytes were never read.
   - **The real barrier:** VERIFY checks every byte before LOAD starts, against the metadata and the trusted digest, and the staged copy is private (R9). Unverified bytes can reach `pg_restore` only if that staged file changes between the two passes. In that case LOAD's check fails after the commit, the guard stays `restoring`, and the operator is told to discard the database.
   - **Evidence:** a script and outputs in the session's evidence folder (`s3-repro/`). No repository test was kept, because the only stable assertion would lock in the acceptance of trailing bytes.
-- **S-4, S-5:** not investigated in this batch; unchanged.
+- **S-4:** investigated in §15; the remaining choice is the owner's. **S-5:** not investigated; unchanged.
 
 ### 11.3 Still open
 
 - **F-16** (a conflict draft is replaced when the same item conflicts again). Not specified: sync-protocol §6 describes one conflict per item. It needs a decision: keep the older draft, the newer one, or both as items.
 - **F-19, the rest:** fixed in §13 (`51432e2`), with the limits of zeroing in JavaScript stated there.
-- **F-20 to F-25** (Info), **S-4, S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
+- **F-20 to F-25** (Info), **S-4** (decision pending, §15), **S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
 - **F-4, server side:** implemented in §12, with the residual stated there.
 - **No expected failures remain:** every reproduction in `followup-repro.*` is an ordinary passing test.
 
@@ -706,3 +706,77 @@ review. The commit has not been reviewed.
 pushed as a normal fast-forward, removes its changes and keeps the history. A force-push would be
 needed only to remove the commit from the history, which is not proposed. Whether to keep, revert
 or review it is the owner's decision; nothing has been done to it.
+
+## 15. S-4: proof nonces after a failed operation
+
+Investigated across every operation that consumes a nonce. No code was changed. One semantic
+choice is left to the owner (§15.4). Still not D-19.
+
+### 15.1 Where each operation consumes its nonce, and what can refuse afterwards
+
+The signatures are checked first, with no state change, and an invalid one burns the nonce.
+Then, inside one transaction, the nonce is consumed and the effect is applied. A refusal or a
+database failure after consumption rolls the consumption back.
+
+| Op                      | Checks after consumption, in the same transaction                       | Can the failed check become true later?                                                                 |
+| ----------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| 2 `session_proof`       | the session is not revoked and not yet proven                           | no: revocation and proof are permanent                                                                  |
+| 7 `device_revoke`       | the target device of this account is not revoked                        | no for a revoked device; a device id that does not exist could only appear by being enrolled with it    |
+| 5 `secret_key_rotate`   | `row_version = expected` and the keyset version unchanged               | only for an `expected` above the current one; honest clients sign the version they just read            |
+| 6 `recovery_key_rotate` | `row_version = expected`                                                | as above                                                                                                |
+| 8 `pairing_approve`     | the pairing is still `requested` by that device, which is still pending | no: a pairing is never requested again and a device never returns to pending (a restore deletes nonces) |
+| 9 `recovery_complete`   | the recovery session is live, the device not revoked, `row_version`     | no for the first two; `row_version` as above                                                            |
+| 11 `reopen_complete`    | the guard is `reopening` with this session's code, `row_version`        | no: a later restore deletes every nonce; `row_version` as above                                         |
+| 12 `password_change_v2` | `row_version` and `keyset_version` equal the claimed ones               | as above, for both versions                                                                             |
+
+Ops 1 and 10 (login) use an in-memory challenge consumed with the login state; they are not
+affected. Op 5 and op 6 also refuse a stale `row_version` before verifying the proof; that leaves
+the nonce untouched, with the same result.
+
+### 15.2 Reproduction and regression evidence
+
+`apps/api/test/review/s4-nonce-lifecycle.int-spec.ts` (real database, one installation per test,
+op 12 and op 7 as representatives). It has 9 tests, all passing on the current code. They
+describe the behaviour; they are not fixes.
+
+| Case                                 | Result                                                                                                                                                                    |
+| ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| invalid proof                        | burns the nonce; the correctly signed request is refused afterwards                                                                                                       |
+| valid proof, precondition refused    | the same request is refused the same way three times; nothing changes (op 12: stale row version; op 7: device already revoked, one event)                                 |
+| transaction fails without a decision | a one-time database error (a trigger on the event insert) gives `500` and changes nothing; the identical retry applies once, and a third send is refused                  |
+| lost response                        | the replay of an applied revocation is refused; one event                                                                                                                 |
+| concurrent duplicates                | 8 identical revocations and 8 identical password changes at once: exactly one `204` each, seven `device_proof_failed`, one event, row version +1                          |
+| a different payload after a refusal  | signed under the same open nonce by the same keys, it **applies**                                                                                                         |
+| a future row version                 | refused now; after another write raises `row_version` to it, the same request **applies**                                                                                 |
+| bindings                             | another operation's nonce, another session's nonce (with this session's `sessionRef`), another account id, an altered payload: all `device_proof_failed`, nothing changes |
+| expiry and replacement               | an expired nonce is refused; a nonce left open by a rollback is dead after a newer one is issued or after it expires                                                      |
+
+### 15.3 What this establishes
+
+- **A nonce authorizes only its own operation, session, account and payload.** The device proof
+  binds the operation, account, device, session reference and payload. `consume` binds the
+  session and operation.
+- **Concurrent requests cannot apply a mutation twice.** The conditional `UPDATE … consumed_at IS
+NULL` lets exactly one through. The others wait for its row lock and then find it consumed.
+- **A lost response has a safe recovery.** The replay is refused and nothing is applied twice.
+  The client takes a new nonce (F-4 §12.4 for the password change).
+- **Expiry and replacement hold**, including for a nonce reopened by a rollback.
+- **A rollback cannot enable a later mutation for a request an honest client signed.** Every
+  check after consumption tests something that only moves one way.
+- **The boundary.** It can for a request signed with a value that only becomes true later, such as
+  a future `expectedRowVersion` or `keysetVersion`, within the nonce's 2 minutes, unless the
+  nonce is replaced first. The same open nonce also takes a second, different payload. Both need
+  the device key, and for key operations `AK`. Anyone holding them can ask for a fresh nonce, so
+  this gives a signer no new power. What it weakens is the rule "one attempt per nonce" (§6),
+  and any future operation that adds a check that can become true again.
+
+### 15.4 Decision for the owner
+
+| Option                                                    | Behaviour                                                                                                                                                                                                                                                             | Cost                                                                                                                                                                                                              |
+| --------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A. Keep** (current)                                     | One committed effect per nonce. A transient failure is retried with the identical request.                                                                                                                                                                            | The boundary in §15.3 stays. Every new operation must keep its checks after consumption one-way, and that rule lives in the documentation and in reviews.                                                         |
+| **B. Spend the nonce on a decided refusal** (recommended) | When the operation itself refuses after a valid proof (`409`, `404`, `pairing_state`, a revoked session or device, `reopen_failed`), the consumption is committed separately. A database failure that decides nothing still leaves the nonce for the identical retry. | One more write per refusal. The burn can itself fail, which leaves A's behaviour. The tests for the different payload and the future version flip to "refused". Clients need no change: they never reuse a nonce. |
+| C. Spend the nonce on every failure                       | One attempt per nonce, always.                                                                                                                                                                                                                                        | Loses the safe retry after a transient failure, and a lost "failed" answer would look the same as a lost success.                                                                                                 |
+
+Until this is decided, S-4 stays open. Its tests describe today's behaviour, and the two boundary
+tests are marked as describing the open limit.
