@@ -30,6 +30,25 @@ export const REFRESH_ABSOLUTE_MS = 90 * 24 * 60 * 60 * 1000;
 export const STEP_UP_MS = 5 * 60 * 1000;
 /** device-proof.md §5: an active device's session that has not proved its key ends this soon. */
 export const PRE_PROOF_MS = 10 * 60 * 1000;
+
+/**
+ * device-proof.md §5: an active device's session that never proved its key is short-lived.
+ * Pending devices have no key to prove and keep their normal session. The ten minutes start when
+ * the session was created or, for a session that waited while its device was pending (pairing),
+ * when the device became active: approval may come long after the login (follow-up review F-10).
+ */
+function preProofLapsed(
+  session: {
+    readonly provenAt: Date | null;
+    readonly createdAt: Date;
+    readonly device: { readonly status: string; readonly enrolledAt: Date | null };
+  },
+  now: Date,
+): boolean {
+  if (session.provenAt !== null || session.device.status !== 'active') return false;
+  const start = Math.max(session.createdAt.getTime(), session.device.enrolledAt?.getTime() ?? 0);
+  return now.getTime() - start >= PRE_PROOF_MS;
+}
 /** `last_used_at`, `idle_expires_at` and `last_seen_at` are written at most this often. */
 const TOUCH_INTERVAL_MS = 60 * 1000;
 const TOKEN_TEXT = /^[A-Za-z0-9_-]{43}$/;
@@ -281,7 +300,9 @@ export class SessionService {
     return this.prisma.$transaction(async (tx) => {
       const row = await tx.refreshToken.findUnique({
         where: { tokenHash: sha256(refreshToken) },
-        include: { session: { include: { device: { select: { status: true } } } } },
+        include: {
+          session: { include: { device: { select: { status: true, enrolledAt: true } } } },
+        },
       });
       if (!row) throw new ApiException('unauthenticated');
       const session = row.session;
@@ -303,6 +324,8 @@ export class SessionService {
       }
       if (session.idleExpiresAt <= now || session.absoluteExpiresAt <= now)
         throw new ApiException('session_expired');
+      // A refresh does not outlive the pre-proof lapse either (follow-up review F-11).
+      if (preProofLapsed(session, now)) throw new ApiException('session_expired');
       // Conditional on rotated_at still being null, so two concurrent refreshes cannot both win.
       const claimed = await tx.refreshToken.updateMany({
         where: { tokenHash: row.tokenHash, rotatedAt: null },
@@ -367,7 +390,7 @@ export class SessionService {
     if (token === undefined || !TOKEN_TEXT.test(token)) throw new ApiException('unauthenticated');
     const session = await this.prisma.session.findUnique({
       where: { secretHash: sha256(token) },
-      include: { device: { select: { status: true } } },
+      include: { device: { select: { status: true, enrolledAt: true } } },
     });
     // A cookie value is never accepted as a bearer token, nor the reverse.
     if (session?.kind !== kind) throw new ApiException('unauthenticated');
@@ -378,15 +401,8 @@ export class SessionService {
     // A token session's access token expires on its own; the client refreshes it.
     if (kind === 'token' && (session.accessExpiresAt === null || session.accessExpiresAt <= now))
       throw new ApiException('session_expired');
-    // device-proof.md §5: an active device's session that never proved its key is short-lived.
-    // Pending devices have no key to prove and keep their normal session.
     const proven = session.provenAt !== null;
-    if (
-      !proven &&
-      session.device.status === 'active' &&
-      now.getTime() - session.createdAt.getTime() >= PRE_PROOF_MS
-    )
-      throw new ApiException('session_expired');
+    if (preProofLapsed(session, now)) throw new ApiException('session_expired');
 
     if (kind === 'token') {
       if (now.getTime() - session.lastUsedAt.getTime() >= TOUCH_INTERVAL_MS)

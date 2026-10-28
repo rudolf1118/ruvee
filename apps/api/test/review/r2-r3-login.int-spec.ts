@@ -311,6 +311,12 @@ describe('REVIEW R2 (regression): the password alone never acts as an enrolled d
 
   it('lets an unproven session lapse after 10 minutes', async () => {
     const { cookie } = await passwordOnly();
+    // The device has been active for longer than that too (F-10: the lapse starts at whichever
+    // is later, the login or the device's enrollment).
+    await query(
+      h.db.url,
+      `UPDATE devices SET enrolled_at = now() - interval '11 minutes' WHERE enrolled_at > now() - interval '11 minutes'`,
+    );
     await query(
       h.db.url,
       `UPDATE sessions SET created_at = now() - interval '11 minutes' WHERE proven_at IS NULL AND revoked_at IS NULL`,
@@ -386,6 +392,37 @@ describe('REVIEW R2 (regression): the password alone never acts as an enrolled d
     const proven = await tokenLogin(true);
     expect(proven.proven).toBe(true);
     expect((await refreshAndRead(proven.tokens?.refreshToken ?? '')).status).toBe(200);
+
+    // Follow-up review F-11: a refresh does not outlive the 10-minute pre-proof lapse.
+    const stale = await tokenLogin(false);
+    await query(
+      h.db.url,
+      `UPDATE devices SET enrolled_at = now() - interval '11 minutes' WHERE id = $1`,
+      [extId],
+    );
+    await query(
+      h.db.url,
+      `UPDATE sessions SET created_at = now() - interval '11 minutes'
+       WHERE device_id = $1 AND kind = 'token' AND proven_at IS NULL AND revoked_at IS NULL`,
+      [extId],
+    );
+    expectError(
+      await h
+        .http()
+        .post('/api/v1/auth/refresh')
+        .set(EXTENSION_HEADERS)
+        .send({ refreshToken: stale.tokens?.refreshToken }),
+      'session_expired',
+    );
+    // A proven one is not affected by its age.
+    const again = await tokenLogin(true);
+    await query(
+      h.db.url,
+      `UPDATE sessions SET created_at = now() - interval '11 minutes'
+       WHERE device_id = $1 AND kind = 'token' AND proven_at IS NOT NULL AND revoked_at IS NULL`,
+      [extId],
+    );
+    expect((await refreshAndRead(again.tokens?.refreshToken ?? '')).status).toBe(200);
   });
 });
 

@@ -141,6 +141,13 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     expect(before.response).toBeUndefined();
     expectError(await h.get('/api/v1/account/keys', b.cookie), 'device_not_enrolled');
 
+    // Follow-up review F-10: B logged in long before A approves. Its 10 minutes to prove its key
+    // start when its device becomes active, not when it logged in.
+    await query(
+      h.db.url,
+      `UPDATE sessions SET created_at = now() - interval '30 minutes' WHERE device_id = $1`,
+      [b.deviceId],
+    );
     const reply = crypto.createPairingResponse({
       ...transcript,
       payload: {
