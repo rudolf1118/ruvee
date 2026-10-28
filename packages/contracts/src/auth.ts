@@ -78,7 +78,7 @@ export const keyProofSchema = z.strictObject({
 /** Operations a server nonce can be issued for (device-proof.md §6). */
 export const proofNonceOperationSchema = z.enum([
   'session_proof',
-  'password_change',
+  'password_change_v2',
   'secret_key_rotate',
   'recovery_key_rotate',
   'device_revoke',
@@ -315,13 +315,19 @@ export const revokeDeviceRequestSchema = z.strictObject({
 });
 export type RevokeDeviceRequest = z.infer<typeof revokeDeviceRequestSchema>;
 
-/** authentication.md §9: the new OPAQUE record and password wrap replace the old ones at once. */
+/**
+ * authentication.md §9: the new OPAQUE record and password wrap replace the old ones at once.
+ * Format 2 (follow-up review F-4): `keysetVersion` names the keyset whose `SK` the client derived
+ * the new wrap with, and is signed as op 12 (`password_change_v2`); the server applies the change
+ * only while that is still the account's keyset version. A body without it is refused.
+ */
 export const passwordChangeFinishRequestSchema = z.strictObject({
   registrationRecord: base64urlBytes({ length: OPAQUE_BYTES.registrationRecord }),
   kdfProfile: kdfProfileSchema,
   saltPw: base64urlBytes({ length: 16 }),
   wrappedAkPassword: base64urlBytes({ length: 93 }),
   expectedRowVersion: z.int().min(1),
+  keysetVersion: z.int().min(0).max(U32_MAX),
   nonce: proofNonceSchema,
   proof: keyProofSchema,
 });

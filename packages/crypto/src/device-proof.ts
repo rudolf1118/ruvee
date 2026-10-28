@@ -36,7 +36,8 @@ export const PROOF_OPERATIONS = {
   login: 1,
   session_proof: 2,
   register: 3,
-  password_change: 4,
+  // 4 was `password_change` before follow-up review F-4; retired, and never reused, so a
+  // signature over the old payload verifies in no context.
   secret_key_rotate: 5,
   recovery_key_rotate: 6,
   device_revoke: 7,
@@ -44,6 +45,7 @@ export const PROOF_OPERATIONS = {
   recovery_complete: 9,
   reopen_login: 10,
   reopen_complete: 11,
+  password_change_v2: 12,
 } as const;
 export type ProofOperation = keyof typeof PROOF_OPERATIONS;
 

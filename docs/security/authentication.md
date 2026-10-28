@@ -282,10 +282,20 @@ A password change needs an unlocked device and step-up.
 1. The client derives new key material and re-wraps `AK`
    ([cryptographic-design.md §6.1](cryptographic-design.md#61-password-change-and-kdf-upgrade-re-wrap-only)).
 2. It runs OPAQUE registration for the new password: `POST /api/v1/account/password/start`, then
-   `/finish`, with the new registration record, new `salt_pw`, profile, new `AK_WRAP_PASSWORD`
-   and the expected `account_keys.row_version`.
-3. The server replaces the OPAQUE record and the password wrap in one transaction, revokes every
-   other session, and records a security event. The current session continues.
+   `/finish`, with the new registration record, new `salt_pw`, profile, new `AK_WRAP_PASSWORD`,
+   the expected `account_keys.row_version` and the `keyset_version` whose `SK` the new wrap was
+   derived with, all signed by the device key and `AK` (op 12, `password_change_v2`,
+   [device-proof.md §4](device-proof.md#4-signed-bytes)). If the keyset is newer than the one
+   the device holds, the client first adopts the new `SK` from it
+   ([cryptographic-design.md §6.2](cryptographic-design.md#62-narrow-rotations)).
+3. The server replaces the OPAQUE record and the password wrap in one transaction, only while both
+   versions are still the account's (otherwise `409 row_version_conflict` and nothing changes),
+   revokes every other session, and records a security event. The current session continues.
+   The client does not retry on its own: the user tries again, and that attempt starts from step 1.
+   The version check stops a client that has not adopted a replaced `SK` from writing a wrap under
+   the old one by mistake. It cannot stop a device that holds `AK` from claiming the current
+   version over such a wrap: the server cannot open the wrap
+   ([follow-up review §12](followup-review.md#12-f-4-password-change-bound-to-the-keyset-version)).
 4. Other enrolled devices:
    - **Online:** their session is revoked, so the user logs in with the new password. The device
      then unwraps the new server wrap with `SK` and the new password, and replaces its local wrap.

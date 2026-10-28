@@ -70,7 +70,7 @@ sig  = crypto_sign_detached(DSI, DSK)   or   crypto_sign_detached(AKSI, AVSK)   
 | 1   | `login`               | `finishLoginRequest`                                                                                                                                                                                      | ✓           |      |
 | 2   | `session_proof`       | none                                                                                                                                                                                                      | ✓           |      |
 | 3   | `register`            | `registrationRecord`, `device_public_key`, `ak_verify_key`, `wrappedAkPassword`, `wrappedAkRecovery`, `recoveryVerifier`, `keyset`, `vault_id`                                                            | ✓           | ✓    |
-| 4   | `password_change`     | `registrationRecord`, `u8(kdfProfile)`, `saltPw`, `wrappedAkPassword`, `u64(expectedRowVersion)`                                                                                                          | ✓           | ✓    |
+| 4   | `password_change`     | Retired (follow-up review F-4); never verified and never reused. Replaced by op 12                                                                                                                        |             |      |
 | 5   | `secret_key_rotate`   | `u32(keysetVersion)`, `keyset`, `u8(kdfProfile)`, `saltPw`, `wrappedAkPassword`, `u64(expectedRowVersion)`                                                                                                | ✓           | ✓    |
 | 6   | `recovery_key_rotate` | `recoveryKeyId`, `wrappedAkRecovery`, `recoveryVerifier`, `u64(expectedRowVersion)`                                                                                                                       | ✓           | ✓    |
 | 7   | `device_revoke`       | `revoked_device_id`, `reason` (UTF-8)                                                                                                                                                                     | ✓           |      |
@@ -78,6 +78,17 @@ sig  = crypto_sign_detached(DSI, DSK)   or   crypto_sign_detached(AKSI, AVSK)   
 | 9   | `recovery_complete`   | `registrationRecord`, `u8(kdfProfile)`, `saltPw`, `wrappedAkPassword`, `recoveryKeyId`, `wrappedAkRecovery`, `recoveryVerifier`, `u64(expectedRowVersion)`, `label`, `device_public_key`, `ak_verify_key` | ✓ (new key) | ✓    |
 | 10  | `reopen_login`        | `finishLoginRequest`                                                                                                                                                                                      | ✓           |      |
 | 11  | `reopen_complete`     | as op 9                                                                                                                                                                                                   | ✓           | ✓    |
+| 12  | `password_change_v2`  | `registrationRecord`, `u8(kdfProfile)`, `saltPw`, `wrappedAkPassword`, `u64(expectedRowVersion)`, `u32(keysetVersion)`                                                                                    | ✓           | ✓    |
+
+Op 12 (owner approval, 2026-10-28, follow-up review F-4) is the password change. `keysetVersion`
+is the version of the keyset whose `SK` the client derived the new wrap's `AUK` with; the server
+applies the change only while it is the account's `keyset_version`, in the same conditional
+`UPDATE` as `row_version`. As built, only a Secret Key rotation changes `keyset_version`
+(registration sets 1). Vault creation and full rotation, which will also change it
+(sync-protocol.md §10), are not built; when they are, a change from a device that has not seen the
+new keyset is refused and retried after adopting it, which is safe but not necessary. The version
+binds the request to the version the client **claims**; the server cannot check that the wrap was
+made with that `SK` (§3).
 
 The signing and verification code, including these encoders, is one module of `@ruvee/crypto`
 used by both the clients and the API, so the two sides cannot encode differently.

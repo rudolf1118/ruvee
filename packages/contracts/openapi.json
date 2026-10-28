@@ -9157,7 +9157,7 @@
             "type": "string",
             "enum": [
               "session_proof",
-              "password_change",
+              "password_change_v2",
               "secret_key_rotate",
               "recovery_key_rotate",
               "device_revoke",
@@ -9764,6 +9764,11 @@
             "minimum": 1,
             "maximum": 9007199254740991
           },
+          "keysetVersion": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 4294967295
+          },
           "nonce": {
             "type": "string",
             "minLength": 43,
@@ -9802,6 +9807,7 @@
           "saltPw",
           "wrappedAkPassword",
           "expectedRowVersion",
+          "keysetVersion",
           "nonce",
           "proof"
         ],

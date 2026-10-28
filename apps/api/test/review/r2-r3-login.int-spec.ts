@@ -123,7 +123,7 @@ describe('REVIEW R2 (regression): the password alone never acts as an enrolled d
     );
     // A pre-proof session gets a nonce only for proving itself.
     expectError(
-      await h.post('/api/v1/auth/proof-nonce', { operation: 'password_change' }, cookie),
+      await h.post('/api/v1/auth/proof-nonce', { operation: 'password_change_v2' }, cookie),
       'device_proof_required',
     );
     // Without DSK it cannot prove itself: any other key fails, and that ends the session.
@@ -268,7 +268,7 @@ describe('REVIEW R2 (regression): the password alone never acts as an enrolled d
       'device_proof_failed',
     );
     // A nonce issued for another operation, with a valid device_revoke signature: refused.
-    const forPassword = await proofNonce(h, owner, 'password_change');
+    const forPassword = await proofNonce(h, owner, 'password_change_v2');
     expectError(
       await revoke(x, signOperation(account, 'device_revoke', forPassword, fields(x))),
       'device_proof_failed',

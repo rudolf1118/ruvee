@@ -8,9 +8,8 @@ import { FakeServer, fakeOpaque } from '../test-support.js';
 import { VaultEngine, VaultError } from '../vault-engine.js';
 
 /**
- * Follow-up review (docs/security/followup-review.md): reproductions of confirmed client defects.
- * Each test states the correct behaviour and is marked `fails` while the defect exists; when a
- * fix lands, the test starts passing and vitest reports it, so the mark must be removed then.
+ * Follow-up review (docs/security/followup-review.md): regressions for confirmed client defects.
+ * Each test states the correct behaviour; none is marked `fails` any more.
  * Synthetic data only.
  */
 
@@ -68,8 +67,12 @@ async function account(server = new FakeServer(), api = server.api()) {
   return { server, a };
 }
 
-async function paired(server: FakeServer, a: Awaited<ReturnType<typeof device>>) {
-  const b = await device(server);
+async function paired(
+  server: FakeServer,
+  a: Awaited<ReturnType<typeof device>>,
+  api = server.api(),
+) {
+  const b = await device(server, undefined, api);
   await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
   const started = await a.engine.pairingStart();
   await b.engine.pairingJoin({ code: started.code });
@@ -196,6 +199,80 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
       await code(b.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
     ).toBe('ok');
     // A, which holds the current Secret Key, must open the new server wrap with the new password.
+    a.engine.wipeMemory();
+    server.sessionValid = false;
+    const again = await device(server, a.factory);
+    expect(await code(again.engine.unlock({ password: NEW }))).toBe('ok');
+  });
+
+  // F-4 (fixed, op 12): the change signs the version of the SK its wrap was made with. A rotation
+  // that lands after the client's own check is refused by the server, and nothing retries.
+  it('a rotation between the check and the change is refused, and nothing is retried', async () => {
+    const { server, a } = await account();
+    await a.engine.sync();
+    const api = server.api();
+    const b = await paired(server, a, api);
+    const sent: { keysetVersion: number }[] = [];
+    const finish = api.passwordFinish;
+    api.passwordFinish = (body) => {
+      sent.push(body);
+      return finish(body);
+    };
+    const start = api.passwordStart;
+    api.passwordStart = async (request) => {
+      await a.engine.rotateSecretKey({ password: PASSWORD });
+      return start(request);
+    };
+    const before = server.account?.keys;
+    const NEW = 'synthetic changed passphrase 21c4';
+    expect(
+      await code(b.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
+    ).toBe('changed_elsewhere');
+    // B signed the version it held; the server kept A's rotation, and B's local wrap is unchanged.
+    expect(sent.map((x) => x.keysetVersion)).toEqual([before?.keysetVersion]);
+    expect(server.account?.keys.keysetVersion).toBe((before?.keysetVersion ?? 0) + 1);
+    // The user tries again: B adopts the new SK through the rotation protocol, then succeeds.
+    api.passwordStart = start;
+    expect(
+      await code(b.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
+    ).toBe('ok');
+    expect(sent.map((x) => x.keysetVersion)).toEqual([
+      before?.keysetVersion,
+      (before?.keysetVersion ?? 0) + 1,
+    ]);
+    a.engine.wipeMemory();
+    server.sessionValid = false;
+    const again = await device(server, a.factory);
+    expect(await code(again.engine.unlock({ password: NEW }))).toBe('ok');
+  });
+
+  // F-4: the server applied the change but the answer was lost. The client does not retry with
+  // the material it holds, and the user gets in with the new password.
+  it('a lost answer to a password change is not retried, and the new password unlocks', async () => {
+    const server = new FakeServer();
+    const api = server.api();
+    const { a } = await account(server, api);
+    let calls = 0;
+    let lose = true;
+    const finish = api.passwordFinish;
+    api.passwordFinish = async (body) => {
+      calls += 1;
+      await finish(body);
+      if (lose) throw new NetworkError('offline');
+    };
+    const NEW = 'synthetic changed passphrase 5e90';
+    expect(
+      await code(a.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
+    ).toBe('offline');
+    expect(calls).toBe(1);
+    const applied = server.account?.keys;
+    // Trying again with the old password as the current one fails at step-up; nothing changes.
+    lose = false;
+    expect(
+      await code(a.engine.changePassword({ currentPassword: PASSWORD, newPassword: NEW })),
+    ).not.toBe('ok');
+    expect(calls).toBe(1);
+    expect(server.account?.keys).toEqual(applied);
     a.engine.wipeMemory();
     server.sessionValid = false;
     const again = await device(server, a.factory);

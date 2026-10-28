@@ -25,7 +25,7 @@ import type { Bytes } from '../common/secrets.js';
 /** Sessions, device revocation (device-enrollment §6) and password change (authentication §9). */
 /** Tier 3+ of device-proof.md §7: operations that replace key material prove AK as well. */
 const NEEDS_ACCOUNT_KEY_PROOF: ReadonlySet<ProofOperation> = new Set([
-  'password_change',
+  'password_change_v2',
   'secret_key_rotate',
   'recovery_key_rotate',
 ]);
@@ -207,6 +207,14 @@ export class AccountSecurityService {
   /**
    * authentication.md §9 step 3: the OPAQUE record and the password wrap change together under
    * `row_version`; every other session ends; this one continues.
+   *
+   * Follow-up review F-4: the request names, and both proofs sign, the keyset version whose `SK`
+   * the client says it derived the new wrap with. The update applies only while that is still the
+   * account's version, in the same statement as the `row_version` check, so a client that has not
+   * adopted a replaced `SK` cannot install a wrap under the old one by mistake. The server cannot
+   * open the wrap: a client holding `AK` and a device key can still claim the current version
+   * over a wrap made with an old `SK` (device-proof.md §3). This stops stale writes, not a
+   * malicious device.
    */
   async passwordFinish(
     session: AuthenticatedSession,
@@ -219,18 +227,27 @@ export class AccountSecurityService {
     const wrappedAkPassword = fromBase64url(body.wrappedAkPassword);
     if (!envelopeHeaderOk(wrappedAkPassword, 0x01, { min: 93, max: 93 }, keys.akId))
       throw new ApiException('invalid_request');
-    const nonce = await this.prove(session, 'password_change', body, [
+    const nonce = await this.prove(session, 'password_change_v2', body, [
       fromBase64url(body.registrationRecord),
       { u8: body.kdfProfile },
       fromBase64url(body.saltPw),
       wrappedAkPassword,
       { u64: body.expectedRowVersion },
+      { u32: body.keysetVersion },
     ]);
     const now = new Date();
     await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'password_change', nonce);
+      await this.proofs.consume(tx, session.sessionId, 'password_change_v2', nonce);
+      // A conflict rolls back the whole transaction, the nonce's consumption included. The open
+      // nonce then authorizes only this exact payload, which stays stale: row_version and
+      // keyset_version only grow, and a restore deletes every nonce (device-proof.md §6, §10;
+      // follow-up review S-4, which stays open for the other operations).
       const updated = await tx.accountKeys.updateMany({
-        where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
+        where: {
+          accountId: session.accountId,
+          rowVersion: BigInt(body.expectedRowVersion),
+          keysetVersion: BigInt(body.keysetVersion),
+        },
         data: {
           kdfProfile: body.kdfProfile,
           saltPw: fromBase64url(body.saltPw),

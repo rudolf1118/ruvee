@@ -241,7 +241,7 @@ describe('a pre-D-31 account never acquires a trusted AVPK (real database)', () 
           : await h.post(path, {}, cookie);
       expectError(r, 'device_proof_required');
     }
-    for (const operation of ['password_change', 'secret_key_rotate', 'recovery_key_rotate'])
+    for (const operation of ['password_change_v2', 'secret_key_rotate', 'recovery_key_rotate'])
       expect((await h.post('/api/v1/auth/proof-nonce', { operation }, cookie)).status).not.toBe(
         200,
       );

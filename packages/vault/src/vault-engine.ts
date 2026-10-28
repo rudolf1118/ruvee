@@ -3064,17 +3064,21 @@ export class VaultEngine {
         } finally {
           auk.fill(0);
         }
-        const nonce = await api.proofNonce('password_change');
+        // The version of the `SK` this wrap was made with, signed: the server refuses the change
+        // if the keyset was replaced meanwhile (F-4). Nothing here retries; the user does, and
+        // the next attempt adopts the new `SK` first through the rotation protocol above.
+        const nonce = await api.proofNonce('password_change_v2');
         await api.passwordFinish({
           registrationRecord,
           kdfProfile: 1,
           saltPw: toB64(saltPw),
           wrappedAkPassword: toB64(wrappedAkPassword),
           expectedRowVersion: keys.rowVersion,
+          keysetVersion: enrolled.keysetVersion,
           ...this.signed(
             { accountId: session.device.accountId, deviceId: session.device.deviceId },
             this.deviceKeyOf(session),
-            'password_change',
+            'password_change_v2',
             nonce,
             [
               fromB64(registrationRecord),
@@ -3082,6 +3086,7 @@ export class VaultEngine {
               saltPw,
               wrappedAkPassword,
               { u64: keys.rowVersion },
+              { u32: enrolled.keysetVersion },
             ],
             this.accountProofOf(session),
           ),

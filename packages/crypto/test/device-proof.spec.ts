@@ -66,14 +66,14 @@ describe('signed bytes of device-proof.md §4', () => {
   const binding = fill(32, 0xb1);
   const nonce = fill(32, 0x4e);
   const payload = fill(32, 0x9a);
-  const base = { operation: 'password_change' as const, accountId, binding, nonce, payload };
+  const base = { operation: 'password_change_v2' as const, accountId, binding, nonce, payload };
 
   it('the payload hash is H(domain ‖ u8(op) ‖ LP(f₁) ‖ …), as computed independently', () => {
     const fields = [fill(3, 1), { u8: 1 }, { u32: 7 }, { u64: 9 }, { text: 'lost' }, null];
     const expected = blake2b(
       cat(
         te.encode('ruvee/v1/proof-payload'),
-        [PROOF_OPERATIONS.password_change],
+        [PROOF_OPERATIONS.password_change_v2],
         lp(fill(3, 1)),
         lp(Uint8Array.of(1)),
         lp(Uint8Array.of(0, 0, 0, 7)),
@@ -83,7 +83,7 @@ describe('signed bytes of device-proof.md §4', () => {
       ),
       { dkLen: 32 },
     );
-    expect(crypto.proofPayload('password_change', fields)).toEqual(expected);
+    expect(crypto.proofPayload('password_change_v2', fields)).toEqual(expected);
     // Length prefixes keep field boundaries: ("ab","c") ≠ ("a","bc"); the operation is covered.
     const ab = crypto.proofPayload('device_revoke', [te.encode('ab'), te.encode('c')]);
     expect(ab).not.toEqual(crypto.proofPayload('device_revoke', [te.encode('a'), te.encode('bc')]));
@@ -113,7 +113,7 @@ describe('signed bytes of device-proof.md §4', () => {
     // The signed input is exactly DSI: checked by verifying it as raw Ed25519.
     const dsi = cat(
       te.encode('ruvee/v1/device-proof'),
-      [1, PROOF_OPERATIONS.password_change],
+      [1, PROOF_OPERATIONS.password_change_v2],
       accountId,
       deviceId,
       binding,
@@ -165,6 +165,9 @@ describe('signed bytes of device-proof.md §4', () => {
 
   it('refuses unknown operations and malformed fields', () => {
     expect(() => crypto.proofPayload('delete_everything' as 'login', [])).toThrow();
+    // Op 4, the password change before follow-up review F-4, is retired and signs nothing.
+    expect(() => crypto.proofPayload('password_change' as 'login', [])).toThrow();
+    expect(Object.values(PROOF_OPERATIONS)).not.toContain(4);
     expect(() => crypto.proofPayload('login', [{ u8: 256 }])).toThrow();
     expect(() => crypto.proofPayload('login', [{ u64: -1 }])).toThrow();
     const key = crypto.generateDeviceKey();

@@ -934,14 +934,19 @@ export class FakeServer {
         requireActive();
         const account = this.account;
         if (!account) this.fail(404, 'not_found');
-        await proveOperation('password_change', body, [
+        await proveOperation('password_change_v2', body, [
           raw(body.registrationRecord),
           { u8: body.kdfProfile },
           raw(body.saltPw),
           raw(body.wrappedAkPassword),
           { u64: body.expectedRowVersion },
+          { u32: body.keysetVersion },
         ]);
-        if (body.expectedRowVersion !== this.rowVersion) this.fail(409, 'row_version_conflict');
+        if (
+          body.expectedRowVersion !== this.rowVersion ||
+          body.keysetVersion !== account.keys.keysetVersion
+        )
+          this.fail(409, 'row_version_conflict');
         this.account = {
           ...account,
           keys: { ...account.keys, saltPw: body.saltPw, wrappedAkPassword: body.wrappedAkPassword },

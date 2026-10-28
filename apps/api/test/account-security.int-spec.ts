@@ -114,12 +114,14 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     saltPw: string;
     wrappedAkPassword: string;
     expectedRowVersion: number;
+    keysetVersion: number;
   }): ProofField[] => [
     unb64(b.registrationRecord),
     { u8: b.kdfProfile },
     unb64(b.saltPw),
     unb64(b.wrappedAkPassword),
     { u64: b.expectedRowVersion },
+    { u32: b.keysetVersion },
   ];
 
   /** Makes every session's last OPAQUE authentication older than the 5-minute step-up window. */
@@ -325,18 +327,19 @@ describe('step-up, sessions, revocation and password change (real database)', ()
         }),
       ),
       expectedRowVersion: keys.rowVersion,
+      keysetVersion: keys.keysetVersion,
     };
     const stale = { ...body, expectedRowVersion: keys.rowVersion + 1 };
     expectError(
       await h.post(
         '/api/v1/account/password/finish',
-        await signed('password_change', stale, passwordFields(stale), true),
+        await signed('password_change_v2', stale, passwordFields(stale), true),
         cookieA,
       ),
       'row_version_conflict',
     );
     // Without AK's proof, a wrap cannot be replaced (R2): the device proof alone is refused.
-    const deviceOnly = await signed('password_change', body, passwordFields(body), true);
+    const deviceOnly = await signed('password_change_v2', body, passwordFields(body), true);
     expectError(
       await h.post(
         '/api/v1/account/password/finish',
@@ -349,7 +352,7 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       (
         await h.post(
           '/api/v1/account/password/finish',
-          await signed('password_change', body, passwordFields(body), true),
+          await signed('password_change_v2', body, passwordFields(body), true),
           cookieA,
         )
       ).status,
