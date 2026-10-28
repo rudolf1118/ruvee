@@ -171,6 +171,19 @@ export class RecoveryService {
     const now = new Date();
     const result = await this.prisma.$transaction(async (tx) => {
       await this.proofs.consume(tx, session.sessionId, 'recovery_complete', proof.nonce);
+      // Re-checked under row locks: the session and device were authenticated before this
+      // transaction, and a device revoked (or a recovery ended) since must not be made active
+      // again (follow-up review F-18; as reopening does, R13). Revocation updates the same rows,
+      // so it either committed before these reads or waits for this transaction.
+      const [live] = await tx.$queryRaw<{ id: string }[]>`
+        SELECT id FROM sessions
+        WHERE id = ${session.sessionId}::uuid AND kind = 'recovery' AND revoked_at IS NULL
+          AND absolute_expires_at > now()
+        FOR UPDATE`;
+      if (!live) throw new ApiException('unauthenticated');
+      const [device] = await tx.$queryRaw<{ status: string }[]>`
+        SELECT status::text AS status FROM devices WHERE id = ${session.deviceId}::uuid FOR UPDATE`;
+      if (device?.status === 'revoked') throw new ApiException('device_revoked');
       const updated = await tx.accountKeys.updateMany({
         where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
         data: {

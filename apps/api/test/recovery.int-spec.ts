@@ -11,6 +11,7 @@ import {
 } from '@ruvee/contracts';
 import type request from 'supertest';
 import { ThrottleService } from '../src/auth/throttle.service.js';
+import { ProofService } from '../src/sessions/proof.service.js';
 import { registerAccount, startHarness, type Harness } from './support/api-harness.js';
 import {
   finishLogin,
@@ -231,6 +232,41 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
       ),
       'device_proof_failed',
     );
+    // Follow-up review F-18: the device is revoked after the request was authenticated but before
+    // its transaction. Completion must not make it active again.
+    const [before] = await query<{ status: string }>(
+      h.db.url,
+      'SELECT status::text AS status FROM devices WHERE id = $1',
+      [deviceId],
+    );
+    const proofs = h.app.get(ProofService);
+    const consume = proofs.consume.bind(proofs);
+    vi.spyOn(proofs, 'consume').mockImplementationOnce(async (...args) => {
+      await query(
+        h.db.url,
+        `UPDATE devices SET status = 'revoked', revoked_at = now() WHERE id = $1`,
+        [deviceId],
+      );
+      return consume(...args);
+    });
+    expectError(
+      await h.post('/api/v1/recovery/complete', await complete(body), cookie),
+      'device_revoked',
+    );
+    const [after] = await query<{ status: string }>(
+      h.db.url,
+      'SELECT status::text AS status FROM devices WHERE id = $1',
+      [deviceId],
+    );
+    expect(after?.status).toBe('revoked');
+    vi.restoreAllMocks();
+    // Put it back as it was, and complete for real.
+    await query(
+      h.db.url,
+      `UPDATE devices SET status = $2::device_status, revoked_at = NULL WHERE id = $1`,
+      [deviceId, before?.status],
+    );
+
     const signed = await complete(body);
     const done = await h.post('/api/v1/recovery/complete', signed, cookie);
     expect(done.status, done.text).toBe(200);
