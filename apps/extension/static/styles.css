@@ -12,7 +12,7 @@
   --line-input: #d3cfc5;
   --danger: #b42318;
   --danger-wash: #fdecea;
-  color-scheme: light;
+  color-scheme: light dark;
   font-family:
     system-ui,
     -apple-system,
@@ -20,6 +20,23 @@
     sans-serif;
   font-size: 14px;
   color: var(--ink);
+}
+/* Dark values of the same tokens (docs/brand/tokens.css). */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --brand: #7357ff;
+    --brand-hover: #8a72ff;
+    --brand-wash: #1f1b38;
+    --brand-line: #4a3d8f;
+    --canvas: #16151c;
+    --surface: #1e1d26;
+    --ink: #eceaf2;
+    --ink-muted: #9b99a8;
+    --line: #2f2e39;
+    --line-input: #44434f;
+    --danger: #f97066;
+    --danger-wash: #3a1714;
+  }
 }
 body {
   margin: 0;
@@ -73,6 +90,7 @@ input {
   border: 1px solid var(--line-input);
   border-radius: 7px;
   background: var(--surface);
+  color: var(--ink);
 }
 input:focus-visible,
 button:focus-visible {

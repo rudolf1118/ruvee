@@ -5,8 +5,18 @@
   "description": "Self-hosted password manager. Development build: synthetic data only.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA1eFnQMIM1WezKZQgiv7yud4fefWLZz0WZc5Iv+l3/mxFbZY8RF813pyoQarBGiCGQZxqbDeXhEVf0jvAJ0AkXDtyGEmB8GOYDvDc5i3ve/TQwqBQFpx/nUY0Pd2hlTfSYUMUabDUfWmwXqGf1iQGjS4lTnEXUN8X3N8Zfb8z9iXSNjY8L/DZDr6HyWm7NxJU+jrJwTI2VAnfeoBmFc25dHir9emYlrmM44s7i+buBZPi+E1IWdEpbZjBgwJnncifl/2VZe/Ag6mvq5rkF2ZimQLbfPCCO81T5uPHvcT8XN7g2eztKikaCLDuObq6OKLicGY91X3r35S3QikrkLcrKwIDAQAB",
   "minimum_chrome_version": "120",
+  "icons": {
+    "16": "icons/icon-16.png",
+    "32": "icons/icon-32.png",
+    "48": "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
   "background": { "service_worker": "background.js", "type": "module" },
-  "action": { "default_popup": "popup.html", "default_title": "Ruvee" },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Ruvee",
+    "default_icon": { "16": "icons/icon-16.png", "32": "icons/icon-32.png" }
+  },
   "options_ui": { "page": "options.html", "open_in_tab": true },
   "permissions": ["storage", "activeTab", "scripting", "alarms"],
   "optional_host_permissions": ["https://*/*", "http://127.0.0.1/*", "http://localhost/*"],
