@@ -388,9 +388,15 @@ describe('interrupted imports', () => {
     const file = await source.engine.exportVault({ password: PASSWORD, recoveryKey: kit });
     return { text: file.text, kit, titles };
   }
+  // One synthetic 250-item export for both tests below, built once: it is identical for both and
+  // only read, and building it (250 saves and an export) is most of each test's time.
+  let large: { text: string; kit: string; titles: string[] };
+  beforeAll(async () => {
+    large = await largeExport();
+  });
 
   it('resumes after the connection drops mid-upload and a browser restart, without duplicates', async () => {
-    const { text, kit, titles } = await largeExport();
+    const { text, kit, titles } = large;
     const server = new FakeServer();
     const b = await device(server);
     await setUp(b, 'synthetic-import-interrupted');
@@ -419,7 +425,7 @@ describe('interrupted imports', () => {
   });
 
   it('does not duplicate items when a commit is applied but its response is lost', async () => {
-    const { text, kit, titles } = await largeExport();
+    const { text, kit, titles } = large;
     const server = new FakeServer();
     const b = await device(server);
     await setUp(b, 'synthetic-import-lost-response');
