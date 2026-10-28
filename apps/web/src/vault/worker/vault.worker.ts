@@ -44,6 +44,7 @@ const opaqueClient: OpaqueClient = {
 let engine: Promise<VaultEngine> | undefined;
 
 function getEngine(): Promise<VaultEngine> {
+  // A failed start is not cached: the next request tries again (follow-up review F-5).
   engine ??= (async () => {
     const [crypto] = await Promise.all([initRuveeCrypto(), opaque.ready]);
     const store = await DeviceStore.open();
@@ -59,7 +60,10 @@ function getEngine(): Promise<VaultEngine> {
         self.postMessage(event);
       },
     });
-  })();
+  })().catch((error: unknown) => {
+    engine = undefined;
+    throw error;
+  });
   return engine;
 }
 

@@ -240,6 +240,19 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   await a.getByRole('button', { name: 'Unlock' }).click();
   await expect(a.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
 
+  // ---- A worker that cannot start after a lock is not a new device (follow-up review F-5) ----
+  await contextA.route('**/*', (route) => route.abort());
+  await a.getByRole('button', { name: 'Lock now' }).click();
+  await expect(a.getByRole('heading', { name: "Ruvee couldn't start" })).toBeVisible();
+  await expect(a.getByRole('button', { name: 'Create an account' })).toHaveCount(0);
+  await expectAccessible(a);
+  await contextA.unroute('**/*');
+  await a.getByRole('button', { name: 'Reload' }).click();
+  await expect(a.getByRole('heading', { name: 'Your vault is locked' })).toBeVisible();
+  await a.getByRole('textbox', { name: 'Master password', exact: true }).fill(MASTER);
+  await a.getByRole('button', { name: 'Unlock' }).click();
+  await expect(a.getByText('3 items in all vaults')).toBeVisible({ timeout: 30_000 });
+
   // ---- Two tabs of one browser: one runs the vault at a time (follow-up review F-2) ----
   const a2 = await contextA.newPage();
   await a2.goto('/');

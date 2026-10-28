@@ -37,6 +37,7 @@ const POLL_MS = 60_000;
 type Screen =
   | { name: 'starting' }
   | { name: 'unsupported' }
+  | { name: 'failed' }
   | { name: 'elsewhere'; moved: boolean; waiting: boolean }
   | { name: 'welcome' }
   | { name: 'setup' }
@@ -87,7 +88,9 @@ export function VaultApp() {
         setScreen(screenFor(phase));
       },
       () => {
-        setScreen({ name: 'unsupported' });
+        // The browser supports Ruvee; the worker failed to start (offline, an update). Never
+        // treat that as a new device (follow-up review F-5).
+        setScreen({ name: 'failed' });
       },
     );
   }, [freshClient]);
@@ -129,7 +132,12 @@ export function VaultApp() {
       await clearClipboard();
       await clientRef.current?.lock();
       const c = freshClient();
-      const phase = await c.call('phase').catch(() => ({ phase: 'new' }) as const);
+      // A worker that cannot start says nothing about this device: it is not a new one (F-5).
+      const phase = await c.call('phase').catch(() => undefined);
+      if (phase === undefined) {
+        setScreen({ name: 'failed' });
+        return;
+      }
       setScreen(
         phase.phase === 'enrolled'
           ? { name: 'locked', username, ...(notice ? { notice } : {}) }
@@ -139,6 +147,23 @@ export function VaultApp() {
     [freshClient],
   );
 
+  if (screen.name === 'failed')
+    return (
+      <AuthCard title="Ruvee couldn't start">
+        <p className="text-body text-ink-muted">
+          Nothing on this device was changed, and your vault is still here. This can happen while
+          you are offline or just after an update. Reload the page to try again.
+        </p>
+        <Button
+          className="self-start"
+          onClick={() => {
+            window.location.reload();
+          }}
+        >
+          Reload
+        </Button>
+      </AuthCard>
+    );
   if (screen.name === 'elsewhere')
     return (
       <AuthCard
