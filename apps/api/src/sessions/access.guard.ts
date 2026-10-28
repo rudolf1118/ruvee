@@ -12,7 +12,7 @@ import {
   type AccessLevel,
   type RequestWithSession,
 } from './access.decorator.js';
-import { readCookie } from './client-info.js';
+import { fromTrustedProxy, readCookie } from './client-info.js';
 import { InstanceLockService } from '../database/instance-lock.service.js';
 import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { ROUTE_CLASS_METADATA, type RouteClass } from './route-class.js';
@@ -26,6 +26,7 @@ const PROXY_HINT =
   'every client is limited as the one address of the reverse proxy. Set it to that address (authentication.md §7).';
 const PROXY_UNSET_IN_PRODUCTION = `NODE_ENV is production and TRUSTED_PROXY_ADDRESS is not set: behind a reverse proxy, ${PROXY_HINT}`;
 const FORWARDED_WITHOUT_PROXY = `A request carried X-Forwarded-For, but TRUSTED_PROXY_ADDRESS is not set: ${PROXY_HINT}`;
+const FORWARDED_FROM_OTHER_PEER = `A request carried X-Forwarded-For from a peer that is not TRUSTED_PROXY_ADDRESS (an IPv4 setting while the proxy connects over IPv6, or the reverse): ${PROXY_HINT}`;
 
 /**
  * Global guard. In order: the handler must declare an access level (fail closed); a request
@@ -38,7 +39,7 @@ export class AccessGuard implements CanActivate {
   private readonly publicOrigin: string;
   private readonly extensionOrigins: ReadonlySet<string>;
   private readonly logger = new Logger('ClientAddress');
-  private readonly proxyConfigured: boolean;
+  private readonly trustedProxy: string | undefined;
   private warnedAboutProxy = false;
 
   constructor(
@@ -53,8 +54,8 @@ export class AccessGuard implements CanActivate {
     this.extensionOrigins = new Set(
       (config.get('EXTENSION_ORIGINS', { infer: true }) ?? '').split(',').filter(Boolean),
     );
-    this.proxyConfigured = config.get('TRUSTED_PROXY_ADDRESS', { infer: true }) !== undefined;
-    if (!this.proxyConfigured && config.get('NODE_ENV', { infer: true }) === 'production')
+    this.trustedProxy = config.get('TRUSTED_PROXY_ADDRESS', { infer: true });
+    if (this.trustedProxy === undefined && config.get('NODE_ENV', { infer: true }) === 'production')
       this.logger.warn(PROXY_UNSET_IN_PRODUCTION);
   }
 
@@ -64,10 +65,15 @@ export class AccessGuard implements CanActivate {
    * with no trusted proxy is the sign of that; it is said once, without the header's value.
    */
   private noticeForwarding(req: RequestWithSession): void {
-    if (this.proxyConfigured || this.warnedAboutProxy) return;
+    if (this.warnedAboutProxy) return;
     if (req.headers['x-forwarded-for'] === undefined) return;
+    // With a proxy set, a forwarded header from any other peer means the setting does not match
+    // how the proxy connects (follow-up review F-7); said once, without addresses.
+    if (this.trustedProxy !== undefined && fromTrustedProxy(req, this.trustedProxy)) return;
     this.warnedAboutProxy = true;
-    this.logger.warn(FORWARDED_WITHOUT_PROXY);
+    this.logger.warn(
+      this.trustedProxy === undefined ? FORWARDED_WITHOUT_PROXY : FORWARDED_FROM_OTHER_PEER,
+    );
   }
 
   /** Every authenticated request counts against its session's per-minute limit (review R16). */
