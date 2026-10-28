@@ -62,6 +62,12 @@ async function relay(
   };
 }
 
+/** The check's own bounds: it must notice within one interval plus one query timeout. */
+const CHECK_MS = 500;
+const TIMEOUT_MS = 3_000;
+/** The lock service retries a failed start every 5 s. */
+const RETRY_BOUND_MS = 5_000 + TIMEOUT_MS;
+
 describe('S-1: a silently lost instance-lock connection (real database)', () => {
   let db: TempDatabase;
 
@@ -77,16 +83,20 @@ describe('S-1: a silently lost instance-lock connection (real database)', () => 
     const path = await relay(new URL(db.url));
     const config = {
       get: (key: keyof Env) =>
-        ({ DATABASE_URL: path.url.toString(), READINESS_DB_TIMEOUT_MS: 1_000 })[key as string],
+        ({ DATABASE_URL: path.url.toString(), READINESS_DB_TIMEOUT_MS: TIMEOUT_MS })[key as string],
     } as unknown as ConfigService<Env, true>;
     const lock = new InstanceLockService(config);
-    lock.checkIntervalMs = 500;
+    lock.checkIntervalMs = CHECK_MS;
     try {
       await lock.onApplicationBootstrap();
-      expect(lock.held).toBe(true);
+      // Connecting may need the full timeout on a busy server; the lock is taken by its retry then.
+      await expect.poll(() => lock.held, { timeout: 2 * RETRY_BOUND_MS, interval: 100 }).toBe(true);
       const [holder] = await query<{ pid: number }>(
         db.url,
+        // pg_locks lists every database's locks: only this test's own database (other test
+        // files hold the same key on theirs).
         `SELECT pid FROM pg_locks WHERE locktype = 'advisory' AND granted
+           AND database = (SELECT oid FROM pg_database WHERE datname = current_database())
            AND ((classid::bigint << 32) | objid::bigint) = $1::bigint`,
         [INSTANCE_LOCK_KEY],
       );
@@ -101,7 +111,9 @@ describe('S-1: a silently lost instance-lock connection (real database)', () => 
       );
       expect(other?.ok).toBe(true);
       // This process must notice within its check interval plus the query timeout.
-      await expect.poll(() => lock.held, { timeout: 5_000, interval: 100 }).toBe(false);
+      await expect
+        .poll(() => lock.held, { timeout: CHECK_MS + TIMEOUT_MS + 1_000, interval: 100 })
+        .toBe(false);
     } finally {
       await lock.onApplicationShutdown();
       await path.close();
