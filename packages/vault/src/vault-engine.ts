@@ -1232,7 +1232,8 @@ export class VaultEngine {
   /** The server revoked this device: the client wipes itself (P2-11) and the UI locks. */
   private async revoked(): Promise<never> {
     await this.deps.store.wipe();
-    this.session = undefined;
+    // Zeroes AK, VK and the device key, not only forgets them (follow-up review F-19).
+    this.clearMemory();
     this.deps.emit({ event: 'ended', reason: 'device_revoked' });
     throw new VaultError('device_revoked');
   }
@@ -2312,18 +2313,24 @@ export class VaultEngine {
       } catch {
         throw new VaultError('invalid_recovery_key');
       }
-      const keys = crypto.deriveRecoveryKeys(rk);
-      rk.fill(0);
       // On a device that is already set up, recovery keeps its id (the forgotten-password case).
       const local = await this.deps.store.device();
-      // Reopening with the kit starts this browser from nothing, so it is only for a browser
-      // with no local data: one that has data reopens with its password (§3.13), and keeps it.
-      if (reopening && local) throw new VaultError('local_data_present');
-      // A vault of another account on this browser is never erased without the user's say-so
-      // (review R6): recovery here would replace it, unsynced edits included.
       const sameName = local?.username === username;
-      if (local?.enrolled && !sameName && params.replaceLocalData !== true)
-        throw new VaultError('local_data_other_account');
+      // Refusals come before any key is derived, so none is left behind (follow-up review F-19).
+      try {
+        // Reopening with the kit starts this browser from nothing, so it is only for a browser
+        // with no local data: one that has data reopens with its password (§3.13), and keeps it.
+        if (reopening && local) throw new VaultError('local_data_present');
+        // A vault of another account on this browser is never erased without the user's say-so
+        // (review R6): recovery here would replace it, unsynced edits included.
+        if (local?.enrolled && !sameName && params.replaceLocalData !== true)
+          throw new VaultError('local_data_other_account');
+      } catch (error) {
+        rk.fill(0);
+        throw error;
+      }
+      const keys = crypto.deriveRecoveryKeys(rk);
+      rk.fill(0);
       const deviceId = sameName ? local.deviceId : crypto.generateUuid();
       try {
         const body = {

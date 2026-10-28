@@ -322,4 +322,73 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     expect(enrolling).toHaveLength(1);
     expect(Object.keys(enrolling[0]?.[0].local ?? {}).sort()).toEqual(['checkpoint', 'device-key']);
   });
+
+  // F-19: key copies left behind on two refusal paths.
+  function capturing(wanted: readonly (keyof RuveeCrypto)[]) {
+    const captured: Uint8Array[] = [];
+    // The crypto object is frozen: wrap a copy, whose methods do not use `this`.
+    const copy: Record<string, unknown> = { ...crypto };
+    for (const name of wanted) {
+      const fn = crypto[name] as (...a: unknown[]) => unknown;
+      copy[name] = (...args: unknown[]) => {
+        const out = fn(...args);
+        if (out instanceof Uint8Array) captured.push(out);
+        else if (out && typeof out === 'object')
+          for (const v of Object.values(out)) if (v instanceof Uint8Array) captured.push(v);
+        return out;
+      };
+    }
+    return { proxied: copy as unknown as RuveeCrypto, captured };
+  }
+  const zeroed = (arrays: readonly Uint8Array[]) => arrays.every((a) => a.every((x) => x === 0));
+
+  it('a revoked device zeroes its account key, not only forgets it', async () => {
+    const { server, a } = await account();
+    a.engine.wipeMemory();
+    const { proxied, captured } = capturing(['unwrapAccountKey']);
+    const store = await DeviceStore.open(a.factory);
+    const engine = new VaultEngine({
+      crypto: proxied,
+      api: server.api(),
+      store,
+      opaque: fakeOpaque,
+      origin: 'http://127.0.0.1:3101',
+      platform: 'web',
+      now: () => Date.now(),
+      emit: () => undefined,
+    });
+    const phase = await engine.phase();
+    await engine.unlock({ password: PASSWORD });
+    expect(captured.length).toBeGreaterThan(0);
+    if (phase.phase !== 'enrolled') throw new Error('not enrolled');
+    server.devices.set(phase.deviceId, 'revoked');
+    expect(await code(engine.sync())).toBe('device_revoked');
+    expect(zeroed(captured)).toBe(true);
+  });
+
+  it('a recovery refused before it starts leaves no recovery keys behind', async () => {
+    const { server, a } = await account();
+    const { proxied, captured } = capturing(['deriveRecoveryKeys']);
+    const engine = new VaultEngine({
+      crypto: proxied,
+      api: server.api(),
+      store: a.store,
+      opaque: fakeOpaque,
+      origin: 'http://127.0.0.1:3101',
+      platform: 'web',
+      now: () => Date.now(),
+      emit: () => undefined,
+    });
+    const kit = crypto.formatRecoveryKey(crypto.generateRecoveryKey().recoveryKey);
+    expect(
+      await code(
+        engine.recoveryBegin({
+          username: 'synthetic-user',
+          recoveryKey: kit,
+          reopenCode: 'X'.repeat(43),
+        }),
+      ),
+    ).toBe('local_data_present');
+    expect(zeroed(captured)).toBe(true);
+  });
 });
