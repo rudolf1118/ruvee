@@ -706,7 +706,6 @@ export class VaultEngine {
           vkId: setup.vaultKeyId,
         },
       };
-      await this.deps.store.putDevice(device);
       this.session = this.newSession(device, setup.accountKey, setup.vaultKey, {
         vaultId: setup.vaultId,
         seq: 0,
@@ -714,9 +713,9 @@ export class VaultEngine {
         keysetVersion: 1,
       });
       this.setup = undefined;
-      await this.storeDeviceKey(this.session, deviceKey);
+      // The device record, its key and its checkpoint in one transaction (follow-up review F-14).
+      await this.enroll(this.session, device, deviceKey, { checkpoint: true });
       deviceKey.secretKey.fill(0);
-      await this.persistLocal({ checkpoint: true });
       await this.syncNow();
       return this.unlockedView();
     });
@@ -1324,17 +1323,34 @@ export class VaultEngine {
     return { publicKey: fromB64(parsed.publicKey), secretKey: fromB64(parsed.secretKey) };
   }
 
+  private deviceKeyEnvelope(session: Session, key: DeviceKeyPair): Uint8Array {
+    return this.sealLocal(session, 'device-key', {
+      v: 1,
+      publicKey: toB64(key.publicKey),
+      secretKey: toB64(key.secretKey),
+    });
+  }
+
+  /**
+   * Stores an enrolled device in one transaction: its record, its sealed device key and the named
+   * local state (follow-up review F-14), then keeps the key for this unlocked session.
+   */
+  private async enroll(
+    session: Session,
+    device: DeviceRecord,
+    key: DeviceKeyPair,
+    parts: { checkpoint?: boolean; anchor?: boolean },
+  ): Promise<void> {
+    await this.deps.store.apply({
+      device,
+      local: { ...this.localEnvelopes(parts), 'device-key': this.deviceKeyEnvelope(session, key) },
+    });
+    session.deviceKey = { publicKey: key.publicKey.slice(), secretKey: key.secretKey.slice() };
+  }
+
   /** Seals the device key under `K_local` and keeps it for this unlocked session. */
   private async storeDeviceKey(session: Session, key: DeviceKeyPair): Promise<void> {
-    await this.deps.store.apply({
-      local: {
-        'device-key': this.sealLocal(session, 'device-key', {
-          v: 1,
-          publicKey: toB64(key.publicKey),
-          secretKey: toB64(key.secretKey),
-        }),
-      },
-    });
+    await this.deps.store.apply({ local: { 'device-key': this.deviceKeyEnvelope(session, key) } });
     session.deviceKey = { publicKey: key.publicKey.slice(), secretKey: key.secretKey.slice() };
   }
 
@@ -1532,6 +1548,16 @@ export class VaultEngine {
     conflicts?: boolean;
     anchor?: boolean;
   }) {
+    await this.deps.store.apply({ local: this.localEnvelopes(parts) });
+  }
+
+  /** The sealed `LOCAL_RECORD`s for the named parts of this session's state. */
+  private localEnvelopes(parts: {
+    checkpoint?: boolean;
+    pending?: boolean;
+    conflicts?: boolean;
+    anchor?: boolean;
+  }): Record<string, Uint8Array | null> {
     const session = this.requireSession();
     const local: Record<string, Uint8Array | null> = {};
     if (parts.anchor)
@@ -1557,7 +1583,7 @@ export class VaultEngine {
           localRecord: c.localRecord === null ? null : toB64(c.localRecord),
         })),
       );
-    await this.deps.store.apply({ local });
+    return local;
   }
 
   private pendingJson(session: Session) {
@@ -2237,7 +2263,6 @@ export class VaultEngine {
           vkId: vault.vkId,
         },
       };
-      await this.deps.store.putDevice(enrolledDevice);
       // The checkpoint from A lets this device detect rollback from its first sync (step 10).
       // It has no records yet, so it pulls from genesis and the chain must pass through A's
       // checkpoint (an anchor) instead of starting there.
@@ -2251,9 +2276,13 @@ export class VaultEngine {
         seq: payload.checkpoint.seq,
         manifestHash: payload.checkpoint.manifestHash,
       };
-      await this.persistLocal({ checkpoint: true, anchor: true });
-      // Only now can this device seal its key: it holds AK.
-      await this.storeDeviceKey(this.session, join.deviceKey);
+      // Only now can this device seal its key: it holds AK. The active device record, its
+      // checkpoint, anchor and key are stored in one transaction, so an interruption never leaves
+      // an active device without its rollback floor or its key (follow-up review F-14).
+      await this.enroll(this.session, enrolledDevice, join.deviceKey, {
+        checkpoint: true,
+        anchor: true,
+      });
       await api.pairingComplete(pairingId).catch(() => undefined);
       this.dropJoining();
       this.pendingPassword = undefined;
@@ -2695,7 +2724,6 @@ export class VaultEngine {
       };
       // Anything this browser held before is replaced; it has no trusted checkpoint now.
       await this.deps.store.wipe();
-      await this.deps.store.putDevice(device);
       this.session = this.newSession(device, r.accountKey, r.vaultKey, {
         vaultId: r.vaultId,
         seq: 0,
@@ -2704,7 +2732,7 @@ export class VaultEngine {
       });
       this.recovery = undefined;
       this.pendingPassword = undefined;
-      await this.storeDeviceKey(this.session, deviceKey);
+      await this.enroll(this.session, device, deviceKey, {});
       deviceKey.secretKey.fill(0);
       // This device ran the recovery, so it does not warn about it. (Assumes the device clock is
       // not minutes behind the server's, which recorded the start before this finish.)
@@ -2755,16 +2783,16 @@ export class VaultEngine {
       },
     };
     const checkpoint = await this.loadCheckpoint(device, r.accountKey, device.enrolled);
-    await this.deps.store.putDevice(device);
     this.session = this.newSession(device, r.accountKey, r.vaultKey, {
       ...checkpoint,
       keysetVersion: Math.max(checkpoint.keysetVersion, r.keysetVersion),
     });
-    await this.loadLocalState();
     const session = this.session;
-    // The recovered device's new key replaces any it had (device-proof.md §8, §9).
-    await this.storeDeviceKey(session, deviceKey);
+    // The recovered device's new key replaces any it had (device-proof.md §8, §9), stored with
+    // the device record's new wraps in one transaction (F-14).
+    await this.enroll(session, device, deviceKey, {});
     deviceKey.secretKey.fill(0);
+    await this.loadLocalState();
     this.recovery = undefined;
     this.pendingPassword = undefined;
     session.recoveryAcknowledgedMs = this.deps.now();

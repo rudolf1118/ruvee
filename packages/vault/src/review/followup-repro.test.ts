@@ -278,4 +278,48 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     api.rotateSecretKey = real;
     expect(await code(a.engine.rotateSecretKey({ password: PASSWORD }))).toBe('ok');
   });
+
+  // F-14: enrollment used to be stored in several transactions (device, then checkpoint and
+  // anchor, then key); an interruption could leave an active device without its floor or key.
+  it('a paired device is stored active together with its key, checkpoint and anchor', async () => {
+    const { server, a } = await account();
+    await a.engine.sync();
+    const b = await device(server);
+    const applied = vi.spyOn(b.store, 'apply');
+    const putDevice = vi.spyOn(b.store, 'putDevice');
+    await b.engine.login({ username: 'synthetic-user', password: PASSWORD });
+    const started = await a.engine.pairingStart();
+    await b.engine.pairingJoin({ code: started.code });
+    await a.engine.pairingStatus({ pairingId: started.pairingId });
+    await b.engine.pairingWait();
+    await a.engine.pairingApprove({ pairingId: started.pairingId });
+    await b.engine.pairingWait();
+    // No write made the device active on its own.
+    expect(putDevice.mock.calls.filter(([d]) => d.status === 'active')).toEqual([]);
+    const enrolling = applied.mock.calls.filter(([c]) => c.device?.status === 'active');
+    expect(enrolling).toHaveLength(1);
+    expect(Object.keys(enrolling[0]?.[0].local ?? {}).sort()).toEqual([
+      'anchor',
+      'checkpoint',
+      'device-key',
+    ]);
+  });
+
+  it('a new account is stored active together with its key and checkpoint', async () => {
+    const server = new FakeServer();
+    const a = await device(server);
+    const applied = vi.spyOn(a.store, 'apply');
+    const putDevice = vi.spyOn(a.store, 'putDevice');
+    const kit = await a.engine.setupBegin({
+      bootstrapToken: 'T'.repeat(43),
+      username: 'Synthetic-User',
+      password: PASSWORD,
+    });
+    await a.engine.setupVerifyKit({ recoveryKey: kit.recoveryKey });
+    await a.engine.setupFinish();
+    expect(putDevice.mock.calls.filter(([d]) => d.status === 'active')).toEqual([]);
+    const enrolling = applied.mock.calls.filter(([c]) => c.device?.status === 'active');
+    expect(enrolling).toHaveLength(1);
+    expect(Object.keys(enrolling[0]?.[0].local ?? {}).sort()).toEqual(['checkpoint', 'device-key']);
+  });
 });
