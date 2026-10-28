@@ -82,25 +82,67 @@ async function paired(server: FakeServer, a: Awaited<ReturnType<typeof device>>)
 }
 
 describe('FOLLOW-UP reproductions (client engine)', () => {
-  // F-2: two engines on one IndexedDB each write their own memory. The engine stays single-writer
-  // by design; the web app now lets one tab per browser run it (apps/web/src/vault/tab-lock.ts,
-  // e2e-vault two-devices.spec.ts). This stays `fails` to record that the engine itself does not
-  // merge; the extension runs one engine in its service worker.
-  it.fails('two engines on one store keep both tabs’ unsynced edits', async () => {
+  // F-2 (fixed): two engines on one IndexedDB each wrote their whole state from memory, so the
+  // second one silently erased the first one's unsynced edits. The engine that loads state last
+  // now claims the store; the other one's writes are refused and it locks (store.ts).
+  it('an edit the first engine saved before a second one opened survives', async () => {
+    const { server, a } = await account();
+    await a.engine.sync();
+    server.offline = true;
+    await a.engine.save({ draft: note('Saved in tab 1') });
+    await a.engine.idle();
+    const tab2 = await device(server, a.factory);
+    const opened = await tab2.engine.unlock({ password: PASSWORD });
+    expect(opened.items.map((i) => i.title)).toContain('Saved in tab 1');
+    await tab2.engine.save({ draft: note('Saved in tab 2') });
+    await tab2.engine.idle();
+    tab2.engine.wipeMemory();
+    const reopened = await device(server, a.factory);
+    const view = await reopened.engine.unlock({ password: PASSWORD });
+    expect(view.items.map((i) => i.title).sort()).toEqual(['Saved in tab 1', 'Saved in tab 2']);
+  });
+
+  it('two engines on one store never drop an edit they reported as saved', async () => {
     const { server, a } = await account();
     await a.engine.sync();
     const tab2 = await device(server, a.factory);
     await tab2.engine.unlock({ password: PASSWORD });
     server.offline = true;
-    await a.engine.save({ draft: note('Saved in tab 1') });
-    await a.engine.idle();
-    await tab2.engine.save({ draft: note('Saved in tab 2') });
+    // The first engine loaded earlier: its save is refused and reported, and it locks.
+    expect(await code(a.engine.save({ draft: note('Saved in tab 1') }))).toBe('open_elsewhere');
+    expect(await code(a.engine.save({ draft: note('Again in tab 1') }))).toBe('locked');
+    expect(await code(tab2.engine.save({ draft: note('Saved in tab 2') }))).toBe('ok');
     await tab2.engine.idle();
-    a.engine.wipeMemory();
     tab2.engine.wipeMemory();
     const reopened = await device(server, a.factory);
     const view = await reopened.engine.unlock({ password: PASSWORD });
-    expect(view.items.map((i) => i.title).sort()).toEqual(['Saved in tab 1', 'Saved in tab 2']);
+    expect(view.items.map((i) => i.title)).toEqual(['Saved in tab 2']);
+  });
+
+  it('the engine that loses the store emits open_elsewhere and keeps no keys', async () => {
+    const { server, a } = await account();
+    const events: unknown[] = [];
+    const tab1 = await device(server, a.factory);
+    // A second engine whose events we can see.
+    const store = tab1.store;
+    const engine = new VaultEngine({
+      crypto,
+      api: server.api(),
+      store,
+      opaque: fakeOpaque,
+      origin: 'http://127.0.0.1:3101',
+      platform: 'web',
+      now: () => Date.now(),
+      emit: (event) => events.push(event),
+    });
+    a.engine.wipeMemory();
+    await engine.unlock({ password: PASSWORD });
+    const tab2 = await device(server, a.factory);
+    await tab2.engine.unlock({ password: PASSWORD });
+    server.offline = true;
+    expect(await code(engine.save({ draft: note('Too late') }))).toBe('open_elsewhere');
+    expect(events).toContainEqual({ event: 'ended', reason: 'open_elsewhere' });
+    expect(() => engine.items()).toThrow();
   });
 
   // F-3 (fixed): an offline edit of an item in "deleted here, edited elsewhere" conflict, then "mine".

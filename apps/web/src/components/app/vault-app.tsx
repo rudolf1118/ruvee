@@ -353,7 +353,9 @@ function UnlockedApp({
           onLockRef.current(
             event.reason === 'device_revoked'
               ? 'This device was removed from your account, and its local copy was erased.'
-              : 'Your session ended. Unlock to sign in again.',
+              : event.reason === 'open_elsewhere'
+                ? 'Ruvee was opened elsewhere in this browser, so this copy locked. Unlock to continue here.'
+                : 'Your session ended. Unlock to sign in again.',
           );
       }),
     [client],

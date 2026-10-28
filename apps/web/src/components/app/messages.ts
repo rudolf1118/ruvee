@@ -51,6 +51,8 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return "That username and Recovery Key don't work together. Check both and try again.";
     case 'cannot_revoke_current':
       return "You can't remove the device you are using. Log out on it instead.";
+    case 'open_elsewhere':
+      return 'Ruvee was opened elsewhere in this browser, so this copy locked. Unlock to continue here.';
     case 'changed_elsewhere':
       return 'Your account changed on another device in the meantime. Nothing was changed here. Try again.';
     case 'previous_password_required':

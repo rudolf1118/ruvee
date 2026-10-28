@@ -8,6 +8,12 @@
  * - `local`: `LOCAL_RECORD` envelopes (checkpoint, pending queue, conflict drafts, import state)
  * - `imports`: item records of an import, already encrypted under this vault's keys, waiting to
  *   be uploaded (backup-restore.md §4.4a)
+ *
+ * One engine writes at a time (follow-up review F-2). An engine writes whole lists from its
+ * memory, so a second engine on the same database would overwrite what the first wrote since it
+ * loaded. The engine that loads state last claims the store (`claim`); from then on every write
+ * of an engine that loaded earlier is refused with `StoreTakenError`, in the same transaction, and
+ * that engine locks instead of overwriting.
  */
 
 const DB_NAME = 'ruvee';
@@ -57,6 +63,16 @@ export interface StoredManifest {
   readonly envelope: Uint8Array;
 }
 
+const WRITER = 'writer';
+
+/** Another engine claimed this device store after this one loaded its state (F-2). */
+export class StoreTakenError extends Error {
+  constructor() {
+    super('Another engine claimed the device store.');
+    this.name = 'StoreTakenError';
+  }
+}
+
 function promised<T>(req: IDBRequest<T>): Promise<T> {
   return new Promise((resolve, reject) => {
     req.onsuccess = () => {
@@ -80,6 +96,9 @@ function done(tx: IDBTransaction): Promise<void> {
 }
 
 export class DeviceStore {
+  /** This connection's claim, once it claimed the store or first wrote to it. */
+  private writer: string | undefined;
+
   private constructor(private readonly db: IDBDatabase) {}
 
   static async open(factory: IDBFactory = indexedDB): Promise<DeviceStore> {
@@ -105,14 +124,55 @@ export class DeviceStore {
     return this.db.transaction(name, mode).objectStore(name);
   }
 
+  /**
+   * Makes this connection the only writer from now on. Called when an engine loads the stored
+   * state into memory: any engine that loaded earlier can no longer write.
+   */
+  async claim(): Promise<void> {
+    const id = crypto.randomUUID();
+    const tx = this.db.transaction('meta', 'readwrite');
+    tx.objectStore('meta').put(id, WRITER);
+    await done(tx);
+    this.writer = id;
+  }
+
+  /**
+   * One read-write transaction that first checks the claim. A connection that never claimed
+   * claims on its first write (a new device: nothing loaded that could be stale); one whose claim
+   * was taken over is refused, and nothing in the transaction is written.
+   */
+  private async write(names: readonly StoreName[], fill: (tx: IDBTransaction) => void) {
+    const tx = this.db.transaction([...new Set<StoreName>([...names, 'meta'])], 'readwrite');
+    const finished = done(tx);
+    let taken = false;
+    const check = tx.objectStore('meta').get(WRITER);
+    check.onsuccess = () => {
+      const current = check.result as string | undefined;
+      if (this.writer !== undefined && current !== undefined && current !== this.writer) {
+        taken = true;
+        tx.abort();
+        return;
+      }
+      this.writer ??= crypto.randomUUID();
+      if (current !== this.writer) tx.objectStore('meta').put(this.writer, WRITER);
+      fill(tx);
+    };
+    try {
+      await finished;
+    } catch (error) {
+      if (taken) throw new StoreTakenError();
+      throw error;
+    }
+  }
+
   async device(): Promise<DeviceRecord | undefined> {
     return (await promised(this.store('device').get('self'))) as DeviceRecord | undefined;
   }
 
   async putDevice(device: DeviceRecord): Promise<void> {
-    const tx = this.db.transaction('device', 'readwrite');
-    tx.objectStore('device').put(device, 'self');
-    await done(tx);
+    await this.write(['device'], (tx) => {
+      tx.objectStore('device').put(device, 'self');
+    });
   }
 
   async records(): Promise<StoredRecord[]> {
@@ -147,23 +207,29 @@ export class DeviceStore {
     local?: Readonly<Record<string, Uint8Array | null>>;
     imports?: { readonly put?: readonly QueuedImport[]; readonly remove?: readonly number[] };
   }): Promise<void> {
-    const tx = this.db.transaction(STORES, 'readwrite');
-    if (change.device) tx.objectStore('device').put(change.device, 'self');
-    for (const record of change.records ?? []) tx.objectStore('records').put(record);
-    if (change.manifest) tx.objectStore('meta').put(change.manifest, 'manifest');
-    for (const row of change.imports?.put ?? []) tx.objectStore('imports').put(row);
-    for (const order of change.imports?.remove ?? []) tx.objectStore('imports').delete(order);
-    for (const [name, envelope] of Object.entries(change.local ?? {})) {
-      if (envelope === null) tx.objectStore('local').delete(name);
-      else tx.objectStore('local').put(envelope, name);
-    }
-    await done(tx);
+    await this.write(STORES, (tx) => {
+      if (change.device) tx.objectStore('device').put(change.device, 'self');
+      for (const record of change.records ?? []) tx.objectStore('records').put(record);
+      if (change.manifest) tx.objectStore('meta').put(change.manifest, 'manifest');
+      for (const row of change.imports?.put ?? []) tx.objectStore('imports').put(row);
+      for (const order of change.imports?.remove ?? []) tx.objectStore('imports').delete(order);
+      for (const [name, envelope] of Object.entries(change.local ?? {})) {
+        if (envelope === null) tx.objectStore('local').delete(name);
+        else tx.objectStore('local').put(envelope, name);
+      }
+    });
   }
 
-  /** Removes everything this device holds: used when the server says the device was revoked. */
+  /**
+   * Removes everything this device holds: used when the server says the device was revoked, and
+   * by start-over. Never refused: it destroys rather than overwrites, and the caller keeps (or
+   * takes) the claim, so it can set the device up again.
+   */
   async wipe(): Promise<void> {
     const tx = this.db.transaction(STORES, 'readwrite');
     for (const name of STORES) tx.objectStore(name).clear();
+    this.writer ??= crypto.randomUUID();
+    tx.objectStore('meta').put(this.writer, WRITER);
     await done(tx);
   }
 }

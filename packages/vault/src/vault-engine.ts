@@ -44,7 +44,13 @@ import type {
 } from './protocol.js';
 import { ApiError, NetworkError, type Api } from './api.js';
 import { fromB64, fromUtf8, toB64, utf8 } from './bytes.js';
-import type { DeviceRecord, DeviceStore, EnrolledKeys, QueuedImport } from './store.js';
+import {
+  StoreTakenError,
+  type DeviceRecord,
+  type DeviceStore,
+  type EnrolledKeys,
+  type QueuedImport,
+} from './store.js';
 import { buildExport, openExport, type OpenedExport } from './export-file.js';
 import { VaultError } from './vault-error.js';
 
@@ -410,7 +416,17 @@ export class VaultEngine {
       const generation = this.generation;
       this.running = generation;
       try {
-        const result = await task();
+        let result: T;
+        try {
+          result = await task();
+        } catch (error) {
+          // Another engine loaded this device's state after us (another tab, F-2): our memory is
+          // stale, and writing it would erase that engine's changes. Lock instead.
+          if (!(error instanceof StoreTakenError)) throw error;
+          this.wipeMemory();
+          this.deps.emit({ event: 'ended', reason: 'open_elsewhere' });
+          throw new VaultError('open_elsewhere');
+        }
         // Locked while it ran: nothing it unlocked or derived may outlive the lock (R19).
         if (this.generation !== generation) {
           this.clearMemory();
@@ -1442,6 +1458,9 @@ export class VaultEngine {
   private async loadLocalState(): Promise<void> {
     const session = this.requireSession();
     const { store } = this.deps;
+    // From here on, an engine that loaded earlier cannot write (F-2). Optional for a store
+    // implementation without claims (the mobile app's own store has one engine per process).
+    if ('claim' in store && typeof store.claim === 'function') await store.claim();
     for (const row of await store.records())
       session.synced.set(row.itemId, { revision: row.revision, record: row.record });
     const open = (name: string, envelope: Uint8Array | undefined) =>

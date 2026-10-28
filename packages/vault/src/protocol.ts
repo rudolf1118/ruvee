@@ -176,6 +176,8 @@ export type VaultErrorCode =
   | 'recovery_failed'
   | 'cannot_revoke_current'
   | 'changed_elsewhere'
+  /** Another tab or engine took over this device's vault; this one locked (F-2). */
+  | 'open_elsewhere'
   | 'previous_password_required'
   | 'invalid_export'
   | 'unsynced_changes'
@@ -417,4 +419,7 @@ export type VaultEvent =
   | { readonly event: 'sync'; readonly status: SyncStatus }
   | { readonly event: 'items'; readonly items: readonly ItemSummary[] }
   /** The session ended or the device was revoked: the UI must lock (INV-15). */
-  | { readonly event: 'ended'; readonly reason: 'session_expired' | 'device_revoked' };
+  | {
+      readonly event: 'ended';
+      readonly reason: 'session_expired' | 'device_revoked' | 'open_elsewhere';
+    };
