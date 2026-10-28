@@ -144,12 +144,13 @@ export class DeviceStore {
   private async write(names: readonly StoreName[], fill: (tx: IDBTransaction) => void) {
     const tx = this.db.transaction([...new Set<StoreName>([...names, 'meta'])], 'readwrite');
     const finished = done(tx);
-    let taken = false;
+    // Set inside the request callback, which the compiler cannot follow.
+    const outcome = { taken: false };
     const check = tx.objectStore('meta').get(WRITER);
     check.onsuccess = () => {
       const current = check.result as string | undefined;
       if (this.writer !== undefined && current !== undefined && current !== this.writer) {
-        taken = true;
+        outcome.taken = true;
         tx.abort();
         return;
       }
@@ -160,7 +161,7 @@ export class DeviceStore {
     try {
       await finished;
     } catch (error) {
-      if (taken) throw new StoreTakenError();
+      if (outcome.taken) throw new StoreTakenError();
       throw error;
     }
   }
