@@ -329,9 +329,9 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     // The crypto object is frozen: wrap a copy, whose methods do not use `this`.
     const copy: Record<string, unknown> = { ...crypto };
     for (const name of wanted) {
-      const fn = crypto[name] as (...a: unknown[]) => unknown;
+      const fn = Reflect.get(crypto, name) as (...a: unknown[]) => unknown;
       copy[name] = (...args: unknown[]) => {
-        const out = fn(...args);
+        const out = Reflect.apply(fn, crypto, args);
         if (out instanceof Uint8Array) captured.push(out);
         else if (out && typeof out === 'object')
           for (const v of Object.values(out)) if (v instanceof Uint8Array) captured.push(v);
