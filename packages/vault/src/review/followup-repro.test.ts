@@ -272,7 +272,8 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     const api = server.api();
     const { a } = await account(server, api);
     const real = api.rotateSecretKey;
-    api.rotateSecretKey = () => Promise.reject(new ApiError(401, 'device_proof_failed'));
+    api.rotateSecretKey = () =>
+      Promise.reject(new ApiError(401, 'device_proof_failed', undefined, undefined));
     expect(await code(a.engine.rotateSecretKey({ password: PASSWORD }))).toBe('proof_rejected');
     api.rotateSecretKey = real;
     expect(await code(a.engine.rotateSecretKey({ password: PASSWORD }))).toBe('ok');
