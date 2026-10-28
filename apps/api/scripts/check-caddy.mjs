@@ -50,6 +50,17 @@ const check = (ok, label) => {
   }
 };
 const docker = (args) => spawnSync('docker', args, { encoding: 'utf8' });
+// Linux (CI) has no host.docker.internal and the API listens on loopback only: there Caddy shares
+// the host's network and listens on the site port itself. Docker Desktop reaches the host through
+// host.docker.internal and publishes the container's port instead.
+const hostNetwork = process.platform === 'linux';
+const network = hostNetwork
+  ? { run: ['--network', 'host'], site: `http://127.0.0.1:${String(sitePort)}`, api: '127.0.0.1' }
+  : {
+      run: ['-p', `127.0.0.1:${String(sitePort)}:8080`],
+      site: ':8080',
+      api: 'host.docker.internal',
+    };
 const caddyArgs = (name, webRoot, extra = []) => [
   'run',
   '--rm',
@@ -63,9 +74,9 @@ const caddyArgs = (name, webRoot, extra = []) => [
   '-e',
   'RUVEE_WEB_ROOT=/srv/web',
   '-e',
-  'RUVEE_SITE_ADDRESS=:8080',
+  `RUVEE_SITE_ADDRESS=${network.site}`,
   '-e',
-  `RUVEE_API_UPSTREAM=host.docker.internal:${String(apiPort)}`,
+  `RUVEE_API_UPSTREAM=${network.api}:${String(apiPort)}`,
   image,
 ];
 
@@ -146,9 +157,7 @@ try {
   await db.end();
 
   // ---- Caddy in front of it ----
-  const started = docker([
-    ...caddyArgs(caddyName, web, ['-d', '-p', `127.0.0.1:${String(sitePort)}:8080`]),
-  ]);
+  const started = docker([...caddyArgs(caddyName, web, ['-d', ...network.run])]);
   check(started.status === 0, 'Caddy starts with the generated snippet');
   const base = `http://127.0.0.1:${String(sitePort)}`;
   let ready = false;
