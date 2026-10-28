@@ -37,6 +37,37 @@ function flip(bytes: Uint8Array, index: number, mask = 0x01): Uint8Array {
   return c;
 }
 
+/**
+ * One-symbol typos of a code body (Recovery Key or pairing code): every one of the 31
+ * substitutions at each position, counting those `parse` rejects with `code`.
+ */
+function typosCaught(
+  parse: (text: string) => unknown,
+  prefix: string,
+  body: string,
+  positions: readonly number[],
+  code: CryptoErrorCode,
+): { caught: number; tried: number } {
+  const symbols = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+  let caught = 0;
+  let tried = 0;
+  for (const i of positions)
+    for (let shift = 1; shift < 32; shift++) {
+      const replacement = symbols[(symbols.indexOf(body[i] ?? '0') + shift) % 32] ?? '0';
+      tried++;
+      try {
+        parse(`${prefix}${body.slice(0, i)}${replacement}${body.slice(i + 1)}`);
+      } catch (e) {
+        if (e instanceof RuveeCryptoError && e.code === code) caught++;
+      }
+    }
+  return { caught, tried };
+}
+
+/** The body positions of a 29-symbol code: all, and the last three (check and padding bits only). */
+const ALL_POSITIONS = Array.from({ length: 29 }, (_, i) => i);
+const CHECK_POSITIONS = [26, 27, 28];
+
 const te = new TextEncoder();
 const td = new TextDecoder();
 
@@ -110,30 +141,14 @@ export const VAULT_CHECKS: readonly PortableCheck[] = [
       // slips through with probability 2^-16; one in the last three symbols, which hold only
       // check and padding bits, never does. Checked on this random key for those three, and for
       // every substitution on a fixed key whose 899 are all caught.
-      const symbols = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-      const caughtAt = (text: string, positions: readonly number[]) => {
-        let caught = 0;
-        let tried = 0;
-        for (const i of positions)
-          for (let shift = 1; shift < 32; shift++) {
-            const replacement = symbols[(symbols.indexOf(text[i] ?? '0') + shift) % 32] ?? '0';
-            tried++;
-            try {
-              crypto.parseRecoveryKey(`RK1${text.slice(0, i)}${replacement}${text.slice(i + 1)}`);
-            } catch (e) {
-              if (e instanceof RuveeCryptoError && e.code === 'invalid_recovery_key') caught++;
-            }
-          }
-        return { caught, tried };
-      };
-      const tail = caughtAt(body, [body.length - 3, body.length - 2, body.length - 1]);
+      const parse = (t: string) => crypto.parseRecoveryKey(t);
+      const tail = typosCaught(parse, 'RK1', body, CHECK_POSITIONS, 'invalid_recovery_key');
       assert(tail.caught === tail.tried, `check-symbol typos caught ${tail.caught}/${tail.tried}`);
-      const fixedKey = Uint8Array.from({ length: 16 }, (_, i) => i);
-      const fixed = crypto.formatRecoveryKey(fixedKey).slice(4).replace(/-/g, '');
-      const all = caughtAt(
-        fixed,
-        Array.from({ length: fixed.length }, (_, i) => i),
-      );
+      const fixed = crypto
+        .formatRecoveryKey(Uint8Array.from({ length: 16 }, (_, i) => i))
+        .slice(4)
+        .replace(/-/g, '');
+      const all = typosCaught(parse, 'RK1', fixed, ALL_POSITIONS, 'invalid_recovery_key');
       assert(all.caught === all.tried, `fixed-key typos caught ${all.caught}/${all.tried}`);
       for (const bad of [
         '',
@@ -404,11 +419,18 @@ export const PAIRING_CHECKS: readonly PortableCheck[] = [
       assert(/^PC1(-[0-9A-HJKMNP-TV-Z]{5}){5}-[0-9A-HJKMNP-TV-Z]{4}$/.test(code), code);
       assert(same(crypto.parsePairingCode(code.toLowerCase()), secret), 'round trip');
       const body = code.slice(4).replace(/-/g, '');
-      const symbols = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-      for (let i = 0; i < body.length; i++) {
-        const typo = `PC1${body.slice(0, i)}${symbols[(symbols.indexOf(body[i] ?? '0') + 7) % 32] ?? '0'}${body.slice(i + 1)}`;
-        expectCode(() => crypto.parsePairingCode(typo), 'invalid_pairing_code', `typo at ${i}`);
-      }
+      // As for the Recovery Key (device-enrollment.md §3.1: 2 bytes of a hash): typos in the last
+      // three symbols are always caught; elsewhere 2^-16 slip through, so the full sweep uses a
+      // fixed secret whose 899 substitutions are all caught.
+      const parse = (t: string) => crypto.parsePairingCode(t);
+      const tail = typosCaught(parse, 'PC1', body, CHECK_POSITIONS, 'invalid_pairing_code');
+      assert(tail.caught === tail.tried, `check-symbol typos caught ${tail.caught}/${tail.tried}`);
+      const fixed = crypto
+        .formatPairingCode(Uint8Array.from({ length: 16 }, (_, i) => i))
+        .slice(4)
+        .replace(/-/g, '');
+      const all = typosCaught(parse, 'PC1', fixed, ALL_POSITIONS, 'invalid_pairing_code');
+      assert(all.caught === all.tried, `fixed-secret typos caught ${all.caught}/${all.tried}`);
       expectCode(
         () => crypto.parsePairingCode(`RK1${body}`),
         'invalid_pairing_code',
