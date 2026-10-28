@@ -42,6 +42,7 @@ import {
   restoredObjectProblems,
   retireLoader,
 } from './restore-control.js';
+import { EXPECTED_SCHEMA, schemaFingerprint } from './schema-fingerprint.js';
 import { connectTo, DumpHeaderCheck, parseDbTarget, type DbTarget } from './db-target.js';
 import type { PgTools } from './pg-tools.js';
 
@@ -496,6 +497,13 @@ async function restoreVerified(
       );
       if (locked.rows[0]?.state !== 'restoring' || locked.rows[0].restore_id !== restoreId)
         throw new RestoreError('policy', 'the restore guard is not in the expected state');
+      // The tables' definitions, not only their names, must be Ruvee's own (follow-up review S-2):
+      // after migration, the restored schema matches a freshly migrated one exactly.
+      if ((await schemaFingerprint(c)) !== EXPECTED_SCHEMA.fingerprint)
+        throw new RestoreError(
+          'policy',
+          'the restored tables are defined differently from the ones Ruvee creates (columns, constraints, defaults or indexes); discard this database',
+        );
       const bad = await c.query<{ n: string }>(
         `SELECT count(*) AS n FROM vaults v
          WHERE v.current_seq <> COALESCE((SELECT max(seq) FROM vault_commits WHERE vault_id = v.id), 0)`,

@@ -297,4 +297,30 @@ describe('REVIEW R8 (regression): SQL inside a restored dump cannot reach restor
     expect(r.guard).toBe('restoring');
     expect(r.loaderRoles).toBe(0);
   });
+
+  // Follow-up review S-2: the allowed tables themselves, changed. Names alone match, so only a
+  // comparison of their definitions can see it.
+  it.each([
+    [
+      'a dropped CHECK constraint',
+      ['ALTER TABLE public.devices DROP CONSTRAINT devices_pending_not_enrolled'],
+    ],
+    ['a dropped unique index', ['DROP INDEX public.sessions_secret_hash_key']],
+    [
+      'a changed column default',
+      ['ALTER TABLE public.sessions ALTER COLUMN revoked_at SET DEFAULT now()'],
+    ],
+    ['an extra column', ['ALTER TABLE public.accounts ADD COLUMN review_s2 int']],
+    ['a changed column type', ['ALTER TABLE public.devices ALTER COLUMN platform TYPE text']],
+  ])('refuses a dump whose allowed table has %s', async (_label, statements) => {
+    const r = await hostileRestore(statements);
+    expect(r.outcome.ok).toBe(false);
+    // Checked after migration, first thing in APPLY POLICY, before anything is opened.
+    if (!r.outcome.ok) {
+      expect(r.outcome.e.stage).toBe('policy');
+      expect(r.outcome.e.message).toMatch(/defined differently/);
+    }
+    expect(r.guard).toBe('restoring');
+    expect(r.loaderRoles).toBe(0);
+  });
 });
