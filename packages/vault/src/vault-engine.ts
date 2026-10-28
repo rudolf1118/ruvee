@@ -52,6 +52,7 @@ import {
   type QueuedImport,
 } from './store.js';
 import { buildExport, openExport, type OpenedExport } from './export-file.js';
+import { withKeys, type KeyScope } from './key-scope.js';
 import { VaultError } from './vault-error.js';
 
 export { VaultError } from './vault-error.js';
@@ -456,7 +457,7 @@ export class VaultEngine {
   // ---- Device phase ----
 
   async phase(): Promise<DevicePhase> {
-    const device = await this.deps.store.device();
+    const device = await this.peekDevice();
     if (!device) return { phase: 'new' };
     return device.status === 'active' && device.enrolled
       ? { phase: 'enrolled', username: device.username, deviceId: device.deviceId }
@@ -471,7 +472,7 @@ export class VaultEngine {
     password: string;
   }): Promise<RecoveryKitView> {
     const { crypto, api, opaque } = this.deps;
-    if (await this.deps.store.device()) throw new VaultError('registration_closed');
+    if (await this.peekDevice()) throw new VaultError('registration_closed');
     const username = normalizeUsername(params.username);
     if (!username) throw new VaultError('invalid_username');
     if (!checkMasterPassword(params.password).ok) throw new VaultError('invalid_password');
@@ -616,109 +617,111 @@ export class VaultEngine {
   }
 
   setupFinish(): Promise<UnlockedVault> {
-    return this.exclusive(async () => {
-      const setup = this.setup;
-      if (!setup?.verified) throw new VaultError('kit_mismatch');
-      const { crypto } = this.deps;
-      // device-proof.md §8, first setup: this device's key and AK's proof key, both proved, bound
-      // to the setup token; the server stores the public halves only.
-      const deviceKey = crypto.generateDeviceKey();
-      const akVerifyKey = crypto.accountProofPublicKey(setup.accountKey);
-      const base = {
-        operation: 'register' as const,
-        accountId: uuidToBytes(setup.accountId),
-        binding: crypto.setupBinding(fromB64(setup.bootstrapToken)),
-        nonce: new Uint8Array(32),
-        payload: crypto.proofPayload('register', [
-          fromB64(setup.registrationRecord),
-          deviceKey.publicKey,
-          akVerifyKey,
-          setup.wrappedAkPassword,
-          setup.wrappedAkRecovery,
-          setup.recoveryVerifier,
-          setup.keyset,
-          uuidToBytes(setup.vaultId),
-        ]),
-      };
-      try {
-        await this.deps.api.registerFinish({
-          bootstrapToken: setup.bootstrapToken,
-          username: setup.username,
-          registrationRecord: setup.registrationRecord,
+    // The device key made here is this step's until the session's copy is stored (F-19).
+    return this.exclusive(() =>
+      withKeys(async (keys) => {
+        const setup = this.setup;
+        if (!setup?.verified) throw new VaultError('kit_mismatch');
+        const { crypto } = this.deps;
+        // device-proof.md §8, first setup: this device's key and AK's proof key, both proved, bound
+        // to the setup token; the server stores the public halves only.
+        const deviceKey = crypto.generateDeviceKey();
+        keys.own(deviceKey.secretKey);
+        const akVerifyKey = crypto.accountProofPublicKey(setup.accountKey);
+        const base = {
+          operation: 'register' as const,
+          accountId: uuidToBytes(setup.accountId),
+          binding: crypto.setupBinding(fromB64(setup.bootstrapToken)),
+          nonce: new Uint8Array(32),
+          payload: crypto.proofPayload('register', [
+            fromB64(setup.registrationRecord),
+            deviceKey.publicKey,
+            akVerifyKey,
+            setup.wrappedAkPassword,
+            setup.wrappedAkRecovery,
+            setup.recoveryVerifier,
+            setup.keyset,
+            uuidToBytes(setup.vaultId),
+          ]),
+        };
+        try {
+          await this.deps.api.registerFinish({
+            bootstrapToken: setup.bootstrapToken,
+            username: setup.username,
+            registrationRecord: setup.registrationRecord,
+            accountId: setup.accountId,
+            device: { id: setup.deviceId, platform: 'web' },
+            keys: {
+              kdfProfile: 1,
+              saltPw: toB64(setup.passwordSalt),
+              akId: toB64(setup.accountKeyId),
+              akEpoch: 1,
+              wrappedAkPassword: toB64(setup.wrappedAkPassword),
+              recoveryKeyId: toB64(setup.recoveryKeyId),
+              wrappedAkRecovery: toB64(setup.wrappedAkRecovery),
+              recoveryVerifier: toB64(setup.recoveryVerifier),
+              keysetVersion: 1,
+              keyset: toB64(setup.keyset),
+            },
+            vault: { id: setup.vaultId, vkId: toB64(setup.vaultKeyId) },
+            devicePublicKey: toB64(deviceKey.publicKey),
+            akVerifyKey: toB64(akVerifyKey),
+            proof: {
+              device: toB64(
+                crypto.signDeviceProof({
+                  ...base,
+                  deviceId: uuidToBytes(setup.deviceId),
+                  secretKey: deviceKey.secretKey,
+                }),
+              ),
+              accountKey: toB64(
+                crypto.signAccountProof({
+                  ...base,
+                  accountKey: setup.accountKey,
+                  accountKeyId: setup.accountKeyId,
+                  accountKeyEpoch: 1,
+                }),
+              ),
+            },
+          });
+        } catch (error) {
+          if (error instanceof ApiError && error.code === 'not_found')
+            throw new VaultError('registration_closed');
+          throw vaultErrorFrom(error);
+        }
+        // Stored only after the server accepted the account (device-enrollment.md §2 step 6).
+        const device: DeviceRecord & { enrolled: EnrolledKeys } = {
+          v: 1,
           accountId: setup.accountId,
-          device: { id: setup.deviceId, platform: 'web' },
-          keys: {
+          deviceId: setup.deviceId,
+          username: setup.username,
+          status: 'active',
+          enrolled: {
+            secretKey: setup.secretKey,
             kdfProfile: 1,
-            saltPw: toB64(setup.passwordSalt),
-            akId: toB64(setup.accountKeyId),
+            saltPw: setup.passwordSalt,
+            akId: setup.accountKeyId,
             akEpoch: 1,
-            wrappedAkPassword: toB64(setup.wrappedAkPassword),
-            recoveryKeyId: toB64(setup.recoveryKeyId),
-            wrappedAkRecovery: toB64(setup.wrappedAkRecovery),
-            recoveryVerifier: toB64(setup.recoveryVerifier),
+            wrappedAkPassword: setup.wrappedAkPassword,
             keysetVersion: 1,
-            keyset: toB64(setup.keyset),
+            keyset: setup.keyset,
+            vaultId: setup.vaultId,
+            vkId: setup.vaultKeyId,
           },
-          vault: { id: setup.vaultId, vkId: toB64(setup.vaultKeyId) },
-          devicePublicKey: toB64(deviceKey.publicKey),
-          akVerifyKey: toB64(akVerifyKey),
-          proof: {
-            device: toB64(
-              crypto.signDeviceProof({
-                ...base,
-                deviceId: uuidToBytes(setup.deviceId),
-                secretKey: deviceKey.secretKey,
-              }),
-            ),
-            accountKey: toB64(
-              crypto.signAccountProof({
-                ...base,
-                accountKey: setup.accountKey,
-                accountKeyId: setup.accountKeyId,
-                accountKeyEpoch: 1,
-              }),
-            ),
-          },
-        });
-      } catch (error) {
-        deviceKey.secretKey.fill(0);
-        if (error instanceof ApiError && error.code === 'not_found')
-          throw new VaultError('registration_closed');
-        throw vaultErrorFrom(error);
-      }
-      // Stored only after the server accepted the account (device-enrollment.md §2 step 6).
-      const device: DeviceRecord & { enrolled: EnrolledKeys } = {
-        v: 1,
-        accountId: setup.accountId,
-        deviceId: setup.deviceId,
-        username: setup.username,
-        status: 'active',
-        enrolled: {
-          secretKey: setup.secretKey,
-          kdfProfile: 1,
-          saltPw: setup.passwordSalt,
-          akId: setup.accountKeyId,
-          akEpoch: 1,
-          wrappedAkPassword: setup.wrappedAkPassword,
-          keysetVersion: 1,
-          keyset: setup.keyset,
+        };
+        this.session = this.newSession(device, setup.accountKey, setup.vaultKey, {
           vaultId: setup.vaultId,
-          vkId: setup.vaultKeyId,
-        },
-      };
-      this.session = this.newSession(device, setup.accountKey, setup.vaultKey, {
-        vaultId: setup.vaultId,
-        seq: 0,
-        manifestHash: ZERO_HASH,
-        keysetVersion: 1,
-      });
-      this.setup = undefined;
-      // The device record, its key and its checkpoint in one transaction (follow-up review F-14).
-      await this.enroll(this.session, device, deviceKey, { checkpoint: true });
-      deviceKey.secretKey.fill(0);
-      await this.syncNow();
-      return this.unlockedView();
-    });
+          seq: 0,
+          manifestHash: ZERO_HASH,
+          keysetVersion: 1,
+        });
+        this.setup = undefined;
+        // The device record, its key and its checkpoint in one transaction (follow-up review F-14).
+        await this.enroll(this.session, device, deviceKey, { checkpoint: true });
+        await this.syncNow();
+        return this.unlockedView();
+      }),
+    );
   }
 
   // ---- Login on a new device (it becomes pending until it is paired) ----
@@ -732,7 +735,7 @@ export class VaultEngine {
     } catch {
       throw new VaultError('login_failed');
     }
-    const existing = await this.deps.store.device();
+    const existing = await this.peekDevice();
     let result = await this.opaqueLogin(username, password, existing?.deviceId);
     if (result.device.status === 'active' && existing?.enrolled) {
       return { phase: 'enrolled', username, deviceId: existing.deviceId };
@@ -803,86 +806,90 @@ export class VaultEngine {
    */
   unlock(params: { password: string; previousPassword?: string }): Promise<UnlockedVault> {
     return this.exclusive(async () => {
-      const device = await this.deps.store.device();
-      if (!device?.enrolled || device.status !== 'active')
-        throw new VaultError('device_not_enrolled');
-      let enrolled = device.enrolled;
-      const { crypto } = this.deps;
-      let password: string;
-      let localPassword: string;
-      try {
-        password = normalizePassword(params.password);
-        localPassword =
-          params.previousPassword === undefined
-            ? password
-            : normalizePassword(params.previousPassword);
-      } catch {
-        throw new VaultError('wrong_password');
-      }
-      const accountId = uuidToBytes(device.accountId);
-      const auk = crypto.deriveAccountUnlockKey({
-        password: localPassword,
-        passwordSalt: enrolled.saltPw,
-        profile: enrolled.kdfProfile,
-        secretKey: enrolled.secretKey,
-        accountId,
-      });
-      let accountKey: Uint8Array | undefined;
-      let passwordUpdated = false;
-      try {
-        accountKey = crypto.unwrapAccountKey({
-          accountUnlockKey: auk,
-          accountId,
-          accountKeyId: enrolled.akId,
-          accountKeyEpoch: enrolled.akEpoch,
-          profile: enrolled.kdfProfile,
+      // Every key below belongs to this unlock until the session takes it (F-19): a wrong
+      // password, a failed write or a lock leaves none of them behind.
+      const { session, passwordUpdated, password } = await withKeys(async (keys) => {
+        const device = await this.ownedDevice(keys);
+        if (!device?.enrolled || device.status !== 'active')
+          throw new VaultError('device_not_enrolled');
+        let enrolled = device.enrolled;
+        const { crypto } = this.deps;
+        let password: string;
+        let localPassword: string;
+        try {
+          password = normalizePassword(params.password);
+          localPassword =
+            params.previousPassword === undefined
+              ? password
+              : normalizePassword(params.previousPassword);
+        } catch {
+          throw new VaultError('wrong_password');
+        }
+        const accountId = uuidToBytes(device.accountId);
+        const auk = crypto.deriveAccountUnlockKey({
+          password: localPassword,
           passwordSalt: enrolled.saltPw,
-          envelope: enrolled.wrappedAkPassword,
+          profile: enrolled.kdfProfile,
+          secretKey: enrolled.secretKey,
+          accountId,
         });
-      } catch {
-        // The local wrap did not open: a wrong password, or a password changed on another
-        // device (a password change or a recovery). Only the server can tell which.
-        if (params.previousPassword !== undefined) throw new VaultError('wrong_password');
-        const updated = await this.unlockWithServerWrap(device, enrolled, password);
-        if (!updated) throw new VaultError('wrong_password');
-        ({ accountKey, enrolled } = updated);
-        passwordUpdated = true;
-      } finally {
-        auk.fill(0);
-      }
-      let session: Session;
-      try {
+        let accountKey: Uint8Array;
+        let passwordUpdated = false;
+        try {
+          accountKey = keys.own(
+            crypto.unwrapAccountKey({
+              accountUnlockKey: auk,
+              accountId,
+              accountKeyId: enrolled.akId,
+              accountKeyEpoch: enrolled.akEpoch,
+              profile: enrolled.kdfProfile,
+              passwordSalt: enrolled.saltPw,
+              envelope: enrolled.wrappedAkPassword,
+            }),
+          );
+        } catch {
+          // The local wrap did not open: a wrong password, or a password changed on another
+          // device (a password change or a recovery). Only the server can tell which.
+          if (params.previousPassword !== undefined) throw new VaultError('wrong_password');
+          const updated = await this.unlockWithServerWrap(device, enrolled, password, keys);
+          if (!updated) throw new VaultError('wrong_password');
+          ({ accountKey, enrolled } = updated);
+          passwordUpdated = true;
+        } finally {
+          auk.fill(0);
+        }
         if (params.previousPassword !== undefined) {
           // The old wrap opened; the new password must open the server's wrap under the new SK.
-          const updated = await this.adoptServerKeys(device, enrolled, password, accountKey);
+          const updated = await this.adoptServerKeys(device, enrolled, password, accountKey, keys);
           if (!updated) throw new VaultError('wrong_password');
           enrolled = updated;
           passwordUpdated = true;
         }
-        const keyset = crypto.openKeyset({
-          accountKey,
-          accountKeyId: enrolled.akId,
-          accountId,
-          keysetVersion: enrolled.keysetVersion,
-          envelope: enrolled.keyset,
-        });
+        const keyset = keys.ownKeyset(
+          crypto.openKeyset({
+            accountKey,
+            accountKeyId: enrolled.akId,
+            accountId,
+            keysetVersion: enrolled.keysetVersion,
+            envelope: enrolled.keyset,
+          }),
+        );
         const vault = keyset.vaults[0];
-        if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId) {
-          keyset.secretKey.fill(0);
-          vault.vk.fill(0);
+        if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId)
           throw new VaultError('internal');
-        }
-        session = this.newSession(
+        const session = this.newSession(
           { ...device, enrolled },
           accountKey,
           vault.vk,
           await this.loadCheckpoint(device, accountKey, enrolled),
         );
-      } catch (error) {
-        // Nothing holds AK yet: zero it before reporting the failure (INV-15, review R23).
-        accountKey.fill(0);
-        throw error;
-      }
+        // Handed to the session, which the lock zeroes; the keyset's SK copy only served the
+        // comparison above and is zeroed with anything else still owned here.
+        keys.release(accountKey);
+        keys.release(vault.vk);
+        keys.release(enrolled.secretKey);
+        return { session, passwordUpdated, password };
+      });
       this.session = session;
       await this.loadLocalState();
       session.deviceKey = await this.loadDeviceKey(session);
@@ -904,6 +911,26 @@ export class VaultEngine {
   }
 
   /**
+   * The device record for its ids, status and public fields only: the store returns a new copy on
+   * every read (store.ts), and this one's `SK` is zeroed at once (F-19).
+   */
+  private async peekDevice(): Promise<DeviceRecord | undefined> {
+    const device = await this.deps.store.device();
+    device?.enrolled?.secretKey.fill(0);
+    return device;
+  }
+
+  /**
+   * The device record, its `SK` owned by `keys` (F-19): the store returns a new copy on every read
+   * (store.ts), so a caller that keeps the record must release that `SK`.
+   */
+  private async ownedDevice(keys: KeyScope): Promise<DeviceRecord | undefined> {
+    const device = await this.deps.store.device();
+    if (device?.enrolled) keys.own(device.enrolled.secretKey);
+    return device;
+  }
+
+  /**
    * D-27, extension only: a copy of `AK` for the host to keep in `chrome.storage.session` while
    * unlocked. It never goes through `dispatch`, so no UI can ask for it.
    */
@@ -918,34 +945,40 @@ export class VaultEngine {
    */
   resume(params: { accountKey: Uint8Array }): Promise<UnlockedVault> {
     return this.exclusive(async () => {
-      const device = await this.deps.store.device();
-      if (!device?.enrolled || device.status !== 'active') throw new VaultError('locked');
-      const enrolled = device.enrolled;
-      const accountKey = params.accountKey.slice();
-      let keyset;
-      try {
-        keyset = this.deps.crypto.openKeyset({
+      // The caller's AK stays the caller's: the session gets its own copy (F-19).
+      const session = await withKeys(async (keys) => {
+        const device = await this.ownedDevice(keys);
+        if (!device?.enrolled || device.status !== 'active') throw new VaultError('locked');
+        const enrolled = device.enrolled;
+        const accountKey = keys.own(params.accountKey.slice());
+        let keyset;
+        try {
+          keyset = keys.ownKeyset(
+            this.deps.crypto.openKeyset({
+              accountKey,
+              accountKeyId: enrolled.akId,
+              accountId: uuidToBytes(device.accountId),
+              keysetVersion: enrolled.keysetVersion,
+              envelope: enrolled.keyset,
+            }),
+          );
+        } catch {
+          throw new VaultError('locked');
+        }
+        const vault = keyset.vaults[0];
+        if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId)
+          throw new VaultError('locked');
+        const session = this.newSession(
+          { ...device, enrolled },
           accountKey,
-          accountKeyId: enrolled.akId,
-          accountId: uuidToBytes(device.accountId),
-          keysetVersion: enrolled.keysetVersion,
-          envelope: enrolled.keyset,
-        });
-      } catch {
-        accountKey.fill(0);
-        throw new VaultError('locked');
-      }
-      const vault = keyset.vaults[0];
-      if (!same(keyset.secretKey, enrolled.secretKey) || vault.vaultId !== enrolled.vaultId) {
-        accountKey.fill(0);
-        throw new VaultError('locked');
-      }
-      const session = this.newSession(
-        { ...device, enrolled },
-        accountKey,
-        vault.vk,
-        await this.loadCheckpoint(device, accountKey, enrolled),
-      );
+          vault.vk,
+          await this.loadCheckpoint(device, accountKey, enrolled),
+        );
+        keys.release(accountKey);
+        keys.release(vault.vk);
+        keys.release(enrolled.secretKey);
+        return session;
+      });
       this.session = session;
       await this.loadLocalState();
       session.deviceKey = await this.loadDeviceKey(session);
@@ -963,6 +996,7 @@ export class VaultEngine {
     device: DeviceRecord,
     enrolled: EnrolledKeys,
     password: string,
+    keys: KeyScope,
   ): Promise<{ accountKey: Uint8Array; enrolled: EnrolledKeys } | undefined> {
     const { crypto, api } = this.deps;
     try {
@@ -973,49 +1007,53 @@ export class VaultEngine {
       if (e.code === 'rate_limited') throw e;
       return undefined;
     }
-    let keys;
+    let remote;
     try {
-      keys = await api.accountKeys();
+      remote = await api.accountKeys();
     } catch {
       return undefined;
     }
     // OPAQUE accepted the password, but a newer keyset means `SK` changed too: this device
     // cannot open the server wrap until its old wrap gives it `AK` to read the new keyset.
-    if (keys.keysetVersion > enrolled.keysetVersion)
+    if (remote.keysetVersion > enrolled.keysetVersion)
       throw new VaultError('previous_password_required');
     const accountId = uuidToBytes(device.accountId);
-    const saltPw = fromB64(keys.saltPw);
-    const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
+    const saltPw = fromB64(remote.saltPw);
+    const wrappedAkPassword = fromB64(remote.wrappedAkPassword);
     const auk = crypto.deriveAccountUnlockKey({
       password,
       passwordSalt: saltPw,
-      profile: keys.kdfProfile,
+      profile: remote.kdfProfile,
       secretKey: enrolled.secretKey,
       accountId,
     });
+    let accountKey: Uint8Array;
     try {
-      const accountKey = crypto.unwrapAccountKey({
-        accountUnlockKey: auk,
-        accountId,
-        accountKeyId: fromB64(keys.akId),
-        accountKeyEpoch: keys.akEpoch,
-        profile: keys.kdfProfile,
-        passwordSalt: saltPw,
-        envelope: wrappedAkPassword,
-      });
-      const updated: EnrolledKeys = {
-        ...enrolled,
-        saltPw,
-        wrappedAkPassword,
-        kdfProfile: keys.kdfProfile,
-      };
-      await this.deps.store.putDevice({ ...device, enrolled: updated });
-      return { accountKey, enrolled: updated };
+      accountKey = keys.own(
+        crypto.unwrapAccountKey({
+          accountUnlockKey: auk,
+          accountId,
+          accountKeyId: fromB64(remote.akId),
+          accountKeyEpoch: remote.akEpoch,
+          profile: remote.kdfProfile,
+          passwordSalt: saltPw,
+          envelope: wrappedAkPassword,
+        }),
+      );
     } catch {
       return undefined;
     } finally {
       auk.fill(0);
     }
+    const updated: EnrolledKeys = {
+      ...enrolled,
+      saltPw,
+      wrappedAkPassword,
+      kdfProfile: remote.kdfProfile,
+    };
+    // A failed write is that, not a wrong password (F-19): it propagates, and `keys` zeroes AK.
+    await this.deps.store.putDevice({ ...device, enrolled: updated });
+    return { accountKey, enrolled: updated };
   }
 
   /**
@@ -1098,63 +1136,73 @@ export class VaultEngine {
     if (remote.keysetVersion === local.keysetVersion) return false;
     const { crypto } = this.deps;
     const accountId = uuidToBytes(session.device.accountId);
-    let keyset;
-    try {
-      keyset = crypto.openKeyset({
-        accountKey: session.accountKey,
-        accountKeyId: fromB64(remote.akId),
-        accountId,
-        keysetVersion: remote.keysetVersion,
-        envelope: fromB64(remote.keyset),
-      });
-    } catch {
-      this.integrity(session, 'keyset_invalid');
-      return false;
-    }
-    if (keyset.vaults[0].vaultId !== local.vaultId) {
-      this.integrity(session, 'keyset_changed');
-      return false;
-    }
-    let enrolled: EnrolledKeys = {
-      ...local,
-      keysetVersion: remote.keysetVersion,
-      keyset: fromB64(remote.keyset),
-    };
-    const rotated = !same(keyset.secretKey, local.secretKey);
-    if (rotated) {
-      const saltPw = crypto.generatePasswordSalt();
-      const auk = crypto.deriveAccountUnlockKey({
-        password,
-        passwordSalt: saltPw,
-        profile: DEFAULT_KDF_PROFILE,
-        secretKey: keyset.secretKey,
-        accountId,
-      });
+    // The newer keyset's SK and VK belong to this call until the session takes the SK (F-19); the
+    // session keeps its own VK, so the keyset's copy is always zeroed.
+    return withKeys(async (keys) => {
+      let keyset;
       try {
-        enrolled = {
-          ...enrolled,
-          secretKey: keyset.secretKey,
-          kdfProfile: DEFAULT_KDF_PROFILE,
-          saltPw,
-          wrappedAkPassword: crypto.wrapAccountKey({
-            accountUnlockKey: auk,
+        keyset = keys.ownKeyset(
+          crypto.openKeyset({
             accountKey: session.accountKey,
+            accountKeyId: fromB64(remote.akId),
             accountId,
-            accountKeyId: local.akId,
-            accountKeyEpoch: local.akEpoch,
-            profile: DEFAULT_KDF_PROFILE,
-            passwordSalt: saltPw,
+            keysetVersion: remote.keysetVersion,
+            envelope: fromB64(remote.keyset),
           }),
-        };
-      } finally {
-        auk.fill(0);
+        );
+      } catch {
+        this.integrity(session, 'keyset_invalid');
+        return false;
       }
-    }
-    const device = { ...session.device, enrolled };
-    await this.deps.store.putDevice(device);
-    session.device = device;
-    if (rotated) local.secretKey.fill(0);
-    return rotated;
+      if (keyset.vaults[0].vaultId !== local.vaultId) {
+        this.integrity(session, 'keyset_changed');
+        return false;
+      }
+      let enrolled: EnrolledKeys = {
+        ...local,
+        keysetVersion: remote.keysetVersion,
+        keyset: fromB64(remote.keyset),
+      };
+      const rotated = !same(keyset.secretKey, local.secretKey);
+      if (rotated) {
+        const saltPw = crypto.generatePasswordSalt();
+        const auk = crypto.deriveAccountUnlockKey({
+          password,
+          passwordSalt: saltPw,
+          profile: DEFAULT_KDF_PROFILE,
+          secretKey: keyset.secretKey,
+          accountId,
+        });
+        try {
+          enrolled = {
+            ...enrolled,
+            secretKey: keyset.secretKey,
+            kdfProfile: DEFAULT_KDF_PROFILE,
+            saltPw,
+            wrappedAkPassword: crypto.wrapAccountKey({
+              accountUnlockKey: auk,
+              accountKey: session.accountKey,
+              accountId,
+              accountKeyId: local.akId,
+              accountKeyEpoch: local.akEpoch,
+              profile: DEFAULT_KDF_PROFILE,
+              passwordSalt: saltPw,
+            }),
+          };
+        } finally {
+          auk.fill(0);
+        }
+      }
+      const device = { ...session.device, enrolled };
+      await this.deps.store.putDevice(device);
+      session.device = device;
+      if (rotated) {
+        // The new SK is the session's now; the old one is stored nowhere any more.
+        keys.release(keyset.secretKey);
+        local.secretKey.fill(0);
+      }
+      return rotated;
+    });
   }
 
   /**
@@ -1167,66 +1215,76 @@ export class VaultEngine {
     enrolled: EnrolledKeys,
     password: string,
     accountKey: Uint8Array,
+    keys: KeyScope,
   ): Promise<EnrolledKeys | undefined> {
     const { crypto, api } = this.deps;
-    let keys;
+    let remote;
     try {
       await this.opaqueLogin(device.username, password, device.deviceId);
-      keys = await api.accountKeys();
+      remote = await api.accountKeys();
     } catch (error) {
       const e = vaultErrorFrom(error);
       if (e.code === 'device_revoked') return this.revoked();
       if (e.code === 'rate_limited' || e.code === 'offline') throw e;
       return undefined;
     }
-    if (keys.keysetVersion <= enrolled.keysetVersion) return undefined;
+    if (remote.keysetVersion <= enrolled.keysetVersion) return undefined;
     const accountId = uuidToBytes(device.accountId);
-    let auk: Uint8Array | undefined;
+    const saltPw = fromB64(remote.saltPw);
+    const wrappedAkPassword = fromB64(remote.wrappedAkPassword);
+    // The newer keyset's SK goes to the caller, still owned by `keys`; its VK copy and the second
+    // AK are only checks, and `keys` zeroes them (F-19).
+    let updated: EnrolledKeys;
     try {
-      const keyset = crypto.openKeyset({
-        accountKey,
-        accountKeyId: fromB64(keys.akId),
-        accountId,
-        keysetVersion: keys.keysetVersion,
-        envelope: fromB64(keys.keyset),
-      });
+      const keyset = keys.ownKeyset(
+        crypto.openKeyset({
+          accountKey,
+          accountKeyId: fromB64(remote.akId),
+          accountId,
+          keysetVersion: remote.keysetVersion,
+          envelope: fromB64(remote.keyset),
+        }),
+      );
       if (keyset.vaults[0].vaultId !== enrolled.vaultId) return undefined;
-      const saltPw = fromB64(keys.saltPw);
-      const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
-      auk = crypto.deriveAccountUnlockKey({
+      const auk = crypto.deriveAccountUnlockKey({
         password,
         passwordSalt: saltPw,
-        profile: keys.kdfProfile,
+        profile: remote.kdfProfile,
         secretKey: keyset.secretKey,
         accountId,
       });
-      const opened = crypto.unwrapAccountKey({
-        accountUnlockKey: auk,
-        accountId,
-        accountKeyId: fromB64(keys.akId),
-        accountKeyEpoch: keys.akEpoch,
-        profile: keys.kdfProfile,
-        passwordSalt: saltPw,
-        envelope: wrappedAkPassword,
-      });
+      let opened: Uint8Array;
+      try {
+        opened = keys.own(
+          crypto.unwrapAccountKey({
+            accountUnlockKey: auk,
+            accountId,
+            accountKeyId: fromB64(remote.akId),
+            accountKeyEpoch: remote.akEpoch,
+            profile: remote.kdfProfile,
+            passwordSalt: saltPw,
+            envelope: wrappedAkPassword,
+          }),
+        );
+      } finally {
+        auk.fill(0);
+      }
       if (!same(opened, accountKey)) return undefined;
-      const updated: EnrolledKeys = {
+      updated = {
         ...enrolled,
         secretKey: keyset.secretKey,
-        kdfProfile: keys.kdfProfile,
+        kdfProfile: remote.kdfProfile,
         saltPw,
         wrappedAkPassword,
-        keysetVersion: keys.keysetVersion,
-        keyset: fromB64(keys.keyset),
+        keysetVersion: remote.keysetVersion,
+        keyset: fromB64(remote.keyset),
       };
-      await this.deps.store.putDevice({ ...device, enrolled: updated });
-      enrolled.secretKey.fill(0);
-      return updated;
     } catch {
       return undefined;
-    } finally {
-      auk?.fill(0);
     }
+    // A failed write is that, not a wrong password (F-19): it propagates.
+    await this.deps.store.putDevice({ ...device, enrolled: updated });
+    return updated;
   }
 
   /** The server revoked this device: the client wipes itself (P2-11) and the UI locks. */
@@ -2077,7 +2135,7 @@ export class VaultEngine {
 
   /** Device B, steps 4 and 5: checks the code offline, then sends `epk_B` and `req_mac`. */
   async pairingJoin(params: { code: string; password?: string }): Promise<true> {
-    const device = await this.deps.store.device();
+    const device = await this.peekDevice();
     if (device?.status !== 'pending') throw new VaultError('device_not_enrolled');
     if (params.password !== undefined) {
       try {
@@ -2150,7 +2208,7 @@ export class VaultEngine {
       }
       const password = this.pendingPassword?.value;
       if (!password || this.pairingNeedsPassword()) throw new VaultError('password_required');
-      const device = await this.deps.store.device();
+      const device = await this.peekDevice();
       if (!device) throw new VaultError('device_not_enrolled');
       const { crypto, api } = this.deps;
       const pairingId = toB64(join.pairingId);
@@ -2175,112 +2233,130 @@ export class VaultEngine {
         } else throw vaultErrorFrom(error);
       }
       if (state.state !== 'approved' || !state.response) return { state: 'waiting' } as const;
+      const response = state.response;
 
       const accountId = uuidToBytes(device.accountId);
-      let payload;
-      try {
-        payload = crypto.openPairingResponse({
-          secret: join.secret,
-          accountId,
-          pairingId: join.pairingId,
-          deviceId: uuidToBytes(device.deviceId),
-          ephemeralPublicKey: join.ephemeralPublicKey,
-          ephemeralPrivateKey: join.ephemeralPrivateKey,
-          ciphertext: fromB64(state.response.ciphertext),
-          mac: fromB64(state.response.mac),
-        });
-      } catch {
-        this.dropJoining();
-        throw new VaultError('pairing_failed');
-      }
-      // Any failure from here on discards everything received (step 9).
-      let keys;
-      try {
-        keys = await api.accountKeys();
-      } catch (error) {
-        payload.secretKey.fill(0);
-        throw vaultErrorFrom(error);
-      }
-      const saltPw = fromB64(keys.saltPw);
-      const akId = fromB64(keys.akId);
-      const keysetEnvelope = fromB64(keys.keyset);
-      const wrappedAkPassword = fromB64(keys.wrappedAkPassword);
-      let accountKey: Uint8Array;
-      const auk = crypto.deriveAccountUnlockKey({
-        password,
-        passwordSalt: saltPw,
-        profile: keys.kdfProfile,
-        secretKey: payload.secretKey,
-        accountId,
-      });
-      try {
-        accountKey = crypto.unwrapAccountKey({
-          accountUnlockKey: auk,
-          accountId,
-          accountKeyId: akId,
-          accountKeyEpoch: keys.akEpoch,
-          profile: keys.kdfProfile,
+      // What this device receives and unlocks belongs to this step until the session takes it:
+      // a failure or a lock leaves none of it (F-19).
+      const { session, enrolledDevice } = await withKeys(async (keys) => {
+        let payload;
+        try {
+          payload = crypto.openPairingResponse({
+            secret: join.secret,
+            accountId,
+            pairingId: join.pairingId,
+            deviceId: uuidToBytes(device.deviceId),
+            ephemeralPublicKey: join.ephemeralPublicKey,
+            ephemeralPrivateKey: join.ephemeralPrivateKey,
+            ciphertext: fromB64(response.ciphertext),
+            mac: fromB64(response.mac),
+          });
+        } catch {
+          this.dropJoining();
+          throw new VaultError('pairing_failed');
+        }
+        keys.own(payload.secretKey);
+        // Any failure from here on discards everything received (step 9).
+        let remote;
+        try {
+          remote = await api.accountKeys();
+        } catch (error) {
+          throw vaultErrorFrom(error);
+        }
+        const saltPw = fromB64(remote.saltPw);
+        const akId = fromB64(remote.akId);
+        const keysetEnvelope = fromB64(remote.keyset);
+        const wrappedAkPassword = fromB64(remote.wrappedAkPassword);
+        let accountKey: Uint8Array;
+        const auk = crypto.deriveAccountUnlockKey({
+          password,
           passwordSalt: saltPw,
-          envelope: wrappedAkPassword,
-        });
-      } catch {
-        payload.secretKey.fill(0);
-        this.pendingPassword = undefined;
-        throw new VaultError('wrong_password');
-      } finally {
-        auk.fill(0);
-      }
-      const keyset = crypto.openKeyset({
-        accountKey,
-        accountKeyId: akId,
-        accountId,
-        keysetVersion: keys.keysetVersion,
-        envelope: keysetEnvelope,
-      });
-      const vault = keyset.vaults[0];
-      if (
-        keys.keysetVersion < payload.checkpoint.keysetVersion ||
-        !same(keyset.secretKey, payload.secretKey) ||
-        vault.vaultId !== payload.checkpoint.vaultId
-      ) {
-        accountKey.fill(0);
-        payload.secretKey.fill(0);
-        this.dropJoining();
-        throw new VaultError('pairing_failed');
-      }
-      const enrolledDevice: DeviceRecord & { enrolled: EnrolledKeys } = {
-        ...device,
-        status: 'active',
-        enrolled: {
+          profile: remote.kdfProfile,
           secretKey: payload.secretKey,
-          kdfProfile: keys.kdfProfile,
-          saltPw,
-          akId,
-          akEpoch: keys.akEpoch,
-          wrappedAkPassword,
-          keysetVersion: keys.keysetVersion,
-          keyset: keysetEnvelope,
-          vaultId: vault.vaultId,
-          vkId: vault.vkId,
-        },
-      };
-      // The checkpoint from A lets this device detect rollback from its first sync (step 10).
-      // It has no records yet, so it pulls from genesis and the chain must pass through A's
-      // checkpoint (an anchor) instead of starting there.
-      this.session = this.newSession(enrolledDevice, accountKey, vault.vk, {
-        vaultId: payload.checkpoint.vaultId,
-        seq: 0,
-        manifestHash: ZERO_HASH,
-        keysetVersion: keys.keysetVersion,
+          accountId,
+        });
+        try {
+          accountKey = keys.own(
+            crypto.unwrapAccountKey({
+              accountUnlockKey: auk,
+              accountId,
+              accountKeyId: akId,
+              accountKeyEpoch: remote.akEpoch,
+              profile: remote.kdfProfile,
+              passwordSalt: saltPw,
+              envelope: wrappedAkPassword,
+            }),
+          );
+        } catch {
+          this.pendingPassword = undefined;
+          throw new VaultError('wrong_password');
+        } finally {
+          auk.fill(0);
+        }
+        let keyset;
+        try {
+          keyset = keys.ownKeyset(
+            crypto.openKeyset({
+              accountKey,
+              accountKeyId: akId,
+              accountId,
+              keysetVersion: remote.keysetVersion,
+              envelope: keysetEnvelope,
+            }),
+          );
+        } catch {
+          this.dropJoining();
+          throw new VaultError('pairing_failed');
+        }
+        const vault = keyset.vaults[0];
+        if (
+          remote.keysetVersion < payload.checkpoint.keysetVersion ||
+          !same(keyset.secretKey, payload.secretKey) ||
+          vault.vaultId !== payload.checkpoint.vaultId
+        ) {
+          this.dropJoining();
+          throw new VaultError('pairing_failed');
+        }
+        const enrolledDevice: DeviceRecord & { enrolled: EnrolledKeys } = {
+          ...device,
+          status: 'active',
+          enrolled: {
+            secretKey: payload.secretKey,
+            kdfProfile: remote.kdfProfile,
+            saltPw,
+            akId,
+            akEpoch: remote.akEpoch,
+            wrappedAkPassword,
+            keysetVersion: remote.keysetVersion,
+            keyset: keysetEnvelope,
+            vaultId: vault.vaultId,
+            vkId: vault.vkId,
+          },
+        };
+        // The checkpoint from A lets this device detect rollback from its first sync (step 10).
+        // It has no records yet, so it pulls from genesis and the chain must pass through A's
+        // checkpoint (an anchor) instead of starting there.
+        const session = this.newSession(enrolledDevice, accountKey, vault.vk, {
+          vaultId: payload.checkpoint.vaultId,
+          seq: 0,
+          manifestHash: ZERO_HASH,
+          keysetVersion: remote.keysetVersion,
+        });
+        session.anchor = {
+          seq: payload.checkpoint.seq,
+          manifestHash: payload.checkpoint.manifestHash,
+        };
+        // The session's now; the keyset's SK copy only served the comparison above.
+        keys.release(accountKey);
+        keys.release(vault.vk);
+        keys.release(payload.secretKey);
+        return { session, enrolledDevice };
       });
-      this.session.anchor = {
-        seq: payload.checkpoint.seq,
-        manifestHash: payload.checkpoint.manifestHash,
-      };
+      this.session = session;
       // Only now can this device seal its key: it holds AK. The active device record, its
       // checkpoint, anchor and key are stored in one transaction, so an interruption never leaves
       // an active device without its rollback floor or its key (follow-up review F-14).
-      await this.enroll(this.session, enrolledDevice, join.deviceKey, {
+      await this.enroll(session, enrolledDevice, join.deviceKey, {
         checkpoint: true,
         anchor: true,
       });
@@ -2314,7 +2390,7 @@ export class VaultEngine {
         throw new VaultError('invalid_recovery_key');
       }
       // On a device that is already set up, recovery keeps its id (the forgotten-password case).
-      const local = await this.deps.store.device();
+      const local = await this.peekDevice();
       const sameName = local?.username === username;
       // Refusals come before any key is derived, so none is left behind (follow-up review F-19).
       try {
@@ -2393,6 +2469,8 @@ export class VaultEngine {
         // R20: the keyset version this browser verified is a floor, as on every unlock (INV-09).
         // Checked before anything changes on the server.
         if (keepLocal && material.keysetVersion < local.enrolled.keysetVersion) refuse('integrity');
+        // A recovery started again replaces the earlier one's keys (F-19).
+        this.dropRecovery();
         this.recovery = {
           keepLocal,
           username,
@@ -2513,6 +2591,7 @@ export class VaultEngine {
         for (const key of [accountKey, keyset.secretKey, vault.vk]) key.fill(0);
         throw new VaultError('integrity');
       }
+      this.dropRecovery();
       this.recovery = {
         // The password path never replaces local data: it finishes on this device's own session.
         keepLocal: false,
@@ -2649,113 +2728,115 @@ export class VaultEngine {
 
   /** Step 6 and 7: the server replaces everything at once; this device starts from genesis. */
   recoveryFinish(): Promise<UnlockedVault> {
-    return this.exclusive(async () => {
-      const r = this.recovery;
-      const c = r?.complete;
-      if (!r || !c?.verified) throw new VaultError('kit_mismatch');
-      const { crypto, api } = this.deps;
-      const complete = r.reopen ? api.reopenComplete : api.recoveryComplete;
-      // device-proof.md §8: a recovery (and the kit path of a reopening) enrolls a new device key;
-      // the reopening password path keeps and proves this device's restored one. AK is proved too.
-      const deviceKey =
-        r.reopen === 'password'
-          ? this.deviceKeyOf(this.requireSession())
-          : crypto.generateDeviceKey();
-      const akVerifyKey = crypto.accountProofPublicKey(r.accountKey);
-      const operation = r.reopen ? 'reopen_complete' : 'recovery_complete';
-      try {
-        const nonce = r.reopen ? await api.reopenProofNonce() : await api.recoveryProofNonce();
-        const fields = {
-          registrationRecord: c.registrationRecord,
-          kdfProfile: 1 as const,
-          saltPw: toB64(c.saltPw),
-          wrappedAkPassword: toB64(c.wrappedAkPassword),
-          recoveryKeyId: toB64(c.recoveryKeyId),
-          wrappedAkRecovery: toB64(c.wrappedAkRecovery),
-          recoveryVerifier: toB64(c.recoveryVerifier),
-          expectedRowVersion: r.rowVersion,
+    // A device key made here is this step's until the session's copy is stored (F-19).
+    return this.exclusive(() =>
+      withKeys(async (keys) => {
+        const r = this.recovery;
+        const c = r?.complete;
+        if (!r || !c?.verified) throw new VaultError('kit_mismatch');
+        const { crypto, api } = this.deps;
+        const complete = r.reopen ? api.reopenComplete : api.recoveryComplete;
+        // device-proof.md §8: a recovery (and the kit path of a reopening) enrolls a new device key;
+        // the reopening password path keeps and proves this device's restored one. AK is proved too.
+        const deviceKey =
+          r.reopen === 'password'
+            ? this.deviceKeyOf(this.requireSession())
+            : crypto.generateDeviceKey();
+        if (r.reopen !== 'password') keys.own(deviceKey.secretKey);
+        const akVerifyKey = crypto.accountProofPublicKey(r.accountKey);
+        const operation = r.reopen ? 'reopen_complete' : 'recovery_complete';
+        try {
+          const nonce = r.reopen ? await api.reopenProofNonce() : await api.recoveryProofNonce();
+          const fields = {
+            registrationRecord: c.registrationRecord,
+            kdfProfile: 1 as const,
+            saltPw: toB64(c.saltPw),
+            wrappedAkPassword: toB64(c.wrappedAkPassword),
+            recoveryKeyId: toB64(c.recoveryKeyId),
+            wrappedAkRecovery: toB64(c.wrappedAkRecovery),
+            recoveryVerifier: toB64(c.recoveryVerifier),
+            expectedRowVersion: r.rowVersion,
+          };
+          await complete({
+            ...fields,
+            devicePublicKey: toB64(deviceKey.publicKey),
+            akVerifyKey: toB64(akVerifyKey),
+            ...this.signed(
+              { accountId: r.accountId, deviceId: r.deviceId },
+              deviceKey,
+              operation,
+              nonce,
+              [
+                fromB64(c.registrationRecord),
+                { u8: 1 },
+                c.saltPw,
+                c.wrappedAkPassword,
+                c.recoveryKeyId,
+                c.wrappedAkRecovery,
+                c.recoveryVerifier,
+                { u64: r.rowVersion },
+                null,
+                deviceKey.publicKey,
+                akVerifyKey,
+              ],
+              {
+                accountKey: r.accountKey,
+                accountKeyId: r.accountKeyId,
+                accountKeyEpoch: r.accountKeyEpoch,
+              },
+            ),
+          });
+        } catch (error) {
+          throw vaultErrorFrom(error);
+        }
+        if (r.reopen === 'password') return this.finishReopenOnThisDevice(c);
+        if (r.keepLocal) return this.finishRecoveryKeepingLocal(r, c, deviceKey, keys);
+        const device: DeviceRecord & { enrolled: EnrolledKeys } = {
+          v: 1,
+          accountId: r.accountId,
+          deviceId: r.deviceId,
+          username: r.username,
+          status: 'active',
+          enrolled: {
+            secretKey: r.secretKey,
+            kdfProfile: 1,
+            saltPw: c.saltPw,
+            akId: r.accountKeyId,
+            akEpoch: r.accountKeyEpoch,
+            wrappedAkPassword: c.wrappedAkPassword,
+            keysetVersion: r.keysetVersion,
+            keyset: r.keyset,
+            vaultId: r.vaultId,
+            vkId: r.vaultKeyId,
+          },
         };
-        await complete({
-          ...fields,
-          devicePublicKey: toB64(deviceKey.publicKey),
-          akVerifyKey: toB64(akVerifyKey),
-          ...this.signed(
-            { accountId: r.accountId, deviceId: r.deviceId },
-            deviceKey,
-            operation,
-            nonce,
-            [
-              fromB64(c.registrationRecord),
-              { u8: 1 },
-              c.saltPw,
-              c.wrappedAkPassword,
-              c.recoveryKeyId,
-              c.wrappedAkRecovery,
-              c.recoveryVerifier,
-              { u64: r.rowVersion },
-              null,
-              deviceKey.publicKey,
-              akVerifyKey,
-            ],
-            {
-              accountKey: r.accountKey,
-              accountKeyId: r.accountKeyId,
-              accountKeyEpoch: r.accountKeyEpoch,
-            },
-          ),
-        });
-      } catch (error) {
-        if (r.reopen !== 'password') deviceKey.secretKey.fill(0);
-        throw vaultErrorFrom(error);
-      }
-      if (r.reopen === 'password') return this.finishReopenOnThisDevice(c);
-      if (r.keepLocal) return this.finishRecoveryKeepingLocal(r, c, deviceKey);
-      const device: DeviceRecord & { enrolled: EnrolledKeys } = {
-        v: 1,
-        accountId: r.accountId,
-        deviceId: r.deviceId,
-        username: r.username,
-        status: 'active',
-        enrolled: {
-          secretKey: r.secretKey,
-          kdfProfile: 1,
-          saltPw: c.saltPw,
-          akId: r.accountKeyId,
-          akEpoch: r.accountKeyEpoch,
-          wrappedAkPassword: c.wrappedAkPassword,
-          keysetVersion: r.keysetVersion,
-          keyset: r.keyset,
+        // Anything this browser held before is replaced; it has no trusted checkpoint now.
+        await this.deps.store.wipe();
+        this.session = this.newSession(device, r.accountKey, r.vaultKey, {
           vaultId: r.vaultId,
-          vkId: r.vaultKeyId,
-        },
-      };
-      // Anything this browser held before is replaced; it has no trusted checkpoint now.
-      await this.deps.store.wipe();
-      this.session = this.newSession(device, r.accountKey, r.vaultKey, {
-        vaultId: r.vaultId,
-        seq: 0,
-        manifestHash: ZERO_HASH,
-        keysetVersion: r.keysetVersion,
-      });
-      this.recovery = undefined;
-      this.pendingPassword = undefined;
-      await this.enroll(this.session, device, deviceKey, {});
-      deviceKey.secretKey.fill(0);
-      // This device ran the recovery, so it does not warn about it. (Assumes the device clock is
-      // not minutes behind the server's, which recorded the start before this finish.)
-      this.session.recoveryAcknowledgedMs = this.deps.now();
-      await this.persistLocal({ checkpoint: true });
-      await this.deps.store.apply({
-        local: {
-          notices: this.sealLocal(this.session, 'notices', {
-            recoveryAcknowledgedMs: this.session.recoveryAcknowledgedMs,
-          }),
-        },
-      });
-      await this.syncNow();
-      const view = this.unlockedView();
-      return { ...view, recovered: { lastChange: view.sync.lastChange } };
-    });
+          seq: 0,
+          manifestHash: ZERO_HASH,
+          keysetVersion: r.keysetVersion,
+        });
+        this.recovery = undefined;
+        this.pendingPassword = undefined;
+        await this.enroll(this.session, device, deviceKey, {});
+        // This device ran the recovery, so it does not warn about it. (Assumes the device clock is
+        // not minutes behind the server's, which recorded the start before this finish.)
+        this.session.recoveryAcknowledgedMs = this.deps.now();
+        await this.persistLocal({ checkpoint: true });
+        await this.deps.store.apply({
+          local: {
+            notices: this.sealLocal(this.session, 'notices', {
+              recoveryAcknowledgedMs: this.session.recoveryAcknowledgedMs,
+            }),
+          },
+        });
+        await this.syncNow();
+        const view = this.unlockedView();
+        return { ...view, recovered: { lastChange: view.sync.lastChange } };
+      }),
+    );
   }
 
   /**
@@ -2770,8 +2851,10 @@ export class VaultEngine {
     r: PendingRecovery,
     c: NonNullable<PendingRecovery['complete']>,
     deviceKey: DeviceKeyPair,
+    keys: KeyScope,
   ): Promise<UnlockedVault> {
-    const local = await this.deps.store.device();
+    // The stored SK is replaced by the recovered one: this copy of it is only read here.
+    const local = await this.ownedDevice(keys);
     if (!local?.enrolled || local.deviceId !== r.deviceId || local.accountId !== r.accountId)
       throw new VaultError('internal');
     const device: DeviceRecord & { enrolled: EnrolledKeys } = {
@@ -2798,7 +2881,6 @@ export class VaultEngine {
     // The recovered device's new key replaces any it had (device-proof.md §8, §9), stored with
     // the device record's new wraps in one transaction (F-14).
     await this.enroll(session, device, deviceKey, {});
-    deviceKey.secretKey.fill(0);
     await this.loadLocalState();
     this.recovery = undefined;
     this.pendingPassword = undefined;
@@ -2838,7 +2920,8 @@ export class VaultEngine {
     const device = { ...session.device, enrolled };
     await this.deps.store.putDevice(device);
     session.device = device;
-    this.recovery = undefined;
+    // `reopenBegin`'s second copies of AK, SK and VK; the session keeps its own (F-19).
+    this.dropRecovery();
     this.pendingPassword = undefined;
     session.state = 'syncing';
     await this.syncNow();
@@ -3136,85 +3219,91 @@ export class VaultEngine {
     )
       throw new VaultError('changed_elsewhere');
     const accountId = uuidToBytes(session.device.accountId);
-    const secretKey = crypto.generateKey();
-    const keysetVersion = enrolled.keysetVersion + 1;
-    const keyset = crypto.sealKeyset({
-      accountKey: session.accountKey,
-      accountKeyId: enrolled.akId,
-      accountId,
-      keysetVersion,
-      keyset: {
-        secretKey,
-        vaults: [
-          {
-            vaultId: session.vault.vaultId,
-            vkId: session.vault.vaultKeyId,
-            vk: session.vault.vaultKey,
-          },
-        ],
-      },
-    });
-    const saltPw = crypto.generatePasswordSalt();
-    const auk = crypto.deriveAccountUnlockKey({
-      password,
-      passwordSalt: saltPw,
-      profile: DEFAULT_KDF_PROFILE,
-      secretKey,
-      accountId,
-    });
-    let wrappedAkPassword: Uint8Array;
-    try {
-      wrappedAkPassword = crypto.wrapAccountKey({
-        accountUnlockKey: auk,
+    // The new SK is this call's until the session takes it: a refused or lost request, a failed
+    // write or a lock zeroes it (F-19). A device that misses the result adopts it later from the
+    // keyset, under AK (`refreshKeyset`).
+    return withKeys(async (owned) => {
+      const secretKey = owned.own(crypto.generateKey());
+      const keysetVersion = enrolled.keysetVersion + 1;
+      const keyset = crypto.sealKeyset({
         accountKey: session.accountKey,
-        accountId,
         accountKeyId: enrolled.akId,
-        accountKeyEpoch: enrolled.akEpoch,
-        profile: DEFAULT_KDF_PROFILE,
-        passwordSalt: saltPw,
+        accountId,
+        keysetVersion,
+        keyset: {
+          secretKey,
+          vaults: [
+            {
+              vaultId: session.vault.vaultId,
+              vkId: session.vault.vaultKeyId,
+              vk: session.vault.vaultKey,
+            },
+          ],
+        },
       });
-    } finally {
-      auk.fill(0);
-    }
-    const nonce = await api.proofNonce('secret_key_rotate');
-    await api.rotateSecretKey({
-      keysetVersion,
-      keyset: toB64(keyset),
-      kdfProfile: 1,
-      saltPw: toB64(saltPw),
-      wrappedAkPassword: toB64(wrappedAkPassword),
-      expectedRowVersion: keys.rowVersion,
-      ...this.signed(
-        { accountId: session.device.accountId, deviceId: session.device.deviceId },
-        this.deviceKeyOf(session),
-        'secret_key_rotate',
-        nonce,
-        [
-          { u32: keysetVersion },
-          keyset,
-          { u8: 1 },
+      const saltPw = crypto.generatePasswordSalt();
+      const auk = crypto.deriveAccountUnlockKey({
+        password,
+        passwordSalt: saltPw,
+        profile: DEFAULT_KDF_PROFILE,
+        secretKey,
+        accountId,
+      });
+      let wrappedAkPassword: Uint8Array;
+      try {
+        wrappedAkPassword = crypto.wrapAccountKey({
+          accountUnlockKey: auk,
+          accountKey: session.accountKey,
+          accountId,
+          accountKeyId: enrolled.akId,
+          accountKeyEpoch: enrolled.akEpoch,
+          profile: DEFAULT_KDF_PROFILE,
+          passwordSalt: saltPw,
+        });
+      } finally {
+        auk.fill(0);
+      }
+      const nonce = await api.proofNonce('secret_key_rotate');
+      await api.rotateSecretKey({
+        keysetVersion,
+        keyset: toB64(keyset),
+        kdfProfile: 1,
+        saltPw: toB64(saltPw),
+        wrappedAkPassword: toB64(wrappedAkPassword),
+        expectedRowVersion: keys.rowVersion,
+        ...this.signed(
+          { accountId: session.device.accountId, deviceId: session.device.deviceId },
+          this.deviceKeyOf(session),
+          'secret_key_rotate',
+          nonce,
+          [
+            { u32: keysetVersion },
+            keyset,
+            { u8: 1 },
+            saltPw,
+            wrappedAkPassword,
+            { u64: keys.rowVersion },
+          ],
+          this.accountProofOf(session),
+        ),
+      });
+      const device = {
+        ...session.device,
+        enrolled: {
+          ...enrolled,
+          secretKey,
+          kdfProfile: 1,
           saltPw,
           wrappedAkPassword,
-          { u64: keys.rowVersion },
-        ],
-        this.accountProofOf(session),
-      ),
+          keysetVersion,
+          keyset,
+        },
+      };
+      await this.deps.store.putDevice(device);
+      session.device = device;
+      owned.release(secretKey);
+      enrolled.secretKey.fill(0);
     });
-    const device = {
-      ...session.device,
-      enrolled: {
-        ...enrolled,
-        secretKey,
-        kdfProfile: 1,
-        saltPw,
-        wrappedAkPassword,
-        keysetVersion,
-        keyset,
-      },
-    };
-    await this.deps.store.putDevice(device);
-    session.device = device;
-    enrolled.secretKey.fill(0);
   }
 
   /**
@@ -4093,7 +4182,8 @@ export class VaultEngine {
     const r = this.recovery;
     this.recovery = undefined;
     if (!r) return;
-    // The password path shares AK with the unlocked session, which wipeMemory clears anyway.
+    // Its own copies: on the password path they equal the session's keys but are not the same
+    // buffers (`reopenBegin` unwrapped them again), so the session keeps working (F-19).
     for (const key of [r.accountKey, r.secretKey, r.vaultKey]) key.fill(0);
   }
 
@@ -4112,6 +4202,8 @@ export class VaultEngine {
     if (session) {
       session.accountKey.fill(0);
       session.vault.vaultKey.fill(0);
+      // The session's own SK: read from the store or received, never shared (F-19).
+      session.device.enrolled.secretKey.fill(0);
       // A locked device cannot sign (device-proof.md §2).
       session.deviceKey?.secretKey.fill(0);
       session.deviceKey = undefined;

@@ -166,6 +166,12 @@ export class DeviceStore {
     }
   }
 
+  /**
+   * A new copy on every read (IndexedDB clones it): the caller owns its buffers and may zero them,
+   * the `SK` included, without changing what is stored (follow-up review F-19). Writes store a
+   * copy too, so a buffer passed to `putDevice` or `apply` may be zeroed once the write resolves.
+   * Another implementation of this interface must keep both rules.
+   */
   async device(): Promise<DeviceRecord | undefined> {
     return (await promised(this.store('device').get('self'))) as DeviceRecord | undefined;
   }
