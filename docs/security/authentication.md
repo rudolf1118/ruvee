@@ -198,8 +198,17 @@ The web session is a cookie, so state-changing requests are protected three ways
    `X-Ruvee-Request: 1`. Cross-site forms can send neither without a CORS preflight, and CORS is
    not opened to other origins.
 
-Bearer-token clients (extension and mobile) don't use cookies, so CSRF does not apply. The API
-rejects requests that carry both a cookie and a bearer token.
+Bearer-token clients (extension and mobile) don't use cookies, so CSRF does not apply **to the
+requests their token authenticates**. The API rejects requests that carry any Ruvee cookie (session,
+recovery or reopen) together with a bearer token, and a malformed `Authorization` header.
+
+**As built (2026-10-28, follow-up review F-6):** a bearer token exempts a request from the checks
+above only on routes that authenticate it (access levels `session`, `active`, `step-up`). On the
+unauthenticated routes (registration, login, refresh, recovery start and the three reopening
+starts) an `Authorization` header changes nothing: the request needs `Origin` and
+`X-Ruvee-Request: 1` like any other. Recovery and reopen routes refuse bearer tokens outright.
+A native client (mobile) therefore keeps sending `Origin` and `X-Ruvee-Request` on those routes,
+whether or not it also holds a token.
 
 **As built (2026-10-25):** the extension's unauthenticated calls (`login/*`, `refresh`) carry no
 cookie and no token, so they still go through the CSRF check. They pass it only from an origin

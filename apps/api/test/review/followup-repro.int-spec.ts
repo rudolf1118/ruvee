@@ -5,8 +5,7 @@ import { syntheticAccount, type SyntheticAccount } from '../support/synthetic-cl
 
 /**
  * Follow-up review (docs/security/followup-review.md): reproductions of confirmed server
- * defects, against a real database. Each test states the correct behaviour and is marked `fails`
- * while the defect exists; when a fix lands, vitest reports it and the mark must be removed.
+ * defects, against a real database. Both are fixed now and run as ordinary regressions.
  * Synthetic data only.
  */
 
@@ -72,20 +71,18 @@ describe('FOLLOW-UP reproductions (real database)', () => {
     expect((await h.get('/api/v1/recovery/material', recovery)).status).toBe(200);
   });
 
-  // F-6: any bearer-shaped Authorization header skips the CSRF checks of unauthenticated routes.
-  it.fails(
-    'an unauthenticated route refuses a request without Origin and X-Ruvee-Request',
-    async () => {
-      const res = await h
-        .http()
-        .post('/api/v1/recovery/start')
-        .set('Authorization', `Bearer ${'A'.repeat(43)}`)
-        .send({
-          username: 'nobody-at-all',
-          recoveryAuthKey: 'A'.repeat(43),
-          device: { id: account.crypto.generateUuid(), platform: 'web' },
-        });
-      expectError(res, 'csrf_rejected');
-    },
-  );
+  // F-6 (fixed; the full matrix is f6-csrf-bearer.int-spec.ts): any bearer-shaped Authorization
+  // header used to skip the CSRF checks of unauthenticated routes.
+  it('an unauthenticated route refuses a request without Origin and X-Ruvee-Request', async () => {
+    const res = await h
+      .http()
+      .post('/api/v1/recovery/start')
+      .set('Authorization', `Bearer ${'A'.repeat(43)}`)
+      .send({
+        username: 'nobody-at-all',
+        recoveryAuthKey: 'A'.repeat(43),
+        device: { id: account.crypto.generateUuid(), platform: 'web' },
+      });
+    expectError(res, 'csrf_rejected');
+  });
 });

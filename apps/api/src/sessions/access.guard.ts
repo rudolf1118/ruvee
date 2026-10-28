@@ -29,10 +29,9 @@ const FORWARDED_WITHOUT_PROXY = `A request carried X-Forwarded-For, but TRUSTED_
 
 /**
  * Global guard. In order: the handler must declare an access level (fail closed); a request
- * carries either the session cookie or a bearer token, never both; cookie requests that change
- * state must pass the CSRF checks of authentication.md §6 (bearer requests carry no ambient
- * credential, so CSRF does not apply); then the session level is enforced. Recovery is
- * cookie-only.
+ * carries either a cookie or a bearer token, never both; requests that change state must pass the
+ * CSRF checks of authentication.md §6, except where a bearer token is the credential (it is not
+ * ambient, so CSRF does not apply); then the session level is enforced. Recovery is cookie-only.
  */
 @Injectable()
 export class AccessGuard implements CanActivate {
@@ -103,20 +102,26 @@ export class AccessGuard implements CanActivate {
       return true;
     }
     // Every other route: the cookie-xor-bearer rule and the CSRF checks apply, whatever its path.
+    // Any of the three cookies counts: a request never carries a cookie and a bearer token.
+    const cookie =
+      readCookie(req, this.sessions.cookieName) ??
+      readCookie(req, this.sessions.recoveryCookieName) ??
+      readCookie(req, this.sessions.reopenCookieName);
     let bearer: string | undefined;
     if (req.headers.authorization !== undefined) {
-      if (readCookie(req, this.sessions.cookieName) !== undefined)
-        throw new ApiException('invalid_request');
+      if (cookie !== undefined) throw new ApiException('invalid_request');
       bearer = BEARER.exec(req.headers.authorization)?.[1];
       if (bearer === undefined) throw new ApiException('unauthenticated');
-    } else if (!SAFE_METHODS.has(req.method)) {
+    }
+    // A bearer request skips CSRF only where that token is the credential checked below. An
+    // unauthenticated, recovery or reopen route never reads it, so a header of any value must not
+    // exempt the request (follow-up review F-6).
+    const authenticatesBearer =
+      bearer !== undefined && (level === 'session' || level === 'active' || level === 'step-up');
+    if (!authenticatesBearer && !SAFE_METHODS.has(req.method)) {
       // A listed extension may call the unauthenticated endpoints it uses (login and refresh,
       // marked on the handler; review R23), but never with a cookie: it fetches with
       // `credentials: 'omit'`, so a cookie here means someone else's request.
-      const cookie =
-        readCookie(req, this.sessions.cookieName) ??
-        readCookie(req, this.sessions.recoveryCookieName) ??
-        readCookie(req, this.sessions.reopenCookieName);
       const origin = req.headers.origin;
       const originOk =
         origin === this.publicOrigin ||
