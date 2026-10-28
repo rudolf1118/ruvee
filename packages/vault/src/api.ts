@@ -59,9 +59,14 @@ export class ApiError extends Error {
   }
 }
 
-/** The server could not be reached, or answered with something outside the contract. */
+/**
+ * The server could not be reached, or answered with something outside the contract:
+ * `unexpected_response` is a success whose body breaks the contract (what the server relays was
+ * malformed), `unexpected_error` an error status whose body is not the API's (a proxy's error
+ * page, a gateway timeout). Only the first says anything about the data (follow-up review F-15).
+ */
 export class NetworkError extends Error {
-  constructor(readonly reason: 'offline' | 'unexpected_response') {
+  constructor(readonly reason: 'offline' | 'unexpected_response' | 'unexpected_error') {
     super(
       reason === 'offline' ? 'The server could not be reached.' : 'Unexpected server response.',
     );
@@ -122,7 +127,7 @@ async function request<S extends z.ZodType>(
   }
   if (!res.ok) {
     const parsed = errorResponseSchema.safeParse(await res.json().catch(() => undefined));
-    if (!parsed.success) throw new NetworkError('unexpected_response');
+    if (!parsed.success) throw new NetworkError('unexpected_error');
     // An expired access token: refresh once and repeat the request.
     if (
       authorization !== undefined &&

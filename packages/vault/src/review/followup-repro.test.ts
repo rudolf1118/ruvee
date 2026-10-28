@@ -3,6 +3,7 @@ import { initRuveeCrypto, type RuveeCrypto } from '@ruvee/crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import type { ItemDraft } from '../protocol.js';
 import { DeviceStore } from '../store.js';
+import { createApi, NetworkError, SAME_ORIGIN } from '../api.js';
 import { FakeServer, fakeOpaque } from '../test-support.js';
 import { VaultEngine, VaultError } from '../vault-engine.js';
 
@@ -19,11 +20,11 @@ beforeAll(async () => {
   crypto = await initRuveeCrypto();
 });
 
-async function device(server: FakeServer, factory = new IDBFactory()) {
+async function device(server: FakeServer, factory = new IDBFactory(), api = server.api()) {
   const store = await DeviceStore.open(factory);
   const engine = new VaultEngine({
     crypto,
-    api: server.api(),
+    api,
     store,
     opaque: fakeOpaque,
     origin: 'http://127.0.0.1:3101',
@@ -55,9 +56,8 @@ const code = async (p: Promise<unknown>) => {
   }
 };
 
-async function account() {
-  const server = new FakeServer();
-  const a = await device(server);
+async function account(server = new FakeServer(), api = server.api()) {
+  const a = await device(server, undefined, api);
   const kit = await a.engine.setupBegin({
     bootstrapToken: 'T'.repeat(43),
     username: 'Synthetic-User',
@@ -221,5 +221,47 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     a.engine.wipeMemory();
     expect(await unlocking).not.toBe('ok');
     expect(() => a.engine.items()).toThrow();
+  });
+
+  // F-15: a proxy's error page during pairing used to burn the pairing as a MAC failure.
+  it('a non-API error page tells the client nothing about the pairing request', async () => {
+    const server = new FakeServer();
+    const api = server.api();
+    const { a: b } = await account(server, api);
+    const { pairingId } = await b.engine.pairingStart();
+    const realState = api.pairingState;
+    api.pairingState = () => Promise.reject(new NetworkError('unexpected_error'));
+    expect(await code(b.engine.pairingStatus({ pairingId }))).toBe('offline');
+    expect(server.pairingCancels).toEqual([]);
+    // Still hosted: the next poll goes on normally.
+    api.pairingState = realState;
+    expect(await b.engine.pairingStatus({ pairingId })).toEqual({ state: 'waiting' });
+    // A success whose body breaks the contract still burns it.
+    api.pairingState = () => Promise.reject(new NetworkError('unexpected_response'));
+    expect(await b.engine.pairingStatus({ pairingId })).toEqual({ state: 'failed' });
+    expect(server.pairingCancels).toEqual([{ pairingId, reason: 'mac_failed' }]);
+  });
+
+  it('the API client tells a non-API error page from a malformed success', async () => {
+    const reply = (status: number, body: string, type: string) => () =>
+      Promise.resolve(new Response(body, { status, headers: { 'Content-Type': type } }));
+    const reason = async (run: () => Promise<unknown>) => {
+      try {
+        await run();
+        return 'ok';
+      } catch (error) {
+        return error instanceof NetworkError ? error.reason : String(error);
+      }
+    };
+    const real = globalThis.fetch;
+    try {
+      const api = createApi({ ...SAME_ORIGIN, baseUrl: 'http://127.0.0.1:9/api/v1' });
+      globalThis.fetch = reply(502, '<html>Bad Gateway</html>', 'text/html');
+      expect(await reason(() => api.pairingState('A'.repeat(43)))).toBe('unexpected_error');
+      globalThis.fetch = reply(200, '{"state":"nonsense"}', 'application/json');
+      expect(await reason(() => api.pairingState('A'.repeat(43)))).toBe('unexpected_response');
+    } finally {
+      globalThis.fetch = real;
+    }
   });
 });

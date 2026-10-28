@@ -1921,7 +1921,8 @@ export class VaultEngine {
         this.dropHosted(params.pairingId);
         return { state: 'expired' };
       }
-      // A reply that does not parse (a malformed key, an unknown platform) is the server's.
+      // A reply that does not parse (a malformed key, an unknown platform) is the server's. An
+      // error page that is not the API's (a proxy's 502) says nothing about the request: wait.
       if (error instanceof NetworkError && error.reason === 'unexpected_response') return burn();
       throw vaultErrorFrom(error);
     }
