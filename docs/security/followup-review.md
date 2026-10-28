@@ -436,10 +436,10 @@ rewritten; review the batch as a whole.
 - **F-16** (a conflict draft is replaced when the same item conflicts again). Not specified: sync-protocol §6 describes one conflict per item. It needs a decision: keep the older draft, the newer one, or both as items.
 - **F-19, the rest:** second copies on reopening with the password, failed `pairingWait`, `adoptServerKeys`, and the unlock paths not covered by F-12. Zeroing in JavaScript stays best-effort.
 - **F-20 to F-25** (Info), **S-4, S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
-- **F-4, server side:** see §11.4.
+- **F-4, server side:** implemented in §12, with the residual stated there.
 - **No expected failures remain:** every reproduction in `followup-repro.*` is an ordinary passing test.
 
-### 11.4 F-4: the protocol decision (not implemented)
+### 11.4 F-4: the protocol decision (approved and implemented in §12)
 
 - **What it addresses.** Device B has not seen a Secret Key replacement made on A. B fetches the account keys _after_ the replacement, so `expectedRowVersion` is current and the server's `row_version` check passes, then wraps `AK` under its old `SK`. The server cannot see which `SK` is under the wrap, so it accepts. This locks out every device holding the current `SK` and undoes the replacement. The client fix (`bdf5ba5`) makes the web and extension engines adopt the newer keyset first. Nothing on the server stops another client (mobile, or a future one) from repeating it. A race between B's read and A's rotation is already caught: rotation increments `row_version`.
 - **Version to bind.** The `keyset_version` whose `SK` the client used to derive `AUK'` for `wrappedAkPassword`. After the client fix, that is the version it just adopted, and it must equal the server's current `account_keys.keyset_version`.
@@ -466,4 +466,113 @@ The mobile branch (`mobile/vault-app`, worktree `ruvee-mobile`) was not touched.
    - Enrollment now writes `device` together with `local` (`checkpoint`, `anchor`, `device-key`) in one `apply` call. The mobile store's `apply` must write both atomically.
 4. **Pre-proof lapse (F-10, F-11).** A refresh of an unproven token session of an active device fails with `session_expired` once 10 minutes have passed since the later of the login and the enrollment. The engine proves right after login and pairing, so nothing changes for a correct client.
 5. **Worker protocol.** `VaultMethods` gains `settle` (used by the web tab handover). It is in the shared dispatch; the mobile UI does not need it.
-6. **If F-4 is approved:** `passwordChangeFinishRequest` gains `keysetVersion`, signed into op 4. Every client must change at the same time.
+6. **F-4 (approved; §12).** The password change is now op 12 with a signed `keysetVersion`. The exact handoff is [mobile-handoff-f4.md](../planning/mobile-handoff-f4.md).
+
+## 12. F-4: password change bound to the keyset version
+
+Owner approval (2026-10-28), for development, with conditions: check that `keysetVersion` really
+versions the Secret Key, state the actual guarantee, and test a malicious stale client. Commit
+`01e8a35` on top of `6dac84b`. Still not D-19; the real-data restrictions stand.
+
+### 12.1 Is `keyset_version` the Secret Key's version?
+
+- **As built, yes, and it is the only identifier there is.** `account_keys.keyset_version` is
+  set to 1 at registration and changed only by `POST /account/secret-key`, which requires
+  exactly the next version and replaces the keyset (holding `SK`) and the password wrap in one
+  statement. No other code writes it (recovery and reopening read it). There is no separate `SK`
+  id.
+- **It is a keyset version, not an `SK` version.** The design also changes it on vault creation
+  and on full rotation (sync-protocol.md §10); neither is built. Once they are, a version change
+  without a new `SK` makes a password change from a device that has not yet read the new keyset
+  fail with `409`, and the user's next attempt succeeds after adopting it. That is a refusal it
+  did not need, never acceptance of a stale wrap. Full rotation also changes `AK`, which the
+  envelope's `ak_id` and `ak_epoch` already bind.
+- The client signs the version **of the keyset its `SK` came from** (`enrolled.keysetVersion`),
+  not the server's current value, so an honest stale client is refused rather than carried along.
+
+### 12.2 The protocol change
+
+- **Explicit version.** A new operation code, **op 12 `password_change_v2`**. Op 4 is retired: no
+  nonce is issued for it, `@ruvee/crypto` no longer encodes it, and the code is never reused.
+  Every signed input carries `u8(op)`, so no op-4 signature verifies as op 12.
+- **Payload.** `registrationRecord`, `u8(kdfProfile)`, `saltPw`, `wrappedAkPassword`,
+  `u64(expectedRowVersion)`, `u32(keysetVersion)`, signed by both `DSK` (DSI) and `AVSK` (AKSI).
+- **Contract.** `passwordChangeFinishRequestSchema` requires `keysetVersion` (u32), and stays
+  strict. A body without it, or with a value outside u32, is `400 invalid_request`. There is no
+  fallback to the old format.
+- **Server.** After both signatures verify, in one transaction: consume the nonce, then
+  `UPDATE account_keys … WHERE account_id AND row_version = expected AND keyset_version =
+claimed`. Zero rows is `409 row_version_conflict`, and the whole transaction rolls back: the
+  OPAQUE record, the wrap, the sessions and the security events are untouched.
+- **Client (web and extension, shared engine).** `changePassword` first adopts a newer keyset
+  through the existing rotation protocol (`refreshKeyset`): it opens the keyset with the `AK` it
+  holds, and keeps the new `SK` only if the server's wrap opens with it and the step-up password.
+  It then refuses locally (`changed_elsewhere`) unless the server's version equals its own, and
+  signs that version. A
+  `409` is shown as `changed_elsewhere`. Nothing retries on its own.
+
+### 12.3 What it guarantees, and what it does not
+
+- **Guaranteed:** the server installs a password wrap only if the request's signed, claimed
+  keyset version is the account's version at the moment of the write, together with the row
+  version. A client that has not adopted a replaced `SK` and says so, including one that re-read
+  `row_version` after the rotation (the original F-4 sequence), is refused and changes nothing.
+- **Not guaranteed: that the wrap was made with that version's `SK`.** The server cannot open the
+  wrap (device-proof.md §3). **Residual attack, confirmed by test:** an active device that holds
+  `DSK` and `AK` reads the current version from `GET /account/keys`, claims it, signs with both
+  keys, and uploads a wrap under the old `SK`; the server accepts. Devices with the current `SK`
+  then cannot open the server's wrap, and the old `SK` opens it again, so the rotation is undone.
+- **Why this is not a new hole:** a device holding `AK` already defeats what an `SK` rotation
+  protects (cryptographic-design §6.2: only full rotation helps against it), and it can also
+  read the new `SK` from the keyset. A revoked device cannot do it, because its sessions end and
+  its proofs no longer verify. Stopping a malicious holder of `AK` would need a new mechanism
+  (for example a proof tied to `SK` itself), which is outside this change.
+
+### 12.4 Nonces, retries and lost answers
+
+- A refused signature burns the nonce. A `409` rolls back the nonce's consumption with the rest
+  of the transaction; that open nonce authorizes only the same stale payload, which stays
+  refused, because `row_version` and `keyset_version` only grow and a restore deletes every
+  nonce. Issuing a new nonce for the operation replaces it. This is S-4's behaviour for op 12 only.
+  S-4 itself is not closed.
+- If the server applied the change but the answer was lost, replaying the same request fails
+  (`device_proof_failed`, the nonce is spent) and changes nothing. The engine does not retry. Its
+  local wrap stays under the old password. The user gets in with the new password through the
+  existing path (the local wrap does not open, so it logs in without proof and opens the server
+  wrap with its `SK`), as on any device whose password changed elsewhere.
+
+### 12.5 Regression evidence
+
+`apps/api/test/review/f4-password-keyset.int-spec.ts` (real database, one installation per test):
+
+| Test                                                  | What it shows                                                                                                                                                                  |
+| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| applies a change made with the current SK and version | the valid path: 204, row version +1, keyset version unchanged, new wrap opens with the new password and `SK`                                                                   |
+| refuses the old format                                | no `keysetVersion`, a value outside u32, a nonce for `password_change`, and proofs over the old five fields: all refused, nothing changes                                      |
+| refuses a stale version after SK rotation             | the F-4 sequence: fresh `row_version`, honest old version → 409, and a higher version → 409; everything unchanged; after adopting `SK'` the retry succeeds                     |
+| each proof covers every field                         | each of five fields altered, with only one of the two proofs over the altered body: 10 × `device_proof_failed`, nothing changes                                                |
+| a concurrent SK rotation and password change          | three races: exactly one wins, and the server's wrap always opens with the `SK` of the keyset it ends up with                                                                  |
+| a lost response and a retry                           | a replay after success is refused; a refused request stays refused; a new nonce replaces the open one                                                                          |
+| residual: a client holding DSK and AK ...             | the malicious stale client above is **accepted**; the wrap then opens with the old `SK` and not with `SK'`. It describes the limit and must not be read as a passing guarantee |
+
+`packages/vault/src/review/followup-repro.test.ts` adds two engine tests: a rotation that lands
+between the client's check and its write is refused, the signed version is the one the client
+held, nothing is retried, and the user's next attempt succeeds; a lost answer is not retried, a
+second attempt with the old password fails at step-up without changing anything, and the new
+password unlocks. The earlier F-4 client test still passes.
+
+**Against the vulnerable server.** With the `keyset_version` condition removed from the update,
+the stale-version test fails (the server installs the stale wrap). With the version left out of
+the server's signed payload, six of seven tests fail (no proof verifies). The race test does not
+depend on the new check: `row_version` already serialises a rotation and a change; the new check
+closes the case where `row_version` is fresh and the `SK` is not.
+
+### 12.6 Compatibility
+
+- **Web and extension:** updated (one shared engine) and tested.
+- **Mobile:** **pending.** The mobile branch was not touched and is based on `bdf5ba5`, before
+  op 12. Until it takes [mobile-handoff-f4.md](../planning/mobile-handoff-f4.md) and runs its
+  tests against this server, its password change fails with `400` and changes nothing. Not all
+  clients are updated.
+- Recovery and reopening completions (ops 9, 11) also write a password wrap. They take `SK` from
+  the keyset they just read under `row_version`, so they were left unchanged.
