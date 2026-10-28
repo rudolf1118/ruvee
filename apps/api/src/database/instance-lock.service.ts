@@ -24,6 +24,12 @@ export const ANOTHER_INSTANCE =
  * connection; a process without it answers health checks only. Starting never waits for the
  * database (liveness stays independent of it): the lock is tried at start and then retried, and
  * taken again if its connection is lost.
+ *
+ * A connection can be lost without the client hearing of it (a silent network drop, while the
+ * server ends the backend and frees the lock). So the holder confirms on that connection, every
+ * `checkIntervalMs`, that it still holds the lock, and stops serving when the check fails or takes
+ * longer than READINESS_DB_TIMEOUT_MS (follow-up review S-1). Two processes can still overlap for
+ * at most about one interval plus that timeout.
  */
 @Injectable()
 export class InstanceLockService implements OnApplicationBootstrap, OnApplicationShutdown {
@@ -33,6 +39,10 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
   private closing = false;
   private timer: NodeJS.Timeout | undefined;
   private reportedConflict = false;
+  private checker: NodeJS.Timeout | undefined;
+  private checking = false;
+  /** How often the holder confirms it still holds the lock. Tests shorten it before start. */
+  checkIntervalMs = 10_000;
 
   constructor(private readonly config: ConfigService<Env, true>) {}
 
@@ -58,6 +68,7 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
   async onApplicationShutdown(): Promise<void> {
     this.closing = true;
     clearInterval(this.timer);
+    clearInterval(this.checker);
     const client = this.client;
     this.client = undefined;
     // Ending the connection releases the lock.
@@ -76,6 +87,7 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
     const client = new pg.Client({
       connectionString: this.config.get('DATABASE_URL', { infer: true }),
       connectionTimeoutMillis: this.config.get('READINESS_DB_TIMEOUT_MS', { infer: true }),
+      keepAlive: true,
     });
     client.on('error', () => {
       this.lost(client);
@@ -101,6 +113,8 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
       this.reportedConflict = false;
       clearInterval(this.timer);
       this.timer = undefined;
+      this.checker = setInterval(() => void this.check(client), this.checkIntervalMs);
+      this.checker.unref();
     } catch (error) {
       // Driver errors can include connection details, so only the error class is logged.
       const kind = error instanceof Error ? error.name : 'UnknownError';
@@ -111,8 +125,43 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
     }
   }
 
+  /** On the lock's own connection: is the lock still granted to this backend? */
+  private async check(client: pg.Client): Promise<void> {
+    if (this.client !== client || this.checking || this.closing) return;
+    this.checking = true;
+    let timeout: NodeJS.Timeout | undefined;
+    try {
+      const { rows } = await Promise.race([
+        client.query<{ ok: boolean }>(
+          `SELECT EXISTS (
+             SELECT 1 FROM pg_locks
+             WHERE locktype = 'advisory' AND granted AND pid = pg_backend_pid()
+               AND ((classid::bigint << 32) | objid::bigint) = $1::bigint
+           ) AS ok`,
+          [INSTANCE_LOCK_KEY],
+        ),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(
+            () => {
+              reject(new Error('instance lock check timed out'));
+            },
+            this.config.get('READINESS_DB_TIMEOUT_MS', { infer: true }),
+          );
+        }),
+      ]);
+      if (rows[0]?.ok !== true) this.lost(client);
+    } catch {
+      this.lost(client);
+    } finally {
+      clearTimeout(timeout);
+      this.checking = false;
+    }
+  }
+
   private lost(client: pg.Client): void {
     if (this.client !== client || this.closing) return;
+    clearInterval(this.checker);
+    this.checker = undefined;
     this.client = undefined;
     this.logger.error('The API instance lock was lost; serving nothing until it is taken again');
     void client.end().catch(() => undefined);
