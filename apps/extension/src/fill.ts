@@ -20,14 +20,31 @@ export function fillPage(expectedOrigin: string, username: string, password: str
     const y = box.top + box.height / 2;
     return x >= 0 && y >= 0 && x < window.innerWidth && y < window.innerHeight;
   };
+  // Follow-up review F-9: `filter: opacity()` fades like `opacity`; a clip path or the legacy
+  // `clip` can cut a field away without changing its box; text in a transparent colour is
+  // invisible however the box looks.
+  const filterOpacity = (filter: string) => {
+    let factor = 1;
+    for (const m of filter.matchAll(/opacity\(\s*([\d.]+)(%?)\s*\)/g))
+      factor *= Number(m[1]) / (m[2] === '%' ? 100 : 1);
+    return factor;
+  };
+  const transparent = (color: string) =>
+    color === 'transparent' || /^rgba\(.*,\s*0(\.0+)?\s*\)$/.test(color.replace(/\s+/g, ' '));
   const visible = (el: HTMLInputElement) => {
     if (el.disabled || el.readOnly) return false;
+    if (transparent(window.getComputedStyle(el).color)) return false;
     let opacity = 1;
     for (let node: Element | null = el; node; node = node.parentElement) {
       const style = window.getComputedStyle(node);
       if (style.display === 'none' || style.visibility === 'hidden') return false;
       if (style.visibility === 'collapse') return false;
+      const clipPath = style.getPropertyValue('clip-path');
+      if (clipPath !== '' && clipPath !== 'none') return false;
+      const clip = style.getPropertyValue('clip');
+      if (clip !== '' && clip !== 'auto') return false;
       opacity *= style.opacity === '' ? 1 : Number(style.opacity);
+      opacity *= filterOpacity(style.getPropertyValue('filter'));
     }
     if (!(opacity >= MIN_OPACITY)) return false;
     let box = el.getBoundingClientRect();
@@ -38,9 +55,22 @@ export function fillPage(expectedOrigin: string, username: string, password: str
       box = el.getBoundingClientRect();
       if (!onScreen(box)) return false;
     }
-    // The topmost element at its centre must be the field: not clipped away, not covered.
-    const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
-    return hit !== null && (hit === el || el.contains(hit));
+    // The topmost element at its centre must be the field: not clipped away, not covered. An
+    // overlay with `pointer-events: none` is invisible to hit testing (F-9), so for this one test
+    // every element takes part, through a style sheet the page's mutation observers do not see.
+    let sheet: CSSStyleSheet | undefined;
+    if (typeof CSSStyleSheet !== 'undefined' && 'adoptedStyleSheets' in document) {
+      sheet = new CSSStyleSheet();
+      sheet.replaceSync('* { pointer-events: auto !important; }');
+      document.adoptedStyleSheets = [...document.adoptedStyleSheets, sheet];
+    }
+    try {
+      const hit = document.elementFromPoint(box.left + box.width / 2, box.top + box.height / 2);
+      return hit !== null && (hit === el || el.contains(hit));
+    } finally {
+      if (sheet)
+        document.adoptedStyleSheets = document.adoptedStyleSheets.filter((s) => s !== sheet);
+    }
   };
   const inputs = Array.from(document.querySelectorAll('input')).filter(visible);
   const passwordField = inputs.find((el) => el.type === 'password');

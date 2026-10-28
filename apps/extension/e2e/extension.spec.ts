@@ -31,6 +31,8 @@ const FORM = `<!doctype html><title>Synthetic login</title>
 /**
  * Review R18: password fields on the saved origin that the user cannot see. Each one would have
  * been filled before: hidden by an ancestor, outside the page, clipped to nothing, covered, tiny.
+ * Follow-up review F-9: faded by a filter, cut by a clip path, transparent text and box, or under
+ * an overlay that hit testing looks through (`pointer-events: none`).
  */
 const HIDDEN_FIELDS = `<!doctype html><title>Synthetic hidden fields</title>
 <style>body{margin:0} .cover{position:absolute;left:0;top:200px;width:320px;height:40px;background:#fff}</style>
@@ -41,6 +43,11 @@ const HIDDEN_FIELDS = `<!doctype html><title>Synthetic hidden fields</title>
 <input id="covered" type="password" style="position:absolute;left:10px;top:205px">
 <div class="cover"></div>
 <input id="tiny" type="password" style="width:1px;height:1px;padding:0;border:0">
+<div style="filter:opacity(0)"><input id="filtered" type="password"></div>
+<div style="clip-path:inset(50%)"><input id="clip-path" type="password"></div>
+<input id="transparent" type="password" style="color:transparent;background:transparent;border:0;outline:0;caret-color:transparent">
+<input id="under-overlay" type="password" style="position:absolute;left:10px;top:305px">
+<div style="position:absolute;left:0;top:300px;width:320px;height:40px;background:#fff;pointer-events:none"></div>
 </form>`;
 const HIDDEN_PAGE = `${new URL(LOGIN_PAGE).origin}/hidden`;
 
@@ -318,7 +325,18 @@ test('R18: on the saved origin, fields the user cannot see are never filled', as
   await popup.goto(popupUrl(siteTab));
   await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
   await expect(popup.getByText('No visible password field on this page.')).toBeVisible();
-  for (const id of ['faded-user', 'faded', 'away', 'clipped', 'covered', 'tiny'])
+  for (const id of [
+    'faded-user',
+    'faded',
+    'away',
+    'clipped',
+    'covered',
+    'tiny',
+    'filtered',
+    'clip-path',
+    'transparent',
+    'under-overlay',
+  ])
     await expect(site.locator(`#${id}`), id).toHaveValue('');
   await site.goto(LOGIN_PAGE);
 });
