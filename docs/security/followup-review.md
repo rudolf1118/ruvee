@@ -698,14 +698,35 @@ configured identity, and reached PR #1 with the F-4 push (§12). Its scope (18 f
   - No permission, host permission, content-security policy or script changed.
   - No code that handles keys, the API or storage changed.
 
-**Review status.** CI passed on heads that include it. That shows only that the functional suites
-still pass. It is neither a visual review (dark-mode contrast, icon rendering) nor a security
-review. The commit has not been reviewed.
+**Review status.** The owner chose a review (2026-10-28). It was done as below. The commit is
+neither reverted nor approved; **visual approval is pending with the owner.**
 
-**Removing it** does not require a force-push. An ordinary `git revert 4249cbe` on the branch,
-pushed as a normal fast-forward, removes its changes and keeps the history. A force-push would be
-needed only to remove the commit from the history, which is not proposed. Whether to keep, revert
-or review it is the owner's decision; nothing has been done to it.
+### 14.1 Findings
+
+| Check                            | Result                                                                                                                                                                                                                                                                                              |
+| -------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provenance and licences          | Seven hand-written SVGs of plain geometry: a rounded square, a circle and a line. No fonts, embedded images or third-party artwork, so no licence to track. The five PNGs are reproducible: the script's default run regenerates them byte for byte.                                                |
+| SVG content                      | No `<script>`, event handler, `href`/`xlink:href`, `url()`, `<foreignObject>` or external reference. `favicon.svg` and the web `icon.svg` carry one inline `<style>` (a dark fill under `prefers-color-scheme`), which is inert in an image.                                                        |
+| PNG content                      | Only the `IHDR`, `IDAT` and `IEND` chunks, with no text or metadata. Sizes are as named: 180, 16, 32, 48, 128.                                                                                                                                                                                      |
+| Network, permissions, CSP, build | The manifest adds `icons` and `action.default_icon` only: no permission, host permission, CSP or script change. The extension pages made no request outside the extension. The web icons are same-origin files that Next.js links. No package script, build step or CI job runs `render-icons.mjs`. |
+| Cross-checkout write (script)    | **Fixed in `5c2aa32`.** Without an argument the script wrote eleven mobile icons into `../ruvee-mobile`. It now writes this checkout only; the mobile icons need an explicit `--mobile-out <dir>`, which must exist.                                                                                |
+| Readability (axe, WCAG 2.1 A/AA) | No violations, in light or dark, on: the welcome screen, the password step of setup, the vault with an item open, the locked screen, and the extension's popup and options pages. Measured after the colour transitions settle; mid-transition samples gave false positives.                        |
+| Contrast that axe does not check | **Revise:** in dark, the primary button's hover state is white on `#8a72ff`, 3.54:1. That is below 4.5:1 for its 14 px text; light hover is 6.5:1. Input borders are about 1.7:1 in both themes, which predates this commit.                                                                        |
+| Keyboard focus                   | The focus ring is visible in dark on the web sidebar, the inputs, and the extension popup's primary button.                                                                                                                                                                                         |
+| Icons at actual size             | They render correctly at 16, 32, 48, 128 and 180 px, at 1× and 2×, on light and dark backgrounds. The 16 px favicon and toolbar icon keep the ring open (the heavier small-size stroke).                                                                                                            |
+| `theme-color`                    | One value per scheme: `#f8f7f4` light, `#16151c` dark.                                                                                                                                                                                                                                              |
+
+### 14.2 Recommendation
+
+**Keep, with one revision.** The dark primary-button hover colour (`--color-brand-hover`, and
+`--brand-hover` in the extension) should be one that keeps white text at 4.5:1 or more, such as a
+darker violet. That is a colour-value change, not a redesign, and it is left to the owner with the
+visual review. Nothing found calls for a revert. The screenshots were taken from the real build
+against a throwaway synthetic account; they are evidence for that review, not a substitute for it.
+
+If it were reverted after all, an ordinary `git revert 4249cbe` pushed as a fast-forward would do,
+with no force-push. The script fix (`5c2aa32`) would then need adjusting, since it changes a file
+that the commit added.
 
 ## 15. S-4: proof nonces after a failed operation
 
