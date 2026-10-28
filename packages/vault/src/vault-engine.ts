@@ -271,8 +271,12 @@ function vaultErrorFrom(error: unknown): VaultError {
         return new VaultError('reopen_failed');
       // device-proof.md §5, §9: this device cannot prove its key to the server; it re-enrolls.
       case 'device_proof_required':
-      case 'device_proof_failed':
         return new VaultError('device_key_missing');
+      // §6: one signed request was refused (an expired or replaced nonce, two requests at once,
+      // or a bad signature). Nothing changed; trying again fetches a new nonce. Not by itself a
+      // reason to re-enroll (follow-up review F-17).
+      case 'device_proof_failed':
+        return new VaultError('proof_rejected');
       case 'device_key_mismatch':
         return new VaultError('integrity');
       // device-proof.md §9: an account from before D-31 never gets a trust anchor; it migrates.

@@ -178,6 +178,8 @@ export type VaultErrorCode =
   | 'changed_elsewhere'
   /** Another tab or engine took over this device's vault; this one locked (F-2). */
   | 'open_elsewhere'
+  /** The server refused one signed request; nothing changed, and it can be tried again (F-17). */
+  | 'proof_rejected'
   | 'previous_password_required'
   | 'invalid_export'
   | 'unsynced_changes'

@@ -3,7 +3,7 @@ import { initRuveeCrypto, type RuveeCrypto } from '@ruvee/crypto';
 import { IDBFactory } from 'fake-indexeddb';
 import type { ItemDraft } from '../protocol.js';
 import { DeviceStore } from '../store.js';
-import { createApi, NetworkError, SAME_ORIGIN } from '../api.js';
+import { ApiError, createApi, NetworkError, SAME_ORIGIN } from '../api.js';
 import { FakeServer, fakeOpaque } from '../test-support.js';
 import { VaultEngine, VaultError } from '../vault-engine.js';
 
@@ -263,5 +263,18 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     } finally {
       globalThis.fetch = real;
     }
+  });
+
+  // F-17: one refused proof (an expired or replaced nonce) used to be reported as a missing device
+  // key, which sends the user to re-enroll with the Recovery Kit.
+  it('a refused proof is reported as retryable, and trying again works', async () => {
+    const server = new FakeServer();
+    const api = server.api();
+    const { a } = await account(server, api);
+    const real = api.rotateSecretKey;
+    api.rotateSecretKey = () => Promise.reject(new ApiError(401, 'device_proof_failed'));
+    expect(await code(a.engine.rotateSecretKey({ password: PASSWORD }))).toBe('proof_rejected');
+    api.rotateSecretKey = real;
+    expect(await code(a.engine.rotateSecretKey({ password: PASSWORD }))).toBe('ok');
   });
 });
