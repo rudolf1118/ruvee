@@ -163,8 +163,7 @@ export class AccountSecurityService {
       { text: reason },
     ]);
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'device_revoke', nonce);
+    await this.proofs.spend(session.sessionId, 'device_revoke', nonce, async (tx) => {
       const updated = await tx.device.updateMany({
         where: { id: deviceId, accountId: session.accountId, status: { not: 'revoked' } },
         data: { status: 'revoked', revokedAt: now },
@@ -236,12 +235,9 @@ export class AccountSecurityService {
       { u32: body.keysetVersion },
     ]);
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'password_change_v2', nonce);
-      // A conflict rolls back the whole transaction, the nonce's consumption included. The open
-      // nonce then authorizes only this exact payload, which stays stale: row_version and
-      // keyset_version only grow, and a restore deletes every nonce (device-proof.md §6, §10;
-      // follow-up review S-4, which stays open for the other operations).
+    await this.proofs.spend(session.sessionId, 'password_change_v2', nonce, async (tx) => {
+      // A conflict rolls back the whole transaction, and `spend` then spends the nonce
+      // (device-proof.md §6; follow-up review S-4).
       const updated = await tx.accountKeys.updateMany({
         where: {
           accountId: session.accountId,
@@ -308,8 +304,7 @@ export class AccountSecurityService {
       wrappedAkPassword,
       { u64: body.expectedRowVersion },
     ]);
-    await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'secret_key_rotate', nonce);
+    await this.proofs.spend(session.sessionId, 'secret_key_rotate', nonce, async (tx) => {
       const updated = await tx.accountKeys.updateMany({
         where: {
           accountId: session.accountId,
@@ -365,8 +360,7 @@ export class AccountSecurityService {
       { u64: body.expectedRowVersion },
     ]);
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'recovery_key_rotate', nonce);
+    await this.proofs.spend(session.sessionId, 'recovery_key_rotate', nonce, async (tx) => {
       const updated = await tx.accountKeys.updateMany({
         where: { accountId: session.accountId, rowVersion: keys.rowVersion },
         data: {

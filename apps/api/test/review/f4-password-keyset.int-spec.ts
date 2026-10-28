@@ -451,7 +451,7 @@ describe('F-4: a password change is bound to the keyset version (real database)'
     }
   });
 
-  it('a lost response and a retry: the replay is refused, and a refused request stays refused', async () => {
+  it('a lost response and a retry: the replay is refused, and a refused request spends its nonce', async () => {
     const { account, cookie } = await fresh();
     const keys = await keysOf(cookie);
     const signed = await signedPassword(
@@ -464,17 +464,14 @@ describe('F-4: a password change is bound to the keyset version (real database)'
     const applied = await snapshot(account);
     expectError(await finish(cookie, signed), 'device_proof_failed');
     expect(await snapshot(account)).toEqual(applied);
-    // A conflict rolls back the nonce's consumption with the rest; replaying that exact request
-    // gives the same conflict, because row_version only grows.
+    // A conflict changes nothing and spends the nonce (follow-up review S-4): replaying that
+    // exact request is refused as a spent proof.
     const stale = await signedPassword(
       account,
       cookie,
       await passwordBody(account, cookie, keys, account.secretKey, keys.keysetVersion),
     );
     expectError(await finish(cookie, stale), 'row_version_conflict');
-    expectError(await finish(cookie, stale), 'row_version_conflict');
-    // A new nonce for the operation replaces that one.
-    await proofNonce(server(), cookie, 'password_change_v2');
     expectError(await finish(cookie, stale), 'device_proof_failed');
     expect(await snapshot(account)).toEqual(applied);
   });

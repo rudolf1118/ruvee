@@ -377,91 +377,95 @@ export class ReopenService {
       presented,
     );
     const now = new Date();
-    const result = await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'reopen_complete', proof.nonce);
-      // The guard row first: `ruvee-admin restore-reopen-code` locks it too, so a host revocation
-      // either commits before this check (and is seen here) or waits for this transaction (R13).
-      const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
+    const result = await this.proofs.spend(
+      session.sessionId,
+      'reopen_complete',
+      proof.nonce,
+      async (tx) => {
+        // The guard row first: `ruvee-admin restore-reopen-code` locks it too, so a host revocation
+        // either commits before this check (and is seen here) or waits for this transaction (R13).
+        const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
         SELECT state, restore_id FROM ruvee_control.restore_guard WHERE id = 1 FOR UPDATE`;
-      // Re-checked under that lock: the session was authenticated before this transaction.
-      const [live] = await tx.$queryRaw<{ id: string }[]>`
+        // Re-checked under that lock: the session was authenticated before this transaction.
+        const [live] = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM sessions
         WHERE id = ${session.sessionId}::uuid AND kind = 'reopen' AND revoked_at IS NULL
           AND absolute_expires_at > now()
         FOR UPDATE`;
-      const [link] = await tx.$queryRaw<{ restore_id: string }[]>`
+        const [link] = await tx.$queryRaw<{ restore_id: string }[]>`
         SELECT restore_id FROM ruvee_control.reopen_codes
         WHERE session_id = ${session.sessionId}::uuid AND revoked_at IS NULL
         FOR UPDATE`;
-      if (g?.state !== 'reopening' || !live || link?.restore_id !== g.restore_id)
-        throw new ApiException('reopen_failed');
-      const updated = await tx.accountKeys.updateMany({
-        where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
-        data: {
-          kdfProfile: body.kdfProfile,
-          saltPw: fromBase64url(body.saltPw),
-          wrappedAkPassword,
-          recoveryKeyId,
-          wrappedAkRecovery,
-          recoveryVerifier: fromBase64url(body.recoveryVerifier),
-          rowVersion: { increment: 1 },
-          updatedAt: now,
-        },
-      });
-      if (updated.count !== 1) throw new ApiException('row_version_conflict');
-      await tx.opaqueCredential.update({
-        where: { accountId: session.accountId },
-        data: {
-          registrationRecord: fromBase64url(body.registrationRecord),
-          configId: OPAQUE_CONFIG_ID,
-          updatedAt: now,
-        },
-      });
-      await tx.session.updateMany({
-        where: { accountId: session.accountId, revokedAt: null },
-        data: { revokedAt: now, revokeReason: 'reopened' },
-      });
-      await tx.$executeRaw`UPDATE ruvee_control.reopen_codes SET revoked_at = now() WHERE revoked_at IS NULL`;
-      await tx.$executeRaw`
+        if (g?.state !== 'reopening' || !live || link?.restore_id !== g.restore_id)
+          throw new ApiException('reopen_failed');
+        const updated = await tx.accountKeys.updateMany({
+          where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
+          data: {
+            kdfProfile: body.kdfProfile,
+            saltPw: fromBase64url(body.saltPw),
+            wrappedAkPassword,
+            recoveryKeyId,
+            wrappedAkRecovery,
+            recoveryVerifier: fromBase64url(body.recoveryVerifier),
+            rowVersion: { increment: 1 },
+            updatedAt: now,
+          },
+        });
+        if (updated.count !== 1) throw new ApiException('row_version_conflict');
+        await tx.opaqueCredential.update({
+          where: { accountId: session.accountId },
+          data: {
+            registrationRecord: fromBase64url(body.registrationRecord),
+            configId: OPAQUE_CONFIG_ID,
+            updatedAt: now,
+          },
+        });
+        await tx.session.updateMany({
+          where: { accountId: session.accountId, revokedAt: null },
+          data: { revokedAt: now, revokeReason: 'reopened' },
+        });
+        await tx.$executeRaw`UPDATE ruvee_control.reopen_codes SET revoked_at = now() WHERE revoked_at IS NULL`;
+        await tx.$executeRaw`
         UPDATE ruvee_control.restore_guard SET state = 'open', reopened_at = now()
         WHERE id = 1 AND state = 'reopening'`;
-      await tx.device.update({
-        where: { id: session.deviceId },
-        data:
-          via === 'recovery'
-            ? {
-                status: 'active',
-                enrolledVia: 'recovery',
-                enrolledAt: now,
-                lastSeenAt: now,
-                publicKey: proof.devicePublicKey,
-                ...(label === null ? {} : { label }),
-              }
-            : { lastSeenAt: now, ...(label === null ? {} : { label }) },
-      });
-      const created = await this.sessions.create(
-        session.accountId,
-        session.deviceId,
-        tx,
-        now,
-        true,
-      );
-      const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
-      await this.events.record(
-        'restore_reopened',
-        { ...context, details: { restoreId: g.restore_id, via } },
-        tx,
-      );
-      await this.events.record('password_changed', context, tx);
-      await this.events.record('recovery_key_rotated', context, tx);
-      if (via === 'recovery')
+        await tx.device.update({
+          where: { id: session.deviceId },
+          data:
+            via === 'recovery'
+              ? {
+                  status: 'active',
+                  enrolledVia: 'recovery',
+                  enrolledAt: now,
+                  lastSeenAt: now,
+                  publicKey: proof.devicePublicKey,
+                  ...(label === null ? {} : { label }),
+                }
+              : { lastSeenAt: now, ...(label === null ? {} : { label }) },
+        });
+        const created = await this.sessions.create(
+          session.accountId,
+          session.deviceId,
+          tx,
+          now,
+          true,
+        );
+        const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
         await this.events.record(
-          'device_enrolled',
-          { ...context, details: { enrolledDeviceId: session.deviceId, via: 'recovery' } },
+          'restore_reopened',
+          { ...context, details: { restoreId: g.restore_id, via } },
           tx,
         );
-      return created;
-    });
+        await this.events.record('password_changed', context, tx);
+        await this.events.record('recovery_key_rotated', context, tx);
+        if (via === 'recovery')
+          await this.events.record(
+            'device_enrolled',
+            { ...context, details: { enrolledDeviceId: session.deviceId, via: 'recovery' } },
+            tx,
+          );
+        return created;
+      },
+    );
     const account = await this.prisma.account.findUniqueOrThrow({
       where: { id: session.accountId },
     });

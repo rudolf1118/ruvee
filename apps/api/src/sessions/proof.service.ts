@@ -41,7 +41,8 @@ export interface ProofCheck {
 /**
  * Device proof of possession on the server (docs/security/device-proof.md, D-31 A). The signed
  * bytes come from `@ruvee/crypto`, the same code the clients sign with. Verification changes no
- * state; a nonce is consumed only inside the transaction of the operation it authorizes.
+ * state; a nonce is consumed inside the transaction of the operation it authorizes, and spent
+ * when that operation refuses (`spend`).
  */
 @Injectable()
 export class ProofService implements OnModuleInit {
@@ -166,8 +167,53 @@ export class ProofService implements OnModuleInit {
   }
 
   /**
+   * Runs an operation's effect in one transaction that first consumes its nonce (§6), and spends
+   * the nonce when the operation itself refuses (follow-up review S-4, option B).
+   *
+   * - A refusal is an `ApiException` with a 4xx status thrown by `effect` after the nonce was
+   *   consumed: a stale version, a missing or revoked target, a changed state. The transaction
+   *   rolls back, then the nonce is marked consumed in a separate write, so neither the same
+   *   request nor another payload signed with that nonce can apply later.
+   * - Anything else (a database error, a 5xx) decided nothing: the nonce stays open, and the
+   *   identical request can be retried until it expires or is replaced.
+   * - If spending fails, the refusal is still reported and the nonce stays open, as for a failure
+   *   that decided nothing.
+   */
+  async spend<T>(
+    sessionId: string,
+    operation: ProofOperation,
+    nonce: Bytes,
+    effect: (tx: Prisma.TransactionClient) => Promise<T>,
+  ): Promise<T> {
+    // Set inside the transaction callback, which the compiler cannot follow.
+    const progress = { consumed: false };
+    try {
+      return await this.prisma.$transaction(async (tx) => {
+        await this.consume(tx, sessionId, operation, nonce);
+        progress.consumed = true;
+        return effect(tx);
+      });
+    } catch (error) {
+      if (progress.consumed && error instanceof ApiException && error.getStatus() < 500)
+        await this.prisma.proofNonce
+          .updateMany({
+            where: {
+              nonceHash: sha256(nonce),
+              sessionId,
+              operation: PROOF_OPERATIONS[operation],
+              consumedAt: null,
+            },
+            data: { consumedAt: new Date() },
+          })
+          .catch(() => undefined);
+      throw error;
+    }
+  }
+
+  /**
    * Consumes the nonce inside the operation's transaction (§6): bound to this session and
-   * operation, unexpired and unused. Exactly one concurrent request can succeed.
+   * operation, unexpired and unused. Exactly one concurrent request can succeed. Operations use
+   * `spend`, which also decides what a refusal does to the nonce.
    */
   async consume(
     tx: Prisma.TransactionClient,

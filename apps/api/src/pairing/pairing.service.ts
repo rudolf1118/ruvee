@@ -223,8 +223,7 @@ export class PairingService {
       session.sessionId,
     );
     const now = new Date();
-    await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'pairing_approve', nonce);
+    await this.proofs.spend(session.sessionId, 'pairing_approve', nonce, async (tx) => {
       const updated = await tx.pairing.updateMany({
         where: { pairingId: row.pairingId, state: 'requested', requesterDeviceId: requester },
         data: {

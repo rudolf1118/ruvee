@@ -29,10 +29,11 @@ import { query } from '../support/temp-database.js';
 
 /**
  * Follow-up review S-4: how a proof nonce (device-proof.md §6) behaves across every way a signed
- * request can end. A nonce is consumed in the same transaction as the operation's effect, so a
- * request that is refused after consumption, or whose transaction fails, rolls the consumption
- * back with everything else. These tests pin down what that allows and what it does not, with
- * the password change (op 12) and device revocation (op 7) as the representative operations.
+ * request can end. A nonce is consumed in the same transaction as the operation's effect
+ * (`ProofService.spend`). When the operation itself refuses after a valid proof, the nonce is
+ * spent anyway (option B, owner decision 2026-10-28); a failure that decided nothing leaves it for
+ * the identical retry. The password change (op 12) and device revocation (op 7) are the
+ * representative operations; every nonce-consuming operation goes through the same `spend`.
  * Synthetic accounts only.
  */
 const b64 = (bytes: Uint8Array) => Buffer.from(bytes).toString('base64url');
@@ -232,18 +233,18 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
     expect(await passwordState(account)).toEqual(before);
   });
 
-  it('a valid proof refused after consumption: the same request stays refused, and nothing changes', async () => {
+  it('a refusal after a valid proof spends the nonce: a replay is refused, and nothing changes', async () => {
     const { account, cookie } = await fresh();
     // Op 12: a row version that is no longer current (another change happened since).
     const keys = await keysOf(cookie);
-    const stale = await passwordBody(account, cookie, keys, keys.rowVersion - 1);
     const signed = signPassword(
       account,
       await proofNonce(server(), cookie, 'password_change_v2'),
-      stale,
+      await passwordBody(account, cookie, keys, keys.rowVersion - 1),
     );
     const before = await passwordState(account);
-    for (let i = 0; i < 3; i++) expectError(await finish(cookie, signed), 'row_version_conflict');
+    expectError(await finish(cookie, signed), 'row_version_conflict');
+    expectError(await finish(cookie, signed), 'device_proof_failed');
     expect(await passwordState(account)).toEqual(before);
     // Op 7: a device that is already revoked.
     const other = await pendingDevice(account);
@@ -251,8 +252,37 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
       204,
     );
     const again = await signedRevoke(account, cookie, other);
-    for (let i = 0; i < 3; i++) expectError(await revoke(cookie, other, again), 'not_found');
+    expectError(await revoke(cookie, other, again), 'not_found');
+    expectError(await revoke(cookie, other, again), 'device_proof_failed');
     expect(await revokedEvents()).toBe(1);
+    // Spending touches only that nonce: the session's open nonce for another operation still works.
+    const third = await pendingDevice(account);
+    const open = await signedRevoke(account, cookie, third);
+    const refused = signPassword(
+      account,
+      await proofNonce(server(), cookie, 'password_change_v2'),
+      await passwordBody(account, cookie, keys, keys.rowVersion - 1),
+    );
+    expectError(await finish(cookie, refused), 'row_version_conflict');
+    expect((await revoke(cookie, third, open)).status).toBe(204);
+  });
+
+  it('concurrent duplicates of a refused request: none applies, and the nonce ends spent', async () => {
+    const { account, cookie } = await fresh();
+    const keys = await keysOf(cookie);
+    const signed = signPassword(
+      account,
+      await proofNonce(server(), cookie, 'password_change_v2'),
+      await passwordBody(account, cookie, keys, keys.rowVersion - 1),
+    );
+    const before = await passwordState(account);
+    const results = await Promise.all(Array.from({ length: 8 }, () => finish(cookie, signed)));
+    for (const r of results)
+      expect(['row_version_conflict', 'device_proof_failed']).toContain(
+        errorResponseSchema.parse(r.body).error,
+      );
+    expectError(await finish(cookie, signed), 'device_proof_failed');
+    expect(await passwordState(account)).toEqual(before);
   });
 
   it('a transaction that fails without a decision leaves the nonce for the same request', async () => {
@@ -319,9 +349,7 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
 
   // ---- Retrying the same request, or signing another one ----
 
-  it('open limit (S-4): after a refusal, the open nonce takes a different payload signed by the same keys', async () => {
-    // The defined semantics: a nonce authorizes one committed effect, not one attempt. Signing a
-    // second payload needs `DSK` and `AK`, exactly what fetching a new nonce needs.
+  it('after a refusal, a different payload signed with the same nonce is refused', async () => {
     const { account, cookie } = await fresh();
     const keys = await keysOf(cookie);
     const nonce = await proofNonce(server(), cookie, 'password_change_v2');
@@ -331,15 +359,20 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
       await passwordBody(account, cookie, keys, keys.rowVersion - 1),
     );
     expectError(await finish(cookie, stale), 'row_version_conflict');
+    const before = await passwordState(account);
     const fixed = signPassword(account, nonce, await passwordBody(account, cookie, keys));
-    expect((await finish(cookie, fixed)).status).toBe(204);
-    expectError(await finish(cookie, stale), 'device_proof_failed');
+    expectError(await finish(cookie, fixed), 'device_proof_failed');
+    expect(await passwordState(account)).toEqual(before);
+    // A new nonce is what a retry needs.
+    const retry = signPassword(
+      account,
+      await proofNonce(server(), cookie, 'password_change_v2'),
+      await passwordBody(account, cookie, keys),
+    );
+    expect((await finish(cookie, retry)).status).toBe(204);
   });
 
-  it('open limit (S-4): a request signed with a future row version applies once that version arrives', async () => {
-    // Honest clients sign the version they just read, which can only fall behind. A signer that
-    // holds `DSK` and `AK` can sign a later one: refused now, its nonce stays open, and another
-    // operation that raises row_version within the nonce's 2 minutes lets it apply.
+  it('a request signed with a future row version stays refused once that version arrives', async () => {
     const { account, cookie } = await fresh();
     const keys = await keysOf(cookie);
     const ahead = signPassword(
@@ -352,7 +385,9 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
     await rows('UPDATE account_keys SET row_version = row_version + 1 WHERE account_id = $1', [
       account.accountId,
     ]);
-    expect((await finish(cookie, ahead)).status).toBe(204);
+    const before = await passwordState(account);
+    expectError(await finish(cookie, ahead), 'device_proof_failed');
+    expect(await passwordState(account)).toEqual(before);
   });
 
   // ---- What a nonce is bound to ----
@@ -406,7 +441,7 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
     expect(await passwordState(account)).toEqual(before);
   });
 
-  it('expiry and replacement are enforced, after a rollback too', async () => {
+  it('expiry and replacement are enforced, for a nonce left open by a failure too', async () => {
     const { account, cookie } = await fresh();
     const keys = await keysOf(cookie);
     const body = await passwordBody(account, cookie, keys);
@@ -421,23 +456,30 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
     await rows(`UPDATE proof_nonces SET expires_at = now() - interval '1 second'`);
     expectError(await finish(cookie, expiring), 'device_proof_failed');
 
-    // Refused after consumption, then replaced by a newer nonce: the old request is dead.
-    const stale = signPassword(
+    // Replaced: an open nonce is dead once a newer one is issued for the same operation.
+    const replaced = signPassword(
       account,
       await proofNonce(server(), cookie, 'password_change_v2'),
-      await passwordBody(account, cookie, keys, keys.rowVersion - 1),
+      body,
     );
-    expectError(await finish(cookie, stale), 'row_version_conflict');
     await proofNonce(server(), cookie, 'password_change_v2');
-    expectError(await finish(cookie, stale), 'device_proof_failed');
+    expectError(await finish(cookie, replaced), 'device_proof_failed');
 
-    // Refused after consumption, then expired: dead as well.
+    // Left open by a failure that decided nothing, then expired: dead as well.
+    await rows(`CREATE SEQUENCE s4_expiry_failures`);
+    await rows(`CREATE FUNCTION s4_fail_expiry() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN
+        IF nextval('s4_expiry_failures') = 1 THEN RAISE EXCEPTION 's4 synthetic failure'; END IF;
+        RETURN NEW;
+      END $$`);
+    await rows(`CREATE TRIGGER s4_fail_expiry BEFORE INSERT ON security_events
+      FOR EACH ROW EXECUTE FUNCTION s4_fail_expiry()`);
     const late = signPassword(
       account,
       await proofNonce(server(), cookie, 'password_change_v2'),
-      await passwordBody(account, cookie, keys, keys.rowVersion - 1),
+      body,
     );
-    expectError(await finish(cookie, late), 'row_version_conflict');
+    expectError(await finish(cookie, late), 'internal_error');
     await rows(`UPDATE proof_nonces SET expires_at = now() - interval '1 second'`);
     expectError(await finish(cookie, late), 'device_proof_failed');
     expect(await passwordState(account)).toEqual(before);

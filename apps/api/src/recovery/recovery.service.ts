@@ -169,70 +169,74 @@ export class RecoveryService {
       fromBase64url(body.devicePublicKey),
     );
     const now = new Date();
-    const result = await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'recovery_complete', proof.nonce);
-      // Re-checked under row locks: the session and device were authenticated before this
-      // transaction, and a device revoked (or a recovery ended) since must not be made active
-      // again (follow-up review F-18; as reopening does, R13). Revocation updates the same rows,
-      // so it either committed before these reads or waits for this transaction.
-      const [live] = await tx.$queryRaw<{ id: string }[]>`
+    const result = await this.proofs.spend(
+      session.sessionId,
+      'recovery_complete',
+      proof.nonce,
+      async (tx) => {
+        // Re-checked under row locks: the session and device were authenticated before this
+        // transaction, and a device revoked (or a recovery ended) since must not be made active
+        // again (follow-up review F-18; as reopening does, R13). Revocation updates the same rows,
+        // so it either committed before these reads or waits for this transaction.
+        const [live] = await tx.$queryRaw<{ id: string }[]>`
         SELECT id FROM sessions
         WHERE id = ${session.sessionId}::uuid AND kind = 'recovery' AND revoked_at IS NULL
           AND absolute_expires_at > now()
         FOR UPDATE`;
-      if (!live) throw new ApiException('unauthenticated');
-      const [device] = await tx.$queryRaw<{ status: string }[]>`
+        if (!live) throw new ApiException('unauthenticated');
+        const [device] = await tx.$queryRaw<{ status: string }[]>`
         SELECT status::text AS status FROM devices WHERE id = ${session.deviceId}::uuid FOR UPDATE`;
-      if (device?.status === 'revoked') throw new ApiException('device_revoked');
-      const updated = await tx.accountKeys.updateMany({
-        where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
-        data: {
-          kdfProfile: body.kdfProfile,
-          saltPw: fromBase64url(body.saltPw),
-          wrappedAkPassword,
-          recoveryKeyId,
-          wrappedAkRecovery,
-          recoveryVerifier: fromBase64url(body.recoveryVerifier),
-          rowVersion: { increment: 1 },
-          updatedAt: now,
-        },
-      });
-      if (updated.count !== 1) throw new ApiException('row_version_conflict');
-      await tx.opaqueCredential.update({
-        where: { accountId: session.accountId },
-        data: {
-          registrationRecord: fromBase64url(body.registrationRecord),
-          configId: OPAQUE_CONFIG_ID,
-          updatedAt: now,
-        },
-      });
-      await tx.session.updateMany({
-        where: { accountId: session.accountId, revokedAt: null },
-        data: { revokedAt: now, revokeReason: 'recovery' },
-      });
-      await tx.device.update({
-        where: { id: session.deviceId },
-        data: {
-          status: 'active',
-          enrolledVia: 'recovery',
-          enrolledAt: now,
-          lastSeenAt: now,
-          publicKey: proof.devicePublicKey,
-          ...(label === null ? {} : { label }),
-        },
-      });
-      const created = await this.sessions.create(
-        session.accountId,
-        session.deviceId,
-        tx,
-        now,
-        true,
-      );
-      const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
-      await this.events.record('recovery_completed', context, tx);
-      await this.events.record('recovery_key_rotated', context, tx);
-      return created;
-    });
+        if (device?.status === 'revoked') throw new ApiException('device_revoked');
+        const updated = await tx.accountKeys.updateMany({
+          where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
+          data: {
+            kdfProfile: body.kdfProfile,
+            saltPw: fromBase64url(body.saltPw),
+            wrappedAkPassword,
+            recoveryKeyId,
+            wrappedAkRecovery,
+            recoveryVerifier: fromBase64url(body.recoveryVerifier),
+            rowVersion: { increment: 1 },
+            updatedAt: now,
+          },
+        });
+        if (updated.count !== 1) throw new ApiException('row_version_conflict');
+        await tx.opaqueCredential.update({
+          where: { accountId: session.accountId },
+          data: {
+            registrationRecord: fromBase64url(body.registrationRecord),
+            configId: OPAQUE_CONFIG_ID,
+            updatedAt: now,
+          },
+        });
+        await tx.session.updateMany({
+          where: { accountId: session.accountId, revokedAt: null },
+          data: { revokedAt: now, revokeReason: 'recovery' },
+        });
+        await tx.device.update({
+          where: { id: session.deviceId },
+          data: {
+            status: 'active',
+            enrolledVia: 'recovery',
+            enrolledAt: now,
+            lastSeenAt: now,
+            publicKey: proof.devicePublicKey,
+            ...(label === null ? {} : { label }),
+          },
+        });
+        const created = await this.sessions.create(
+          session.accountId,
+          session.deviceId,
+          tx,
+          now,
+          true,
+        );
+        const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
+        await this.events.record('recovery_completed', context, tx);
+        await this.events.record('recovery_key_rotated', context, tx);
+        return created;
+      },
+    );
     const account = await this.prisma.account.findUniqueOrThrow({
       where: { id: session.accountId },
     });

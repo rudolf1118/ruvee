@@ -429,13 +429,13 @@ rewritten; review the batch as a whole.
   - **What that means for LOAD:** holding back the last chunk is not a commit barrier. A Ruvee backup whose dump is a complete archive followed by 256 KiB of extra bytes restored successfully; the extra bytes were never read.
   - **The real barrier:** VERIFY checks every byte before LOAD starts, against the metadata and the trusted digest, and the staged copy is private (R9). Unverified bytes can reach `pg_restore` only if that staged file changes between the two passes. In that case LOAD's check fails after the commit, the guard stays `restoring`, and the operator is told to discard the database.
   - **Evidence:** a script and outputs in the session's evidence folder (`s3-repro/`). No repository test was kept, because the only stable assertion would lock in the acceptance of trailing bytes.
-- **S-4:** investigated in §15; the remaining choice is the owner's. **S-5:** not investigated; unchanged.
+- **S-4:** fixed with the owner's option B (§15.5). **S-5:** not investigated; unchanged.
 
 ### 11.3 Still open
 
 - **F-16** (a conflict draft is replaced when the same item conflicts again). Not specified: sync-protocol §6 describes one conflict per item. It needs a decision: keep the older draft, the newer one, or both as items.
 - **F-19, the rest:** fixed in §13 (`51432e2`), with the limits of zeroing in JavaScript stated there.
-- **F-20 to F-25** (Info), **S-4** (decision pending, §15), **S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
+- **F-20 to F-25** (Info), **S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
 - **F-4, server side:** implemented in §12, with the residual stated there.
 - **No expected failures remain:** every reproduction in `followup-repro.*` is an ordinary passing test.
 
@@ -444,7 +444,7 @@ rewritten; review the batch as a whole.
 - **What it addresses.** Device B has not seen a Secret Key replacement made on A. B fetches the account keys _after_ the replacement, so `expectedRowVersion` is current and the server's `row_version` check passes, then wraps `AK` under its old `SK`. The server cannot see which `SK` is under the wrap, so it accepts. This locks out every device holding the current `SK` and undoes the replacement. The client fix (`bdf5ba5`) makes the web and extension engines adopt the newer keyset first. Nothing on the server stops another client (mobile, or a future one) from repeating it. A race between B's read and A's rotation is already caught: rotation increments `row_version`.
 - **Version to bind.** The `keyset_version` whose `SK` the client used to derive `AUK'` for `wrappedAkPassword`. After the client fix, that is the version it just adopted, and it must equal the server's current `account_keys.keyset_version`.
 - **Transcript.** Add `keysetVersion` to `passwordChangeFinishRequestSchema`. Op 4's signed payload becomes `registrationRecord, u8(kdfProfile), saltPw, wrappedAkPassword, u64(expectedRowVersion), u32(keysetVersion)`, encoded as op 5 (`secret_key_rotate`) already encodes it, and signed by both the device and `AK`. Old signatures no longer verify, so this is a deliberate breaking change of op 4. With no deployed clients that is acceptable, but every client must change together.
-- **Server check.** Inside the existing transaction, after the nonce is consumed: `UPDATE account_keys … WHERE account_id = $1 AND row_version = $2 AND keyset_version = $3`. Zero rows means one of the two moved. Both return `409 row_version_conflict`, which the client reports as `changed_elsewhere`. Nothing changes, and the nonce rolls back (S-4).
+- **Server check.** Inside the existing transaction, after the nonce is consumed: `UPDATE account_keys … WHERE account_id = $1 AND row_version = $2 AND keyset_version = $3`. Zero rows means one of the two moved. Both return `409 row_version_conflict`, which the client reports as `changed_elsewhere`. Nothing changes, and the nonce is spent (S-4, §15.5).
 - **Stale clients and retries.**
   - A client that gets the conflict runs `refreshKeyset` (adopting the newer `SK` with `AK`), fetches a new nonce, and the user tries again. Each retry is a new signature over the new version; nothing is retried automatically.
   - A client still on the old op-4 payload gets `400 invalid_request` (missing field) or `401 device_proof_failed` (signature over the old layout), and changes nothing.
@@ -535,11 +535,10 @@ claimed`. Zero rows is `409 row_version_conflict`, and the whole transaction rol
 
 ### 12.4 Nonces, retries and lost answers
 
-- A refused signature burns the nonce. A `409` rolls back the nonce's consumption with the rest
-  of the transaction; that open nonce authorizes only the same stale payload, which stays
-  refused, because `row_version` and `keyset_version` only grow and a restore deletes every
-  nonce. Issuing a new nonce for the operation replaces it. This is S-4's behaviour for op 12 only.
-  S-4 itself is not closed.
+- A refused signature burns the nonce. Since §15.5, a `409` spends it as well: the transaction
+  rolls back and the nonce is then marked consumed, so the same request, or another payload
+  under that nonce, is refused with `device_proof_failed`. (Before §15.5 the nonce reopened with
+  the rollback.)
 - If the server applied the change but the answer was lost, replaying the same request fails
   (`device_proof_failed`, the nonce is spent) and changes nothing. The engine does not retry. Its
   local wrap stays under the old password. The user gets in with the new password through the
@@ -730,8 +729,8 @@ that the commit added.
 
 ## 15. S-4: proof nonces after a failed operation
 
-Investigated across every operation that consumes a nonce. No code was changed. One semantic
-choice is left to the owner (§15.4). Still not D-19.
+Investigated across every operation that consumes a nonce (§15.1 to §15.4); the owner chose
+option B, implemented in §15.5. Still not D-19.
 
 ### 15.1 Where each operation consumes its nonce, and what can refuse afterwards
 
@@ -757,8 +756,8 @@ the nonce untouched, with the same result.
 ### 15.2 Reproduction and regression evidence
 
 `apps/api/test/review/s4-nonce-lifecycle.int-spec.ts` (real database, one installation per test,
-op 12 and op 7 as representatives). It has 9 tests, all passing on the current code. They
-describe the behaviour; they are not fixes.
+op 12 and op 7 as representatives). As first written it had 9 tests, all passing on the code
+of that time; they described the behaviour as found. §15.5 changed four of these results.
 
 | Case                                 | Result                                                                                                                                                                    |
 | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -799,5 +798,37 @@ NULL` lets exactly one through. The others wait for its row lock and then find i
 | **B. Spend the nonce on a decided refusal** (recommended) | When the operation itself refuses after a valid proof (`409`, `404`, `pairing_state`, a revoked session or device, `reopen_failed`), the consumption is committed separately. A database failure that decides nothing still leaves the nonce for the identical retry. | One more write per refusal. The burn can itself fail, which leaves A's behaviour. The tests for the different payload and the future version flip to "refused". Clients need no change: they never reuse a nonce. |
 | C. Spend the nonce on every failure                       | One attempt per nonce, always.                                                                                                                                                                                                                                        | Loses the safe retry after a transient failure, and a lost "failed" answer would look the same as a lost success.                                                                                                 |
 
-Until this is decided, S-4 stays open. Its tests describe today's behaviour, and the two boundary
-tests are marked as describing the open limit.
+### 15.5 Option B, implemented
+
+Owner decision (2026-10-28): option B. `ProofService.spend` now runs every nonce-consuming
+operation: ops 2, 5, 6, 7, 8, 9, 11 and 12. It consumes the nonce and applies the effect in one
+transaction.
+
+- **Decided refusal:** when the effect throws an `ApiException` with a 4xx status after
+  consumption, the transaction rolls back and the nonce is marked consumed in a separate write.
+- **Anything else** decided nothing, and the nonce stays open for the identical retry.
+- **If the separate write fails,** the refusal is still reported and the nonce stays open, as in
+  option A.
+
+**Regression evidence.** `s4-nonce-lifecycle.int-spec.ts` now has 10 tests and
+`f4-password-keyset.int-spec.ts` 7; all 17 pass. Against the server code before §15.5, five fail:
+
+- a refused request's replay is refused as spent (ops 12 and 7); spending touches only that nonce;
+- 8 concurrent duplicates of a refused request: none applies, and the nonce ends spent;
+- a different payload under a refused nonce is refused (was: the open limit, it applied);
+- a request with a future row version stays refused once that version arrives (was: the open
+  limit, it applied);
+- F-4's lost-response test: a refused password change spends its nonce.
+
+**Unchanged.** These tests passed before and still pass:
+
+- after a one-time database failure, the identical retry applies once;
+- invalid proofs burn their nonce;
+- a lost response's replay is refused;
+- 8 concurrent duplicates of a valid request apply once;
+- operation, session, account and payload binding;
+- expiry and replacement, for a nonce left open by a failure too.
+
+**What it does not cover.** A request refused **before** its proof is checked does not touch the
+nonce. Examples are op 5's and op 6's early stale-version check, malformed bodies and step-up.
+That is unchanged. Such a request changes nothing, and the same check refuses it again.

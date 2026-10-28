@@ -468,8 +468,7 @@ export class AuthService {
       });
       throw new ApiException('device_proof_failed');
     }
-    await this.prisma.$transaction(async (tx) => {
-      await this.proofs.consume(tx, session.sessionId, 'session_proof', nonce);
+    await this.proofs.spend(session.sessionId, 'session_proof', nonce, async (tx) => {
       const marked = await tx.session.updateMany({
         where: { id: session.sessionId, revokedAt: null, provenAt: null },
         data: { provenAt: now },
