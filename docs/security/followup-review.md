@@ -434,7 +434,7 @@ rewritten; review the batch as a whole.
 ### 11.3 Still open
 
 - **F-16** (a conflict draft is replaced when the same item conflicts again). Not specified: sync-protocol §6 describes one conflict per item. It needs a decision: keep the older draft, the newer one, or both as items.
-- **F-19, the rest:** second copies on reopening with the password, failed `pairingWait`, `adoptServerKeys`, and the unlock paths not covered by F-12. Zeroing in JavaScript stays best-effort.
+- **F-19, the rest:** fixed in §13 (`51432e2`), with the limits of zeroing in JavaScript stated there.
 - **F-20 to F-25** (Info), **S-4, S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
 - **F-4, server side:** implemented in §12, with the residual stated there.
 - **No expected failures remain:** every reproduction in `followup-repro.*` is an ordinary passing test.
@@ -473,7 +473,7 @@ The mobile branch (`mobile/vault-app`, worktree `ruvee-mobile`) was not touched.
 Owner approval (2026-10-28), for development, with conditions: check that `keysetVersion` really
 versions the Secret Key, state the actual guarantee, and test a malicious stale client. Commit
 `01e8a35`, documented in `7dd94a7`. Its parent is `4249cbe`, a branding commit (icons and a dark
-theme) made in this checkout while this work ran; it is not part of F-4 and was not reviewed here.
+theme) made in this checkout while this work ran; it is not part of F-4 and is described in §14.
 Still not D-19; the real-data restrictions stand.
 
 ### 12.1 Is `keyset_version` the Secret Key's version?
@@ -486,9 +486,10 @@ Still not D-19; the real-data restrictions stand.
 - **It is a keyset version, not an `SK` version.** The design also changes it on vault creation
   and on full rotation (sync-protocol.md §10); neither is built. Once they are, a version change
   without a new `SK` makes a password change from a device that has not yet read the new keyset
-  fail with `409`, and the user's next attempt succeeds after adopting it. That is a refusal it
-  did not need, never acceptance of a stale wrap. Full rotation also changes `AK`, which the
-  envelope's `ak_id` and `ak_epoch` already bind.
+  fail with `409`, and the user's next attempt succeeds after adopting it. For an honest client
+  that is a refusal it did not need, not the acceptance of a stale wrap. A client that claims a
+  version its `SK` did not come from is not covered by this argument (§12.3). Full rotation also
+  changes `AK`, which the envelope's `ak_id` and `ak_epoch` already bind.
 - The client signs the version **of the keyset its `SK` came from** (`enrolled.keysetVersion`),
   not the server's current value, so an honest stale client is refused rather than carried along.
 
@@ -517,18 +518,20 @@ claimed`. Zero rows is `409 row_version_conflict`, and the whole transaction rol
 
 - **Guaranteed:** the server installs a password wrap only if the request's signed, claimed
   keyset version is the account's version at the moment of the write, together with the row
-  version. A client that has not adopted a replaced `SK` and says so, including one that re-read
-  `row_version` after the rotation (the original F-4 sequence), is refused and changes nothing.
+  version. For an **honest client**, one that reports the version its `SK` came from, a stale
+  wrap is refused, including after it re-read `row_version` following the rotation (the original
+  F-4 sequence), and nothing changes. The guarantee is only as good as that report.
 - **Not guaranteed: that the wrap was made with that version's `SK`.** The server cannot open the
   wrap (device-proof.md §3). **Residual attack, confirmed by test:** an active device that holds
   `DSK` and `AK` reads the current version from `GET /account/keys`, claims it, signs with both
   keys, and uploads a wrap under the old `SK`; the server accepts. Devices with the current `SK`
   then cannot open the server's wrap, and the old `SK` opens it again, so the rotation is undone.
-- **Why this is not a new hole:** a device holding `AK` already defeats what an `SK` rotation
-  protects (cryptographic-design §6.2: only full rotation helps against it), and it can also
-  read the new `SK` from the keyset. A revoked device cannot do it, because its sessions end and
-  its proofs no longer verify. Stopping a malicious holder of `AK` would need a new mechanism
-  (for example a proof tied to `SK` itself), which is outside this change.
+- **Status: open.** This is a threat-model decision for the owner, and it has not been made: the
+  residual is **not accepted**. Facts for that decision: a device holding `AK` already defeats
+  what an `SK` rotation protects (cryptographic-design §6.2: only full rotation helps against
+  it), and it can also read the new `SK` from the keyset; a revoked device cannot do it, because
+  its sessions end and its proofs no longer verify. Closing it would need a new mechanism (for
+  example a proof tied to `SK` itself), which this change does not invent.
 
 ### 12.4 Nonces, retries and lost answers
 
@@ -547,15 +550,15 @@ claimed`. Zero rows is `409 row_version_conflict`, and the whole transaction rol
 
 `apps/api/test/review/f4-password-keyset.int-spec.ts` (real database, one installation per test):
 
-| Test                                                  | What it shows                                                                                                                                                                  |
-| ----------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| applies a change made with the current SK and version | the valid path: 204, row version +1, keyset version unchanged, new wrap opens with the new password and `SK`                                                                   |
-| refuses the old format                                | no `keysetVersion`, a value outside u32, a nonce for `password_change`, and proofs over the old five fields: all refused, nothing changes                                      |
-| refuses a stale version after SK rotation             | the F-4 sequence: fresh `row_version`, honest old version → 409, and a higher version → 409; everything unchanged; after adopting `SK'` the retry succeeds                     |
-| each proof covers every field                         | each of five fields altered, with only one of the two proofs over the altered body: 10 × `device_proof_failed`, nothing changes                                                |
-| a concurrent SK rotation and password change          | three races: exactly one wins, and the server's wrap always opens with the `SK` of the keyset it ends up with                                                                  |
-| a lost response and a retry                           | a replay after success is refused; a refused request stays refused; a new nonce replaces the open one                                                                          |
-| residual: a client holding DSK and AK ...             | the malicious stale client above is **accepted**; the wrap then opens with the old `SK` and not with `SK'`. It describes the limit and must not be read as a passing guarantee |
+| Test                                                  | What it shows                                                                                                                                                         |
+| ----------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| applies a change made with the current SK and version | the valid path: 204, row version +1, keyset version unchanged, new wrap opens with the new password and `SK`                                                          |
+| refuses the old format                                | no `keysetVersion`, a value outside u32, a nonce for `password_change`, and proofs over the old five fields: all refused, nothing changes                             |
+| refuses a stale version after SK rotation             | the F-4 sequence: fresh `row_version`, honest old version → 409, and a higher version → 409; everything unchanged; after adopting `SK'` the retry succeeds            |
+| each proof covers every field                         | each of five fields altered, with only one of the two proofs over the altered body: 10 × `device_proof_failed`, nothing changes                                       |
+| a concurrent SK rotation and password change          | three races: exactly one wins, and the server's wrap always opens with the `SK` of the keyset it ends up with                                                         |
+| a lost response and a retry                           | a replay after success is refused; a refused request stays refused; a new nonce replaces the open one                                                                 |
+| residual: a client holding DSK and AK ...             | the server **takes** the malicious stale client's request; the wrap then opens with the old `SK` and not with `SK'`. It records the open limit; it is not a guarantee |
 
 `packages/vault/src/review/followup-repro.test.ts` adds two engine tests: a rotation that lands
 between the client's check and its write is refused, the signed version is the one the client
@@ -578,3 +581,128 @@ closes the case where `row_version` is fresh and the `SK` is not.
   clients are updated.
 - Recovery and reopening completions (ops 9, 11) also write a password wrap. They take `SK` from
   the keyset they just read under `row_version`, so they were left unchanged.
+
+## 13. F-19: key lifetimes in the client engine
+
+Commit `51432e2` (`packages/vault`). It completes the partial fix in §11.1 (`a7bb0be`). Still not
+D-19; the real-data restrictions stand.
+
+### 13.1 Ownership rule
+
+Each engine operation owns every key buffer it derives, unwraps or reads from the device store
+(`KeyScope` in `key-scope.ts`). The crypto layer returns new buffers that the caller owns
+(operations.ts). The device store returns a new copy of the device record on every read
+(store.ts, now documented as part of its contract).
+
+When an operation hands a buffer to something that outlives it, it **releases** it. That holder
+is the session, a pending recovery or pairing, or the device record held in memory, and the lock
+zeroes it later. Whatever the operation still owns when it settles is zeroed, whether it returned
+or threw. Buffers the caller passed in are never owned.
+
+| Path                                      | Owner, and when ownership moves                                                                                                                                                                                                                    | Zeroed                                                                                                                                                                  |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| unlock (local wrap)                       | `unlock` owns the stored `SK`, `AK` and the keyset's `SK` and `VK`. Once the session exists it takes `SK`, `AK` and `VK`.                                                                                                                          | The keyset's `SK` copy, always. On a wrong password, a failed write, a refused or missing device, or a lock: everything.                                                |
+| unlock with the server wrap               | As above. `AK` comes from the server's wrap.                                                                                                                                                                                                       | `AK` if the device write fails. That failure is now reported as itself, not as `wrong_password`.                                                                        |
+| unlock with the previous password         | `adoptServerKeys` puts the new `SK` and a second `AK` and `VK` in the unlock's scope. The session takes the new `SK`.                                                                                                                              | The second `AK`, the `VK` copy, and the old stored `SK` (after the write). On a wrong new password or a failed write: everything. A failed write is reported as itself. |
+| adopting a rotated `SK` (`refreshKeyset`) | `refreshKeyset` owns the newer keyset's `SK` and `VK`. The session takes the new `SK` only after the device write committed.                                                                                                                       | The `VK` copy, always. The old `SK`, after the write. The new `SK` if the write fails or a lock overtakes it; the next unlock adopts it again.                          |
+| resume (extension restart, D-27)          | The host's `AK` stays the host's. The engine copies it, and the session takes the copy, the stored `SK` and `VK`.                                                                                                                                  | The keyset's `SK` copy. On a key that does not open the keyset: everything the engine made.                                                                             |
+| `pairingWait` (device B)                  | It owns the received `SK`, `AK` and the keyset's `SK` and `VK`; the session takes `SK`, `AK` and `VK`. The pairing (code secret, ephemeral key, device key) belongs to `joining` until success; the session stores its own copy of the device key. | On any failure or lock: what was received. A failure after the session existed discards the pairing too (F-12), and the user starts the pairing again.                  |
+| pairing cancelled                         | `joining`                                                                                                                                                                                                                                          | Everything (unchanged; kept as a guard test).                                                                                                                           |
+| `recoveryBegin`, `reopenBegin`            | The pending recovery takes `AK` and the keyset's `SK` and `VK`.                                                                                                                                                                                    | A second start zeroes the first one's keys before it replaces them.                                                                                                     |
+| reopening with the password, finish       | The reopening's `AK`, `SK` and `VK` are separate copies, equal to the session's keys.                                                                                                                                                              | Those copies, when it finishes. The session keeps its own.                                                                                                              |
+| `setupFinish`, `recoveryFinish`           | The generated device key, until the session's copy is stored.                                                                                                                                                                                      | Always: after success, or when the request or the write fails.                                                                                                          |
+| `rotateSecretKey`                         | The new `SK`, until the write after the server's acceptance. The session takes it then, and the old `SK` is zeroed.                                                                                                                                | The new `SK` on a refused or lost request, a failed write or a lock. A device that missed the result adopts `SK'` from the keyset later, under `AK`.                    |
+| lock and logout (`clearMemory`)           | (none)                                                                                                                                                                                                                                             | Now also the session's `SK`, along with `AK`, `VK`, the device key and the pending setup, recovery and pairing.                                                         |
+| reads for status only                     | `phase`, `setupBegin`, `login`, `pairingJoin`, `pairingWait` and `recoveryBegin` read the record only for its ids and status.                                                                                                                      | The record's `SK` copy, at once.                                                                                                                                        |
+
+**A lock that overtakes an operation.** The lock zeroes, at once, what the session and the
+pending setup, recovery and pairing hold. Keys still inside a running operation's scope are zeroed
+when that operation settles, not at the moment of the lock. That operation can neither write nor
+install a session (R19), so the window lasts as long as its remaining network wait.
+
+### 13.2 What this does not erase
+
+Zeroing is best-effort. It reaches only the `Uint8Array`s the engine holds, and it is not memory
+erasure.
+
+- **Strings** cannot be overwritten. This covers:
+  - passwords and `pendingPassword`;
+  - base64 forms of keys: `RAK` in the recovery request, the device key's JSON before it is
+    sealed, and `AK` in `chrome.storage.session` while the extension is unlocked (D-27);
+  - decrypted item bodies, which `bodies.clear()` only drops;
+  - API response JSON.
+- **Runtime copies** are out of reach: the structured clones IndexedDB makes, copies the garbage
+  collector moves, and buffers the runtime allocates for encoding.
+- **Library memory** is out of reach: libsodium's WASM linear memory. The crypto layer wipes the
+  intermediates it documents (operations.ts), and this was not checked separately.
+- **Worker termination.** The web client sends `wipe` and terminates the worker after at most
+  250 ms either way. A wipe that has not run by then leaves the memory to be released
+  unoverwritten.
+- **Extension restart.** A service worker the browser stops is not zeroed. Its `AK` survives as a
+  base64 string in `chrome.storage.session` until the lock (D-27, unchanged).
+- **The store contract.** The zeroing assumes every `DeviceStore` returns a new copy on every
+  read and keeps no reference to buffers it was given. The IndexedDB store does both. The mobile
+  store must be checked ([mobile-handoff-f19.md](../planning/mobile-handoff-f19.md)).
+- **Buffers the tests do not capture.** The tests capture what the crypto interface and the
+  store return. Copies the engine makes itself (for example `fromB64` of the stored device key)
+  are not captured. The device key's zeroing on lock is covered by the earlier F-12 and R19 tests.
+
+### 13.3 Regression evidence
+
+`packages/vault/src/review/f19-key-lifecycle.test.ts` (engine with the real crypto and a
+fake-indexeddb store) captures every secret key that the crypto layer returns and every `SK` the
+store hands out. It then asserts which ones still hold a non-zero byte, by label only, so no key
+bytes reach the logs. Successful paths also check that the keys kept still work: an item saved
+afterwards opens on a later unlock.
+
+- **21 tests.** 20 fail on the previous engine; the cancelled pairing passes on both and is a
+  guard.
+  - **Unlock:** a wrong password; a successful unlock keeps only `AK`, `VK` and the stored `SK`;
+    a lock during the network wait; logout.
+  - **Resume:** the caller's `AK` stays intact; a key that does not open the keyset.
+  - **Adoption:**
+    - a rotated `SK`, adopted; and with a failed write, after which the next unlock adopts it;
+    - the previous-password path: success, a wrong new password, a failed write;
+    - the server wrap with a failed write.
+  - **Pairing:** a lock after approval; a failed write at enrollment, after which the pairing must
+    start again; a completed pairing; cancel.
+  - **Recovery and reopening:** a second recovery start; a recovery whose write fails; a
+    password reopening.
+  - **Setup and rotation:** a setup whose write fails; a refused `SK` rotation.
+- **Behaviour change.** On the server-wrap and previous-password unlock paths, a failed device
+  write used to be reported as `wrong_password`. It now surfaces as the failure it is: the
+  worker reports it as `internal`, and a `StoreTakenError` as `open_elsewhere`.
+
+### 13.4 Shared change for mobile
+
+The engine and the store contract are shared. The mobile branch was not touched; what it must
+adopt and check is in [mobile-handoff-f19.md](../planning/mobile-handoff-f19.md). Mobile
+compatibility is **pending**.
+
+## 14. Commit `4249cbe` (branding), outside this review
+
+`4249cbe` "feat(brand): final mark, platform icons and a dark theme for web and extension" was
+made at 13:35 on 2026-10-28 in the shared checkout. It is not part of the F-4 work, under the
+configured identity, and reached PR #1 with the F-4 push (§12). Its scope (18 files, +215/−4):
+
+- **`docs/brand/`:** the mark, favicon, app icon and Android foreground SVGs; light and dark
+  colour tokens (`tokens.css`); and `render-icons.mjs`.
+  - That script is a Node script that uses the Playwright Chromium to render PNGs.
+  - It writes into this repository and also into a sibling `ruvee-mobile` checkout (its iOS and
+    Android icon folders).
+  - Neither the build nor CI runs it.
+- **Web:** `icon.svg` and `apple-icon.png`; dark values for the colour tokens under
+  `prefers-color-scheme` (`globals.css`); `theme-color` per colour scheme (`layout.tsx`).
+- **Extension:** 16 to 128 px icons in the manifest and toolbar; dark token values,
+  `color-scheme: light dark` and an input text colour (`styles.css`).
+  - No permission, host permission, content-security policy or script changed.
+  - No code that handles keys, the API or storage changed.
+
+**Review status.** CI passed on heads that include it. That shows only that the functional suites
+still pass. It is neither a visual review (dark-mode contrast, icon rendering) nor a security
+review. The commit has not been reviewed.
+
+**Removing it** does not require a force-push. An ordinary `git revert 4249cbe` on the branch,
+pushed as a normal fast-forward, removes its changes and keeps the history. A force-push would be
+needed only to remove the commit from the history, which is not proposed. Whether to keep, revert
+or review it is the owner's decision; nothing has been done to it.
