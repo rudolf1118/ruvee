@@ -1,6 +1,8 @@
 # Status and handoff
 
-Updated 2026-10-27. Everything is **local**: nothing has been pushed, and remote CI has never run.
+Updated 2026-10-28. Every branch is on GitHub (public `rudolf1118/ruvee`). Remote CI runs for pushes
+to `main` (which still holds Phase 1) and for pull requests. Commit IDs changed once on 2026-10-28; old IDs are mapped in
+[history-rewrite.md](history-rewrite.md).
 This is a development build with synthetic data only. Nothing here has been independently
 reviewed, and it must not hold real secrets (D-19).
 
@@ -8,7 +10,7 @@ reviewed, and it must not hold real secrets (D-19).
 
 | Branch                | Contents                                                                               |
 | --------------------- | -------------------------------------------------------------------------------------- |
-| `web/p2-04-csp-spike` | Ends at P2-04 (`ed43986`): OPAQUE under the CSP, diagnostics-only export               |
+| `web/p2-04-csp-spike` | Ends at P2-04 (`e044474`): OPAQUE under the CSP, diagnostics-only export               |
 | `vault/web-vault`     | Continues from it: the first functional web vault (this document's subject)            |
 | Earlier branches      | P2-01, P2-02, P2-03, P2-05 and Phase 0/1, each stacked on the one before (see git log) |
 

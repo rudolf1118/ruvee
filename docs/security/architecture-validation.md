@@ -6,7 +6,7 @@ production-ready. The database schema and decisions D-02, D-03 and D-05 to D-09 
 unapproved. The owner approved D-01, D-04 and D-20 for development on 2026-10-24
 ([§11](#11-follow-up-packagescrypto-p2-03)).
 
-Date: 2026-10-22. Baseline: commit `0a6cd24` (Phase 0 architecture). The disposable experiments
+Date: 2026-10-22. Baseline: commit `678b630` (Phase 0 architecture). The disposable experiments
 are in [`spikes/architecture-validation/`](../../spikes/architecture-validation/README.md). They
 use synthetic inputs only and are not part of any workspace package.
 
