@@ -10,8 +10,10 @@ runs its own tests against the updated server.
 ## Base
 
 - The mobile branch's merge base with `vault/web-vault` is `bdf5ba5` (F-1 to F-4 client fixes).
-- The change is commit `01e8a35` on `vault/web-vault`, on top of `6dac84b`. Batch 2 (§11.5 of the
-  review) lies between them and has its own shared changes.
+- The change is commit `01e8a35` on `vault/web-vault` (documented in `7dd94a7`). Its parent,
+  `4249cbe`, is an unrelated branding commit; `6dac84b` is the last remediation commit before it.
+- Between `bdf5ba5` and `01e8a35` also lie remediation batch 2, whose shared changes are in §11.5
+  of the review, and that branding commit.
 - Take it by merging or rebasing onto `vault/web-vault` at or after `01e8a35`. Do not copy parts of
   it: the contracts, the crypto encoder and the engine must stay one version.
 

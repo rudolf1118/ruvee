@@ -472,7 +472,9 @@ The mobile branch (`mobile/vault-app`, worktree `ruvee-mobile`) was not touched.
 
 Owner approval (2026-10-28), for development, with conditions: check that `keysetVersion` really
 versions the Secret Key, state the actual guarantee, and test a malicious stale client. Commit
-`01e8a35` on top of `6dac84b`. Still not D-19; the real-data restrictions stand.
+`01e8a35`, documented in `7dd94a7`. Its parent is `4249cbe`, a branding commit (icons and a dark
+theme) made in this checkout while this work ran; it is not part of F-4 and was not reviewed here.
+Still not D-19; the real-data restrictions stand.
 
 ### 12.1 Is `keyset_version` the Secret Key's version?
 
