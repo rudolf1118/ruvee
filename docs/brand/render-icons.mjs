@@ -1,12 +1,23 @@
 // Renders the PNG icons the platforms need from the mark's geometry (see ruvee-mark.svg).
-// Run from the repo root: node docs/brand/render-icons.mjs [path to the ruvee-mobile checkout]
 // Uses the Playwright Chromium the web tests already install.
-import { mkdir, writeFile } from 'node:fs/promises';
+//
+//   node docs/brand/render-icons.mjs
+//     writes the web and extension icons inside this checkout only.
+//   node docs/brand/render-icons.mjs --mobile-out <path to a mobile checkout>
+//     also writes the iOS and Android icons under that path. Only with the flag: no other
+//     checkout is ever written by default, and the path must already exist.
+import { mkdir, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { dirname, resolve } from 'node:path';
+import { parseArgs } from 'node:util';
 
 const repo = resolve(import.meta.dirname, '../..');
-const mobile = resolve(repo, process.argv[2] ?? '../ruvee-mobile');
+const { values } = parseArgs({ options: { 'mobile-out': { type: 'string' } } });
+const mobile = values['mobile-out'] === undefined ? undefined : resolve(values['mobile-out']);
+if (mobile !== undefined && !(await stat(mobile).catch(() => undefined))?.isDirectory()) {
+  console.error(`--mobile-out: ${mobile} is not an existing directory.`);
+  process.exit(1);
+}
 const { chromium } = createRequire(resolve(repo, 'apps/web/package.json'))('@playwright/test');
 
 const BRAND = '#6d4aff';
@@ -25,8 +36,8 @@ function svg(size, shape, pad = 0) {
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${size}" height="${size}" viewBox="${-pad} ${-pad} ${box} ${box}">${bg}<circle cx="16" cy="${cy}" r="${r}" fill="none" stroke="#fff" stroke-width="${w}"/><path d="M16 ${y1}V${y2}" stroke="#fff" stroke-width="${w}" stroke-linecap="round"/></svg>`;
 }
 
-const android = (dir) => resolve(mobile, 'apps/mobile/app/android/app/src/main/res', dir);
-const targets = [
+const android = (root, dir) => resolve(root, 'apps/mobile/app/android/app/src/main/res', dir);
+const repoTargets = [
   // Web: Apple touch icon (iOS rounds it).
   [resolve(repo, 'apps/web/src/app/apple-icon.png'), 180, 'square'],
   // Extension: Chrome asks for 128px art with about 8px of transparent margin.
@@ -36,10 +47,12 @@ const targets = [
     'tile',
   ]),
   [resolve(repo, 'apps/extension/static/icons/icon-128.png'), 128, 'tile', 2],
+];
+const mobileTargets = (root) => [
   // iOS: one opaque 1024px icon; the system masks it.
   [
     resolve(
-      mobile,
+      root,
       'apps/mobile/app/ios/RuveeMobile/Images.xcassets/AppIcon.appiconset/AppIcon-1024.png',
     ),
     1024,
@@ -53,10 +66,11 @@ const targets = [
     ['xxhdpi', 144],
     ['xxxhdpi', 192],
   ].flatMap(([d, s]) => [
-    [android(`mipmap-${d}/ic_launcher.png`), s, 'tile', 1],
-    [android(`mipmap-${d}/ic_launcher_round.png`), s, 'circle', 1],
+    [android(root, `mipmap-${d}/ic_launcher.png`), s, 'tile', 1],
+    [android(root, `mipmap-${d}/ic_launcher_round.png`), s, 'circle', 1],
   ]),
 ];
+const targets = [...repoTargets, ...(mobile === undefined ? [] : mobileTargets(mobile))];
 
 const browser = await chromium.launch();
 try {
