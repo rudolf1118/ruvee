@@ -152,6 +152,9 @@ test.describe('CSP behaviour', () => {
     const result = page.locator('#probe-opaque');
     await expect(result).not.toHaveText('pending', { timeout: 60_000 });
     expect(await result.innerText()).not.toMatch(/"ok":true/);
+    // A diagnostics request can still be inside the handler when the probe has answered; it must
+    // not outlive the test.
+    await page.unrouteAll({ behavior: 'ignoreErrors' });
   });
 
   test('home page renders under the hashed CSP', async ({ page }) => {

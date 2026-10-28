@@ -106,19 +106,35 @@ export const VAULT_CHECKS: readonly PortableCheck[] = [
       assert(same(crypto.parseRecoveryKey(lenient), recoveryKey), 'lenient input');
       const body = text.slice(4).replace(/-/g, '');
       assert(same(crypto.parseRecoveryKey(`RK1${body}`), recoveryKey), 'no separators');
-      // Every single-symbol substitution is caught by the checksum or the canonical-bit rule.
+      // §5.4: the check is the first 2 bytes of a hash, so a substitution inside RK's symbols
+      // slips through with probability 2^-16; one in the last three symbols, which hold only
+      // check and padding bits, never does. Checked on this random key for those three, and for
+      // every substitution on a fixed key whose 899 are all caught.
       const symbols = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-      let caught = 0;
-      for (let i = 0; i < body.length; i++) {
-        const replacement = symbols[(symbols.indexOf(body[i] ?? '0') + 1) % 32] ?? '0';
-        const typo = `RK1${body.slice(0, i)}${replacement}${body.slice(i + 1)}`;
-        try {
-          crypto.parseRecoveryKey(typo);
-        } catch (e) {
-          if (e instanceof RuveeCryptoError && e.code === 'invalid_recovery_key') caught++;
-        }
-      }
-      assert(caught === body.length, `typos caught ${caught}/${body.length}`);
+      const caughtAt = (text: string, positions: readonly number[]) => {
+        let caught = 0;
+        let tried = 0;
+        for (const i of positions)
+          for (let shift = 1; shift < 32; shift++) {
+            const replacement = symbols[(symbols.indexOf(text[i] ?? '0') + shift) % 32] ?? '0';
+            tried++;
+            try {
+              crypto.parseRecoveryKey(`RK1${text.slice(0, i)}${replacement}${text.slice(i + 1)}`);
+            } catch (e) {
+              if (e instanceof RuveeCryptoError && e.code === 'invalid_recovery_key') caught++;
+            }
+          }
+        return { caught, tried };
+      };
+      const tail = caughtAt(body, [body.length - 3, body.length - 2, body.length - 1]);
+      assert(tail.caught === tail.tried, `check-symbol typos caught ${tail.caught}/${tail.tried}`);
+      const fixedKey = Uint8Array.from({ length: 16 }, (_, i) => i);
+      const fixed = crypto.formatRecoveryKey(fixedKey).slice(4).replace(/-/g, '');
+      const all = caughtAt(
+        fixed,
+        Array.from({ length: fixed.length }, (_, i) => i),
+      );
+      assert(all.caught === all.tried, `fixed-key typos caught ${all.caught}/${all.tried}`);
       for (const bad of [
         '',
         'RK2-' + body,
