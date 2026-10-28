@@ -103,10 +103,24 @@ class Windows {
     );
   }
 
+  /**
+   * Makes room for a new key. Expired windows go first; then, oldest first, windows still under
+   * their limit (forgetting one only resets a partial count). A key that is being refused is
+   * dropped only when every remembered key is, so flooding the table with fresh addresses no
+   * longer releases every client at once (follow-up review F-8).
+   */
   private sweep(now: number): void {
     for (const [key, entry] of this.entries)
       if (now - entry.windowStart >= this.windowMs) this.entries.delete(key);
-    if (this.entries.size >= IP_TABLE_MAX) this.entries.clear();
+    const target = IP_TABLE_MAX - IP_TABLE_MAX / 10;
+    for (const [key, entry] of this.entries) {
+      if (this.entries.size < target) return;
+      if (entry.count < this.limit) this.entries.delete(key);
+    }
+    for (const key of this.entries.keys()) {
+      if (this.entries.size < IP_TABLE_MAX) return;
+      this.entries.delete(key);
+    }
   }
 }
 

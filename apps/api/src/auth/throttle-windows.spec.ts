@@ -87,4 +87,31 @@ describe('ThrottleService in-memory windows', () => {
       }),
     ).toBe(false);
   });
+
+  // Follow-up review F-8: a flood of fresh addresses used to clear the whole table.
+  it('keeps a refused address refused while the table is flooded with new addresses', () => {
+    const t = throttle();
+    for (let i = 0; i < 20; i++) t.assertIpAllowed('198.51.100.7', 1000);
+    expect(
+      refused(() => {
+        t.assertIpAllowed('198.51.100.7', 1000);
+      }),
+    ).toBe(true);
+    for (let i = 0; i < 25_000; i++)
+      t.assertIpAllowed(
+        `10.${String((i >> 16) & 255)}.${String((i >> 8) & 255)}.${String(i & 255)}`,
+        1000,
+      );
+    expect(
+      refused(() => {
+        t.assertIpAllowed('198.51.100.7', 1000);
+      }),
+    ).toBe(true);
+    // The window still ends.
+    expect(
+      refused(() => {
+        t.assertIpAllowed('198.51.100.7', 61_001);
+      }),
+    ).toBe(false);
+  });
 });
