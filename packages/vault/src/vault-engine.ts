@@ -414,6 +414,7 @@ export class VaultEngine {
   private exclusive<T>(task: () => Promise<T>): Promise<T> {
     const guarded = async () => {
       const generation = this.generation;
+      const before = this.session;
       this.running = generation;
       try {
         let result: T;
@@ -422,10 +423,16 @@ export class VaultEngine {
         } catch (error) {
           // Another engine loaded this device's state after us (another tab, F-2): our memory is
           // stale, and writing it would erase that engine's changes. Lock instead.
-          if (!(error instanceof StoreTakenError)) throw error;
-          this.wipeMemory();
-          this.deps.emit({ event: 'ended', reason: 'open_elsewhere' });
-          throw new VaultError('open_elsewhere');
+          if (error instanceof StoreTakenError) {
+            this.wipeMemory();
+            this.deps.emit({ event: 'ended', reason: 'open_elsewhere' });
+            throw new VaultError('open_elsewhere');
+          }
+          // A failed operation keeps no session it installed (unlock, resume, recovery, pairing
+          // or setup failing after `AK` was in place; follow-up review F-12), and one that a
+          // lock overtook keeps nothing at all (F-13; the success path below did this already).
+          if (this.session !== before || this.generation !== generation) this.clearMemory();
+          throw error;
         }
         // Locked while it ran: nothing it unlocked or derived may outlive the lock (R19).
         if (this.generation !== generation) {

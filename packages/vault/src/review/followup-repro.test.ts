@@ -201,4 +201,25 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     const again = await device(server, a.factory);
     expect(await code(again.engine.unlock({ password: NEW }))).toBe('ok');
   });
+
+  // F-12: an unlock that fails after installing its session (here: the stored device key does not
+  // open) used to leave the engine unlocked, with AK in memory.
+  it('an unlock that fails after installing its session leaves nothing unlocked', async () => {
+    const { a } = await account();
+    await a.store.apply({ local: { 'device-key': new Uint8Array(96).fill(7) } });
+    a.engine.wipeMemory();
+    expect(await code(a.engine.unlock({ password: PASSWORD }))).not.toBe('ok');
+    expect(() => a.engine.items()).toThrow();
+  });
+
+  // F-13: a lock that lands while an operation runs, which then fails, keeps nothing either.
+  it('a lock during an operation that then fails leaves no session behind', async () => {
+    const { a } = await account();
+    await a.store.apply({ local: { 'device-key': new Uint8Array(96).fill(7) } });
+    a.engine.wipeMemory();
+    const unlocking = code(a.engine.unlock({ password: PASSWORD }));
+    a.engine.wipeMemory();
+    expect(await unlocking).not.toBe('ok');
+    expect(() => a.engine.items()).toThrow();
+  });
 });
