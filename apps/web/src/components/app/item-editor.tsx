@@ -61,6 +61,15 @@ export function ItemEditor({
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  // Whether this editor is still the one shown. A save that finishes after the user opened
+  // another editor is saved, but must not close that editor (follow-up review F-20).
+  const open = useRef(true);
+  useEffect(() => {
+    open.current = true;
+    return () => {
+      open.current = false;
+    };
+  }, []);
 
   // The stored password is fetched from the worker only when the editor opens for it.
   useEffect(() => {
@@ -91,10 +100,12 @@ export function ItemEditor({
     setFailure(null);
     client.call('save', { draft }).then(
       (saved) => {
+        if (!open.current) return;
         setPassword('');
         onSaved(saved);
       },
       (e: unknown) => {
+        if (!open.current) return;
         setFailure(e instanceof VaultClientError ? messageFor(e.code) : messageFor('internal'));
         setBusy(false);
       },
