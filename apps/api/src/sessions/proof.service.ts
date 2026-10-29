@@ -17,6 +17,8 @@ import type { AuthenticatedSession } from './session.service.js';
 
 /** device-proof.md §6: a nonce lives 2 minutes; a session has one open nonce per operation. */
 export const PROOF_NONCE_TTL_MS = 2 * 60_000;
+/** Expired nonce rows are deleted this long after their expiry (follow-up review F-24). */
+export const NONCE_PRUNE_AFTER_MS = 10 * 60_000;
 /** First setup signs 32 zero bytes as its nonce: the setup token is single-use (§4). */
 export const SETUP_NONCE = new Uint8Array(32);
 
@@ -96,6 +98,19 @@ export class ProofService implements OnModuleInit {
           sessionId: session.sessionId,
           operation: PROOF_OPERATIONS[operation],
           consumedAt: null,
+        },
+      });
+      // Follow-up review F-24: rows that can no longer authorize anything are removed, so the
+      // table holds about the last few minutes of nonces. That is this session's consumed ones,
+      // and anyone's that expired over 10 minutes ago (by this process's clock, the one `consume`
+      // checks against; the margin covers another instance's clock). A consumed nonce never
+      // verifies again whether its row is kept or not.
+      await tx.proofNonce.deleteMany({
+        where: {
+          OR: [
+            { sessionId: session.sessionId, consumedAt: { not: null } },
+            { expiresAt: { lt: new Date(now.getTime() - NONCE_PRUNE_AFTER_MS) } },
+          ],
         },
       });
       await tx.proofNonce.create({

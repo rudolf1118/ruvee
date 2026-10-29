@@ -95,7 +95,10 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
       (await server().get('/api/v1/account/keys', cookie).expect(200)).body,
     );
 
-  const rows = (sql: string, params: unknown[] = []) => query(server().db.url, sql, params);
+  const rows = <T extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params: unknown[] = [],
+  ) => query<T>(server().db.url, sql, params);
 
   /** What a password change writes, and its event: equal before and after a refusal. */
   async function passwordState(account: SyntheticAccount) {
@@ -388,6 +391,43 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
     const before = await passwordState(account);
     expectError(await finish(cookie, ahead), 'device_proof_failed');
     expect(await passwordState(account)).toEqual(before);
+  });
+
+  // ---- Follow-up review F-24: rows that can no longer authorize anything are removed ----
+
+  it('issuing a nonce removes spent and long-expired rows, and keeps every usable one', async () => {
+    const { account, cookie } = await fresh();
+    const other = await pendingDevice(account);
+    // A spent nonce (an applied revocation); then, written directly so no issue prunes them
+    // first: an open nonce for op 6, one for op 5 that expired a minute ago, and one for op 6
+    // that expired an hour ago.
+    expect((await revoke(cookie, other, await signedRevoke(account, cookie, other))).status).toBe(
+      204,
+    );
+    const add = (operation: number, created: string, expires: string) =>
+      rows(
+        `INSERT INTO proof_nonces (id, account_id, device_id, session_id, operation, nonce_hash,
+           created_at, expires_at)
+         SELECT gen_random_uuid(), account_id, device_id, session_id, $1,
+           sha256(random()::text::bytea), now() + $2::interval, now() + $3::interval
+         FROM proof_nonces LIMIT 1`,
+        [operation, created, expires],
+      );
+    await add(6, '0 minutes', '2 minutes');
+    await add(5, '-3 minutes', '-1 minute');
+    await add(6, '-62 minutes', '-60 minutes');
+    expect(await rows('SELECT 1 FROM proof_nonces')).toHaveLength(4);
+    await proofNonce(server(), cookie, 'password_change_v2');
+    const after = await rows<{ operation: number; consumed: boolean; expired: boolean }>(
+      `SELECT operation, consumed_at IS NOT NULL AS consumed, expires_at < now() AS expired
+       FROM proof_nonces ORDER BY operation, expires_at`,
+    );
+    // Kept: the open nonce for op 6, the recently expired op 5, and the new op 12.
+    expect(after).toEqual([
+      { operation: 5, consumed: false, expired: true },
+      { operation: 6, consumed: false, expired: false },
+      { operation: 12, consumed: false, expired: false },
+    ]);
   });
 
   // ---- What a nonce is bound to ----
