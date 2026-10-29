@@ -438,9 +438,10 @@ rewritten; review the batch as a whole.
 
 - **F-16:** fixed with the owner-approved behaviour (§16.1).
 - **F-19, the rest:** fixed in §13 (`51432e2`), with the limits of zeroing in JavaScript stated there.
-- **F-20 to F-25, S-5, §5.2 and the S-1 residual:** dispositions in §16. Still open: F-22 and
-  F-23 (informational), F-25 (a role-separation decision), §5.2 (not reproduced), and the S-1
-  overlap (a design decision). Also the coverage gaps in §7 not named above.
+- **F-20 to F-25, S-5, §5.2 and the S-1 residual:** dispositions in §16. F-25 was implemented
+  after the owner approved it (§17.1). Still open: F-22 and F-23 (informational), §5.2 (not
+  reproduced), and the S-1 overlap (a design decision; recommendation in §17.2). Also the
+  coverage gaps in §7 not named above.
 - **F-4, server side:** implemented in §12, with the residual stated there.
 - **No expected failures remain:** every reproduction in `followup-repro.*` is an ordinary passing test.
 
@@ -881,14 +882,14 @@ real-data restrictions stand. Outside this batch, unchanged and open:
 
 ### 16.2 F-20 to F-25
 
-| ID   | Disposition                | What was done                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ---- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| F-20 | Confirmed defect, fixed    | A save that finished after the user opened another editor ran the old editor's `onSaved`, which closed the new editor and discarded what was typed there. The editor now reports only while it is the one shown; the save itself still completes. `apps/web/src/components/app/item-editor.test.tsx`: the replaced-editor case fails on the old editor; a normal save still reports.                                                                            |
-| F-21 | Confirmed, fixed           | The extension's pages could ask the service worker for `detail` (an item's notes and username), `items` and `acknowledgeRecoveryNotice`, which they never call. The allow-list is now exactly the eight methods they call. `apps/extension/src/messages.test.ts` reads the pages' sources and checks that the list equals what they use, and that the three are refused. Both tests fail on the old list.                                                       |
-| F-22 | Informational, unchanged   | Bodies are parsed before authentication and the gate, as stated: up to 64 KiB on every route and 4 MiB on `POST /sync/commits`. Caddy sets no body limit. Parsing after authentication would need the guards to run before body parsing, which Nest does not do. No code change; the bound is the size limits.                                                                                                                                                  |
-| F-23 | Informational, unchanged   | Op 3 (registration) does not sign `saltPw`, `keysetVersion`, `vault.vkId` or `username`. Only a holder of the single-use setup token on the request path could change them, and that holder could register the account with its own keys anyway. Signing them would change op 3's signed bytes, a protocol change, so it is left as a decision, not made here.                                                                                                  |
-| F-24 | Confirmed defect, fixed    | `proof_nonces` rows were never deleted. Issuing a nonce now deletes this session's consumed rows and every row that expired more than 10 minutes ago. The margin covers another instance's clock; an expired or consumed nonce never verifies, so deleting its row changes no result. The S-4 spec adds one test, which fails on the old code with 5 rows left.                                                                                                 |
-| F-25 | Confirmed by reading, open | The API runs as the role that owns `ruvee_control` and has `CREATEROLE`. It reads the guard and installation rows and writes reopening codes and the guard. backup-restore.md now says so instead of implying a separate application role. Separating the roles (an application role with only the grants above) is a privilege-design decision for the owner and is not built. Until then, an SQL injection in the API would act with the admin role's rights. |
+| ID   | Disposition                                                                    | What was done                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---- | ------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-20 | Confirmed defect, fixed                                                        | A save that finished after the user opened another editor ran the old editor's `onSaved`, which closed the new editor and discarded what was typed there. The editor now reports only while it is the one shown; the save itself still completes. `apps/web/src/components/app/item-editor.test.tsx`: the replaced-editor case fails on the old editor; a normal save still reports.                                                                            |
+| F-21 | Confirmed, fixed                                                               | The extension's pages could ask the service worker for `detail` (an item's notes and username), `items` and `acknowledgeRecoveryNotice`, which they never call. The allow-list is now exactly the eight methods they call. `apps/extension/src/messages.test.ts` reads the pages' sources and checks that the list equals what they use, and that the three are refused. Both tests fail on the old list.                                                       |
+| F-22 | Informational, unchanged                                                       | Bodies are parsed before authentication and the gate, as stated: up to 64 KiB on every route and 4 MiB on `POST /sync/commits`. Caddy sets no body limit. Parsing after authentication would need the guards to run before body parsing, which Nest does not do. No code change; the bound is the size limits.                                                                                                                                                  |
+| F-23 | Informational, unchanged                                                       | Op 3 (registration) does not sign `saltPw`, `keysetVersion`, `vault.vkId` or `username`. Only a holder of the single-use setup token on the request path could change them, and that holder could register the account with its own keys anyway. Signing them would change op 3's signed bytes, a protocol change, so it is left as a decision, not made here.                                                                                                  |
+| F-24 | Confirmed defect, fixed                                                        | `proof_nonces` rows were never deleted. Issuing a nonce now deletes this session's consumed rows and every row that expired more than 10 minutes ago. The margin covers another instance's clock; an expired or consumed nonce never verifies, so deleting its row changes no result. The S-4 spec adds one test, which fails on the old code with 5 rows left.                                                                                                 |
+| F-25 | Confirmed by reading; **fixed in §17.1** (this row describes the state before) | The API runs as the role that owns `ruvee_control` and has `CREATEROLE`. It reads the guard and installation rows and writes reopening codes and the guard. backup-restore.md now says so instead of implying a separate application role. Separating the roles (an application role with only the grants above) is a privilege-design decision for the owner and is not built. Until then, an SQL injection in the API would act with the admin role's rights. |
 
 ### 16.3 S-5: a server that changes the device id (confirmed, fixed)
 
@@ -1010,3 +1011,160 @@ real-data restrictions stand. Outside this batch, unchanged and open:
   three more times in WebKit after it. The extension e2e passed 13 tests.
 - Not repeated after §16.7: the Chromium and Firefox vault runs, and the extension e2e. That fix
   changes only the API's pairing-state handler; CI runs all of them.
+
+## 17. F-25 roles, and the instance-lock recommendation
+
+### 17.1 F-25: least-privilege database roles (fixed, development)
+
+The owner approved separating the API's runtime role from the owner and administrator roles,
+for development, on 2026-10-29. The design is in
+[database-roles.md](../architecture/database-roles.md), and setup and migration are in
+[the guide](../guides/database-roles.md). In short:
+
+- **The roles.**
+  - **Runtime:** the API's `DATABASE_URL`. It owns nothing and has no role attribute and no
+    membership. It holds only `RUNTIME_GRANTS`: table privileges per table, plus one column
+    UPDATE so that `accounts` rows can be locked. It may read two columns each of `installation`
+    and `restore_guard`, and execute five reopening functions.
+  - **Owner:** owns `public`, and migrations run as it.
+  - **Operator:** `ruvee-admin`. It owns the database and `ruvee_control`, has `CREATEROLE` for
+    the loader, and inherits the owner.
+  - **Loader:** unchanged.
+- **Reopening without UPDATE on the restore state.** Five `SECURITY DEFINER` functions, owned by
+  the operator, each check the persisted state and make one change. They have a fixed
+  `search_path`, every name is schema-qualified, and PUBLIC cannot execute them.
+  `reopen_complete` runs inside the API's completion transaction, so the guard opens together
+  with the new credentials, or not at all.
+- **Closed when a grant is missing.** A missing gate grant answers `maintenance`. A missing
+  function grant opens nothing. In production, a role with more than its list serves nothing.
+- **`ruvee-admin`.**
+  - It refuses a superuser and the runtime role for `init` and `restore`.
+  - It reads `RUVEE_ADMIN_DATABASE_URL` and `RESTORE_DATABASE_URL`, never `DATABASE_URL`.
+  - `grant-runtime` puts the list back exactly after a migration.
+- **Residual.** A compromised runtime role keeps every privilege it needs to serve:
+  - it can read all ciphertext, wraps and OPAQUE records;
+  - it can insert sessions, and so act as any account through the API;
+  - it can write as the API writes.
+
+  It cannot open a restored installation without a usable code, change the schema or the
+  control state, gain a role, or reach the host. During a reopening, a compromised API
+  **process** sees the code and can complete the reopening itself; the database cannot check
+  OPAQUE. Details: database-roles.md §5. No protection is claimed beyond that boundary.
+
+**Evidence** (synthetic data, task-owned PostgreSQL 18 container `ruvee-task-f25-pg`):
+
+- `test/review/f25-roles.int-spec.ts`: 8 tests, using roles made with the guide's statements:
+  - exact privileges, owners and function hardening;
+  - 37 forbidden statements as the runtime role (33 on a restored database, 4 on a fresh one), each `42501`;
+  - GRANT attempts that change no access list;
+  - each reopening function refusing a precondition that does not hold, and an authorized
+    transition rolled back with its transaction;
+  - a missing gate grant giving `maintenance`, and missing function grants opening nothing;
+  - administrative steps refusing a superuser and the runtime role, and a backup and migrations
+    failing as the runtime role;
+  - an extra grant detected, closing production, and undone by `grant-runtime`;
+  - in production, an API started before `init` answering `maintenance`, then serving after
+    `init` without a restart;
+  - the guide's move of a database set up before F-25.
+- `test/database-roles.spec.ts`: 7 static checks:
+  - the list covers exactly the inventory;
+  - migrations hold no privilege, ownership or role statement;
+  - the functions are hardened;
+  - the CLI never reads `DATABASE_URL`;
+  - privilege errors are recognised.
+- **The whole integration suite** now runs the API as each test database's own runtime role,
+  and every restore and reopening runs as the operator. Two fixtures needed the new grants:
+  - R14's hand-made guard now receives PREPARE's grant;
+  - S-4's injected failing trigger now has its sequence granted, because the trigger runs as the
+    runtime role. Without the grant it failed every time, not once.
+
+  Neither changes what the test checks.
+
+- **A test that checked less than it claimed (R1, since S-1):** R1 served its restored database
+  from a second app while the first, still open, held the instance lock. Every request to the
+  second app was refused `server_unavailable` by the lock, never by the gate. Its "503" passed for
+  the wrong reason, which was seen once the test asserted `reopening`. The first app now stops
+  before the second starts, the gate's own answer is asserted, and the CSRF check has an open
+  installation of its own.
+
+- **Negative control:** the reopening code before this change (direct UPDATEs on
+  `ruvee_control`) fails all 19 reopening tests under the runtime role.
+- **A defect found while building it:** with PUBLIC's `CONNECT` revoked, the runtime role could
+  not connect before `init`, or during a restore before APPLY POLICY. The API answered
+  `server_unavailable` instead of `maintenance`, which loses the clients' restore message. Now
+  the database setup and PREPARE grant `CONNECT`, and R14 covers it.
+
+**Not done:** no real host has these roles, the instructions were not applied to any existing
+database, and `.env` is unchanged. D-19 must review the functions and the role checks.
+
+### 17.2 The instance lock: recommendation (decision needed)
+
+This is separate from F-25, and nothing here is built.
+
+**What actually relies on one API process** (§16.6, re-read for this): the per-address
+authentication window (20 per minute), wrong reopening-code guesses per address (10 per
+15 minutes), the per-session request limit (300 per minute), and pending login states (OPAQUE
+server state, 60 s). The per-account login, bootstrap and recovery limits, the reopening code's
+failure count, nonces, sessions and all writes are atomic in PostgreSQL, and two processes cannot
+weaken them (`s1-instance-lock.int-spec.ts`). A login state is single-use within its own process,
+and a `loginId` exists in only one process. A split therefore makes a login fail; it cannot make
+one succeed twice.
+
+**Failure modes of the current lock** (a session advisory lock with a 10 s check):
+
+| Failure                                              | What happens                                                                                                                                                                                                                                                                                                                                                                             |
+| ---------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| The lock's connection is lost; the old process lives | The server frees the lock when the backend ends, and a new process may take it. The old process notices at once on a reset, or within 10 s + 2 s on a silent loss. Meanwhile it still admits requests, and its pool connections may still work.                                                                                                                                          |
+| Event-loop stall in the old process                  | Its check does not run. If its backend survives the stall, it still holds the lock and nothing overlaps. If the server ends the backend during the stall (keepalive, an administrator, a proxy), the old process resumes and answers the requests it queued before its next check. The overlap is the stall plus up to one interval: unbounded.                                          |
+| Network partition, then reconnect                    | Until the server notices the dead client (TCP keepalive; the server default is hours), the lock stays held and no new process can serve: an availability failure, not a split. After that, a new process serves; the old one, once reconnected, finds the lock taken and stops. During the partition the old one cannot reach the database, but its in-memory limits still admit starts. |
+| A new process starts while the old one serves        | The new process cannot take the lock, serves nothing (`server_unavailable`), and retries every 5 s. There is no overlap unless the old one loses the lock.                                                                                                                                                                                                                               |
+| In-flight requests and stale ownership               | `assertServing` is checked once, when the request arrives. A request admitted just before the lock was lost runs to completion, with no fencing token, so its writes are not tied to the ownership it was admitted under.                                                                                                                                                                |
+
+A startup delay or a heartbeat alone does not change any row of this table. It shortens or
+detects the overlap, but a stalled or partitioned process cannot know that it lost ownership
+before it acts.
+
+**The two designs that would close it:**
+
+1. **Fenced ownership.**
+   - **Mechanism.** A lease row (holder id, an increasing epoch, and an expiry in database time),
+     taken and renewed by conditional UPDATE. The holder stops admitting requests before its
+     lease can expire, measured from the start of its last successful renewal on a monotonic
+     clock.
+   - **The part that makes it mutual exclusion:** every write transaction must check the epoch
+     in the same transaction, for example `SELECT … FROM lease WHERE epoch = $mine FOR SHARE`,
+     or a trigger reading a per-connection setting. Then the database refuses a write from a
+     stale holder, however long it was stalled.
+   - **It does not cover:** decisions taken from memory (a per-address window that let a login
+     start), which are not writes. Those stay split during an overlap; only their effects that
+     reach the database are fenced.
+   - **Costs:**
+     - every write path gains the check (a Prisma extension or triggers on every table);
+     - a crashed holder blocks new processes for up to the lease time (startup delay);
+     - and it is new, security-relevant concurrency code.
+2. **Moving the security-relevant limits into PostgreSQL.**
+   - **Mechanism.**
+     - The per-address authentication window and the wrong-code window become atomic counters,
+       as `auth_throttle` already is.
+     - Pending login states move to a table: the id hashed, consumed with a conditional DELETE,
+       60 s TTL, and the OPAQUE server state stored as now.
+     - The per-session request limit can stay per process, documented as load protection,
+       not security. Or it becomes a counter too, at one write per request.
+   - **Effect.** Then no security property depends on how many API processes run. The advisory
+     lock stays as an operational guard against accidental double starts, explicitly not a
+     correctness mechanism.
+   - **Costs:** a few writes per authentication request, a migration, and a table that is
+     deleted on restore like nonces.
+
+**Recommendation: option 2.** The guarantees that depend on one process are exactly these limits
+and login states, and option 2 makes them hold for any number of processes. Fencing would have
+to reach every write and would still leave in-memory decisions split. Until option 2 is built
+and reviewed, the rule "exactly one API process per database" remains an operator requirement.
+Ruvee does not claim multi-process support, and it introduces no Redis.
+
+**Decision needed from the owner:**
+
+- either approve option 2, with the per-session limit kept per process or moved too;
+- or keep the single-process rule and accept the overlap in the table above for a single host.
+
+The overlap stays a blocker before any multi-process or real-data deployment until then.
