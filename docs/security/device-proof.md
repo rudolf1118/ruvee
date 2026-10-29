@@ -177,7 +177,8 @@ AND expires_at > now()`. Exactly one concurrent request can consume it; the othe
     applies once.
   - If the separate write fails, the refusal is still reported and the nonce stays open until it
     expires or is replaced.
-- The login `challenge` is the nonce of op 1 and 10: in memory, single-use with the login state.
+- The login `challenge` is the nonce of op 1 and 10: sealed in the login state's row
+  (`login_states`, authentication.md §4) and single-use with it.
 - `proof_nonces` is never trusted after a restore: APPLY POLICY deletes every row, as it deletes
   pairings, and ends every session.
 

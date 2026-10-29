@@ -171,10 +171,11 @@ The API reads `.env` from `apps/api` or the repository root.
 
 ### Deployment topology: one API process per database
 
-V1 supports exactly **one API process per database**, and enforces it. OPAQUE login states, the
-per-address request windows and the per-session limit live in that process's memory
-(authentication.md §7); a second process would have its own copies, so limits would split and a
-login started on one could not finish on the other.
+V1 supports exactly **one API process per database**, and enforces it. This is an operational
+rule, not a security mechanism: login states, request windows and every limit live in the
+database (authentication.md §7), so a second process that serves by accident, for example while
+the first one has lost its lock connection, shares them instead of splitting them. Ruvee does not
+claim multi-process or high-availability support.
 
 - The serving process holds a PostgreSQL session advisory lock on its own connection to the
   database. Another process on the same database answers `/health/live` only: `/health/ready`
@@ -183,7 +184,7 @@ login started on one could not finish on the other.
 - Startup does not wait for the database; the lock is retried, and taken again if its
   connection is lost (no route is served meanwhile).
 - Connect directly, or through a pooler in session mode. A transaction-mode pooler does not keep
-  session advisory locks and is not supported.
+  session advisory locks, so the guard would not work; it is not supported.
 - Do not run replicas, a second container or a blue-green pair against one database. Restarting
   the one process is supported. Separate databases (a restore target, the test suites) each have
   their own process.

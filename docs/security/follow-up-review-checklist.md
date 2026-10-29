@@ -30,10 +30,12 @@ review. It does not complete D-19, and nothing in it is approved by being listed
       the AK proof required by operation, `NEEDS_ACCOUNT_KEY_PROOF`), tier 3s (revoke).
 - [ ] Recovery and reopen sessions are accepted only on their own controllers; a normal session is
       never accepted there, and the reverse.
-- [ ] Rate limits: per-username reservations are atomic (R3), per-address and per-session windows
-      are in memory, and the API refuses to serve from a second process on the same database
-      (`InstanceLockService`, `test/review/topology.int-spec.ts`). Check what a transaction-mode
-      pooler would do to the advisory lock.
+- [ ] Rate limits: per-username reservations are atomic (R3); per-address, wrong-code and
+      per-session windows and pending logins are shared in PostgreSQL (§17.2 option B,
+      `test/review/shared-limits.int-spec.ts`), so no limit depends on the instance lock. The API
+      still refuses to serve from a second process on the same database (`InstanceLockService`,
+      `test/review/topology.int-spec.ts`). Check what a transaction-mode pooler would do to the
+      advisory lock.
 - [ ] Pairing creation: open-count and hourly window under the account row lock (R21).
 
 ## 2. Restore control isolation and verified backup inputs

@@ -149,6 +149,15 @@ Tokens are single-use, expire, are compared in constant time, and are rate-limit
 
 The same single-use rule applies to `reauth`.
 
+As built (2026-10-29, follow-up review §18): login states are rows of `login_states`, so a login
+started on one API process can be finished on another. A row holds `SHA-256(loginId)`, its
+purpose (login, step-up or reopening), `SHA-256` of the normalized username, the account,
+device, platform, session or reopening code it is bound to, and its expiry in database time. The
+OPAQUE server login state and the device challenge are sealed in it with AES-256-GCM under a key
+derived (HKDF-SHA-256) from the OPAQUE server setup, which is never in the database; the sealed
+data is bound to every other column. Step 4 is one `DELETE … RETURNING`. At most 10,000 live
+states exist; beyond that a start is refused with `429`, and no live state is removed.
+
 Error responses never distinguish "unknown user" from "wrong password", and contain no OPAQUE
 internals ([api-design.md](../architecture/api-design.md#errors)).
 
@@ -218,20 +227,22 @@ somewhere else. A cookie request must always come from `PUBLIC_ORIGIN`.
 
 ## 7. Rate limiting and brute-force protection
 
-There is no Redis. V1 runs a single API instance; counters are kept in PostgreSQL for anything
-that must survive a restart, and in memory for general request rates. As built (2026-10-27): the
-single instance is enforced. The serving process holds a PostgreSQL advisory lock, and another
-process on the same database serves nothing (`503 server_unavailable`; README, "Deployment
-topology").
+There is no Redis. Every counter and every pending login is kept in PostgreSQL (follow-up review
+§17.2 option B, §18), so a limit holds for whatever API processes serve one database. V1 still
+runs **one** API process per database: the serving process holds a PostgreSQL advisory lock, and
+another process on the same database serves nothing (`503 server_unavailable`; README,
+"Deployment topology"). That lock is an operational guard against an accidental second start. No
+limit, and no login state, depends on it any more: if two processes overlap (a lost lock
+connection, a stalled event loop), they share one budget.
 
 | Target                           | Limit (proposed)                                                                                 | Storage    |
 | -------------------------------- | ------------------------------------------------------------------------------------------------ | ---------- |
 | Login failures per username      | After 5 failures, exponential delay starting at 30 s and capped at 15 minutes. Reset on success. | PostgreSQL |
-| Login attempts per client IP     | 20 per minute                                                                                    | Memory     |
+| Login attempts per client IP     | 20 per minute                                                                                    | PostgreSQL |
 | Recovery starts per username     | 5 per hour                                                                                       | PostgreSQL |
 | Bootstrap token attempts         | 10 per hour in total                                                                             | PostgreSQL |
 | Pairings per account             | At most 3 open and 10 created per hour; exactly one request per pairing                          | PostgreSQL |
-| All other authenticated requests | 300 per minute per session                                                                       | Memory     |
+| All other authenticated requests | 300 per minute per session                                                                       | PostgreSQL |
 
 - Throttling delays; it never permanently locks the account. Permanent lockout would let an
   attacker deny the user service.
@@ -242,10 +253,16 @@ topology").
   configured proxy address.
 - As built (2026-10-26, review R3, R16, R17): every password check (login, step-up, reopening)
   and every recovery and bootstrap attempt is reserved in one atomic statement before it runs, so
-  parallel requests share the bound; the per-session limit is enforced in memory for every
+  parallel requests share the bound; the per-session limit is enforced for every
   authenticated request; per-address limits key IPv6 clients by their /64; the API warns once if
   a request carries `X-Forwarded-For` while `TRUSTED_PROXY_ADDRESS` is unset, and at start in
   production when it is unset. Wrong reopening codes have their own per-address limit (R11).
+- As built (2026-10-29, §17.2 option B): the per-address, wrong-code and per-session windows are
+  fixed windows in `rate_windows`, in database time, each counted by one atomic statement before
+  the work it protects. A wrong-code guess is reserved before the lookup and given back when the
+  code is the usable one. At most 10,000 live windows per scope; beyond that, new keys share one
+  overflow window under the same limit, and a live window is never removed to make room. A
+  database error refuses the request. Pending logins are in `login_states` (§4).
 
 ## 8. What a stolen session can and cannot do
 

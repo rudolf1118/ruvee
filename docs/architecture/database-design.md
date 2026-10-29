@@ -157,7 +157,46 @@ exactly the `token` sessions have an `access_expires_at`.
 | `blocked_until` | timestamptz, nullable                      | S     |                                                                                                                                                                                                |
 
 The primary key is (`scope`, `subject_hash`). Limits are in [authentication.md §7](../security/authentication.md#7-rate-limiting-and-brute-force-protection).
-Per-IP and per-session request rates are counted in memory, not in this table.
+Per-address, wrong-code and per-session request rates are counted in `rate_windows`, not in this
+table (below).
+
+### `rate_windows`
+
+**Implemented** in `20261029090000_shared_limits` (follow-up review §17.2 option B). Transient:
+a backup holds the table's definition but no rows, and a restore empties it.
+
+| Column         | Type                                | Class | Purpose                                                                                                                          |
+| -------------- | ----------------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------- |
+| `scope`        | enum `address, wrong_code, session` | S     |                                                                                                                                  |
+| `key_hash`     | bytea (32)                          | S     | `SHA-256(scope ‖ 0x00 ‖ key)`: the normalized client address (IPv6 by /64) or the session id; a constant for the overflow window |
+| `window_start` | timestamptz                         | S     | Database time                                                                                                                    |
+| `hits`         | integer, 0 to 1000                  | S     | Counted up to the limit plus one                                                                                                 |
+
+The primary key is (`scope`, `key_hash`), with an index on (`scope`, `window_start`). At most
+10,000 live windows per scope (plus the overflow window, and at most the number of statements
+running at the same moment). The runtime role may select, insert, update and delete rows.
+
+### `login_states`
+
+**Implemented** in `20261029090000_shared_limits`. Transient, like `rate_windows`.
+
+| Column           | Type                         | Class | Purpose                                                                                                           |
+| ---------------- | ---------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------- |
+| `id_hash`        | bytea (32), primary key      | V     | `SHA-256(loginId)`; the 128-bit `loginId` itself is never stored                                                  |
+| `purpose`        | enum `login, reauth, reopen` | S     | Checked against `session_id` and `reopen_code_id`                                                                 |
+| `login_subject`  | bytea (32)                   | S     | `SHA-256("login" ‖ 0x00 ‖ normalized username)`, as in `auth_throttle`; the typed name is never stored            |
+| `account_id`     | uuid, nullable, FK           | M     | Null for an unknown username (such a login never succeeds); required for step-up and reopening                    |
+| `device_id`      | uuid, nullable               | M     | The device the client named                                                                                       |
+| `platform`       | enum `device_platform`       | M     |                                                                                                                   |
+| `session_id`     | uuid, nullable, FK           | M     | Step-up only: the session it may finish on                                                                        |
+| `reopen_code_id` | uuid, nullable               | S     | Reopening only: the code it was started with                                                                      |
+| `sealed`         | bytea, 64 to 1024 bytes      | O     | AES-256-GCM of the device challenge and the OPAQUE server login state, bound to every column above and the expiry |
+| `created_at`     | timestamptz                  | S     | Database time                                                                                                     |
+| `expires_at`     | timestamptz                  | S     | 60 s after `created_at` (a CHECK allows at most 5 minutes)                                                        |
+
+The sealing key is HKDF-SHA-256 of the OPAQUE server setup (label `ruvee/login-state-seal/v1`)
+and is never in the database. The runtime role may select, insert and delete rows, never update
+them. At most 10,000 live states.
 
 ### `bootstrap_tokens`
 

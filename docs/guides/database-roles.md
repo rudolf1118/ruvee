@@ -82,6 +82,28 @@ role never gets access to a table just because a migration created it. If `grant
 removed a privilege the role should not have had, restart the API afterwards: it checks its own
 privileges for anything beyond the list once, at its first request.
 
+### 3.1 The shared-limits migration (`20261029090000_shared_limits`)
+
+This migration adds `rate_windows` and `login_states` (follow-up review §17.2 option B). It holds
+no data to convert: both tables start empty and stay transient. On an existing installation:
+
+1. Stop the API (pending logins of the old process are lost; their clients log in again).
+2. As the owner: `prisma migrate deploy` (above).
+3. As the operator: `ruvee-admin grant-runtime` (above). It grants the runtime role exactly
+   `SELECT, INSERT, UPDATE, DELETE` on `rate_windows` and `SELECT, INSERT, DELETE` on
+   `login_states`, and nothing else.
+4. Start the new API build. Every process that serves the database must use the same OPAQUE setup
+   file (it already had to): the login states are sealed with a key derived from it.
+
+If step 3 is skipped, the API fails closed: every login and every authenticated request is
+refused with `500 internal_error` (permission denied on the new tables) until `grant-runtime`
+runs. No limit is skipped. Nothing needs cleaning: expired windows and login states are removed
+by the API itself, a few hundred at a time, as new ones are added. To empty both tables by hand
+(for example after a test), as the operator: `DELETE FROM rate_windows; DELETE FROM login_states;`.
+
+The instance lock stays: run one API process per database. It is now an operational guard only;
+no limit depends on it (README, "Deployment topology").
+
 ## 4. Moving an existing database (set up before F-25)
 
 Before F-25 the API connected as one administrator role that owned everything. Do this during a
