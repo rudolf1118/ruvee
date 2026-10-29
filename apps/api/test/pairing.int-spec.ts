@@ -48,7 +48,7 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
   });
 
   beforeEach(async () => {
-    h.app.get(ThrottleService).clearIpWindows();
+    await h.app.get(ThrottleService).clearIpWindows();
     // Each test starts with no open pairings and a fresh hourly pairing window.
     await query(h.db.url, 'DELETE FROM pairings');
     await query(h.db.url, `DELETE FROM auth_throttle WHERE scope = 'pairing'`);

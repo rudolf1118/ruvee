@@ -24,7 +24,7 @@ import { ProofService, SETUP_NONCE } from '../sessions/proof.service.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
 import { LoginStateStore } from './login-state.store.js';
 import { OpaqueServerService } from './opaque-server.service.js';
-import { ThrottleService } from './throttle.service.js';
+import { loginSubject, ThrottleService } from './throttle.service.js';
 
 /** One account per server in V1 (authentication.md §3). Serializes concurrent registrations. */
 const REGISTRATION_LOCK = 0x52_56_52_47; // "RVRG"
@@ -74,7 +74,7 @@ export class AuthService {
   }
 
   async registerStart(body: RegisterStartRequest, client: ClientContext): Promise<string> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     await this.assertRegistrationOpen();
     await this.assertBootstrapToken(body.bootstrapToken, client);
     try {
@@ -89,7 +89,7 @@ export class AuthService {
    * its session and the empty vault, and marks the token used. Afterwards registration is closed.
    */
   async registerFinish(body: RegisterFinishRequest, client: ClientContext): Promise<CookieSession> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     await this.assertRegistrationOpen();
     await this.assertBootstrapToken(body.bootstrapToken, client);
 
@@ -239,7 +239,7 @@ export class AuthService {
   }
 
   async loginStart(body: LoginStartRequest, client: ClientContext): Promise<LoginStartResponse> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     await this.throttle.assertLoginAllowed(body.username);
     const account = await this.prisma.account.findUnique({
       where: { usernameNormalized: body.username },
@@ -254,9 +254,9 @@ export class AuthService {
     } catch {
       throw new ApiException('invalid_request');
     }
-    const { loginId, challenge } = this.loginStates.put({
+    const { loginId, challenge } = await this.loginStates.put({
       serverLoginState: started.serverLoginState,
-      username: body.username,
+      loginSubject: loginSubject(body.username),
       accountId: account?.opaqueCredential ? account.id : null,
       deviceId: body.deviceId,
       platform: body.platform,
@@ -265,22 +265,22 @@ export class AuthService {
   }
 
   async loginFinish(body: LoginFinishRequest, client: ClientContext): Promise<NewSession> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     // Consumed before anything else, so a replayed loginId always fails (INV-23).
-    const pending = this.loginStates.consume(body.loginId);
+    const pending = await this.loginStates.consume(body.loginId);
     // A step-up state is bound to its session and can never create a new one; a reopening
     // state can only create a reopen session.
     if (!pending || pending.sessionId !== undefined || pending.reopenCodeId !== undefined)
       throw new ApiException('login_failed');
     // Counted before OPAQUE runs (R3): parallel finishes cannot all be evaluated.
-    await this.throttle.reserveLoginAttempt(pending.username);
+    await this.throttle.reserveLoginAttempt(pending.loginSubject);
     const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
     if (!verified || pending.accountId === null) {
       await this.events.record('login_failed', { accountId: pending.accountId, ...client });
       throw new ApiException('login_failed');
     }
     const accountId = pending.accountId;
-    await this.throttle.resetLogin(pending.username);
+    await this.throttle.resetLogin(pending.loginSubject);
 
     const known = pending.deviceId
       ? await this.prisma.device.findFirst({ where: { id: pending.deviceId, accountId } })
@@ -380,7 +380,7 @@ export class AuthService {
     body: ReauthStartRequest,
     client: ClientContext,
   ) {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     const account = await this.prisma.account.findUniqueOrThrow({
       where: { id: session.accountId },
       select: {
@@ -398,9 +398,9 @@ export class AuthService {
     } catch {
       throw new ApiException('invalid_request');
     }
-    const { loginId, challenge } = this.loginStates.put({
+    const { loginId, challenge } = await this.loginStates.put({
       serverLoginState: started.serverLoginState,
-      username: account.usernameNormalized,
+      loginSubject: loginSubject(account.usernameNormalized),
       accountId: session.accountId,
       deviceId: session.deviceId,
       platform: 'web',
@@ -415,10 +415,10 @@ export class AuthService {
     body: LoginFinishRequest,
     client: ClientContext,
   ): Promise<{ authAt: string }> {
-    this.throttle.assertIpAllowed(client.ip);
-    const pending = this.loginStates.consume(body.loginId);
+    await this.throttle.assertIpAllowed(client.ip);
+    const pending = await this.loginStates.consume(body.loginId);
     if (pending?.sessionId !== session.sessionId) throw new ApiException('login_failed');
-    await this.throttle.reserveLoginAttempt(pending.username);
+    await this.throttle.reserveLoginAttempt(pending.loginSubject);
     if (!this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest)) {
       await this.events.record('login_failed', {
         accountId: session.accountId,
@@ -427,7 +427,7 @@ export class AuthService {
       });
       throw new ApiException('login_failed');
     }
-    await this.throttle.resetLogin(pending.username);
+    await this.throttle.resetLogin(pending.loginSubject);
     const authAt = new Date();
     await this.prisma.session.update({ where: { id: session.sessionId }, data: { authAt } });
     return { authAt: authAt.toISOString() };
@@ -515,7 +515,7 @@ export class AuthService {
    * recorded; the caller sees the same `unauthenticated` as for an unknown token.
    */
   async refresh(body: RefreshRequest, client: ClientContext): Promise<TokenPair> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     const result = await this.sessions.refresh(body.refreshToken);
     if ('reused' in result) {
       await this.events.record('refresh_reuse', {

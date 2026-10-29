@@ -25,7 +25,12 @@ export interface PgTools {
   /** `pg_dump --format=custom` of the database to `stdout`. */
   dump(
     target: DbTarget,
-    exclude: { readonly tables: readonly string[]; readonly schemas: readonly string[] },
+    exclude: {
+      readonly tables: readonly string[];
+      /** Dumped with their definitions but without rows. */
+      readonly tableData: readonly string[];
+      readonly schemas: readonly string[];
+    },
   ): ToolRun & { stdout: Readable };
   /** `pg_restore --single-transaction` into the database, reading the dump from `stdin`. */
   restore(target: DbTarget): ToolRun & { stdin: Writable };
@@ -93,6 +98,7 @@ export function pgToolsFromEnv(env: NodeJS.ProcessEnv = process.env): PgTools {
           '--no-owner',
           '--no-privileges',
           ...exclude.tables.map((t) => `--exclude-table=${t}`),
+          ...exclude.tableData.map((t) => `--exclude-table-data=${t}`),
           ...exclude.schemas.map((n) => `--exclude-schema=${n}`),
           // Explicit libpq keywords from the one parsed target (db-target.ts), never a URL.
           `--dbname=${libpqConninfo(target, host)}`,

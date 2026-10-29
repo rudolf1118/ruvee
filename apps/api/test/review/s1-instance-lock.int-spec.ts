@@ -1,7 +1,7 @@
 import { createServer, connect, type Server, type Socket } from 'node:net';
 import type { ConfigService } from '@nestjs/config';
 import type { Env } from '../../src/config/env.js';
-import { ThrottleService } from '../../src/auth/throttle.service.js';
+import { loginSubject, ThrottleService } from '../../src/auth/throttle.service.js';
 import {
   INSTANCE_LOCK_KEY,
   InstanceLockService,
@@ -139,7 +139,7 @@ describe('S-1 residual: limits shared by two overlapping processes (real databas
     await db.drop();
   });
 
-  it('the per-account login limit is one budget; the per-address window is per process', async () => {
+  it('the per-account login limit and the per-address window are each one budget (§17.2)', async () => {
     const config = {
       get: (key: keyof Env) =>
         ({ DATABASE_URL: db.url, READINESS_DB_TIMEOUT_MS: 5_000 })[key as string],
@@ -148,22 +148,24 @@ describe('S-1 residual: limits shared by two overlapping processes (real databas
     const [one, two] = prismas.map((p) => new ThrottleService(p));
     if (!one || !two) throw new Error('two services');
     try {
-      // Database: twelve password checks for one username, alternating between the processes,
-      // all at once. Five are evaluated in all, as with one process (review R3).
+      // Twelve password checks for one username, alternating between the processes, all at
+      // once. Five are evaluated in all, as with one process (review R3).
       const now = new Date();
       const results = await Promise.allSettled(
         Array.from({ length: 12 }, (_, i) =>
-          (i % 2 === 0 ? one : two).reserveLoginAttempt('synthetic-s1-user', now),
+          (i % 2 === 0 ? one : two).reserveLoginAttempt(loginSubject('synthetic-s1-user'), now),
         ),
       );
       expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(5);
-      // Memory: each process counts its own 20 unauthenticated attempts per address per minute.
-      const at = Date.now();
-      for (let i = 0; i < 20; i++) one.assertIpAllowed('192.0.2.7', at);
-      expect(() => {
-        one.assertIpAllowed('192.0.2.7', at);
-      }).toThrow();
-      for (let i = 0; i < 20; i++) two.assertIpAllowed('192.0.2.7', at);
+      // Before option B each process counted its own 20 attempts per address per minute. Now
+      // forty at once from one address, split over both processes, admit twenty.
+      const at = new Date();
+      const perAddress = await Promise.allSettled(
+        Array.from({ length: 40 }, (_, i) =>
+          (i % 2 === 0 ? one : two).assertIpAllowed('192.0.2.7', at),
+        ),
+      );
+      expect(perAddress.filter((r) => r.status === 'fulfilled')).toHaveLength(20);
     } finally {
       await Promise.all(prismas.map((p) => p.$disconnect()));
     }

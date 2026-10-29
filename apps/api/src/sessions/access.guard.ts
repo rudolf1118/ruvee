@@ -76,9 +76,12 @@ export class AccessGuard implements CanActivate {
     );
   }
 
-  /** Every authenticated request counts against its session's per-minute limit (review R16). */
-  private limited<T extends { sessionId: string }>(session: T): T {
-    this.throttle.assertSessionAllowed(session.sessionId);
+  /**
+   * Every authenticated request counts against its session's per-minute limit (review R16), in
+   * the database, so every API process shares it (follow-up review §17.2).
+   */
+  private async limited<T extends { sessionId: string }>(session: T): Promise<T> {
+    await this.throttle.assertSessionAllowed(session.sessionId);
     return session;
   }
 
@@ -146,7 +149,7 @@ export class AccessGuard implements CanActivate {
     if (level === 'recovery') {
       if (routeClass !== 'recovery') throw new ApiException('internal_error');
       if (bearer !== undefined) throw new ApiException('unauthenticated');
-      req.ruveeSession = this.limited(
+      req.ruveeSession = await this.limited(
         await this.sessions.authenticateRecovery(readCookie(req, this.sessions.recoveryCookieName)),
       );
       return true;
@@ -160,13 +163,13 @@ export class AccessGuard implements CanActivate {
       // reopen session is never accepted anywhere else (backup-restore.md §3.13).
       if (routeClass !== 'reopen') throw new ApiException('internal_error');
       if (bearer !== undefined) throw new ApiException('unauthenticated');
-      req.ruveeSession = this.limited(
+      req.ruveeSession = await this.limited(
         await this.sessions.authenticateReopen(readCookie(req, this.sessions.reopenCookieName)),
       );
       return true;
     }
 
-    const session = this.limited(
+    const session = await this.limited(
       bearer === undefined
         ? await this.sessions.authenticate(readCookie(req, this.sessions.cookieName))
         : await this.sessions.authenticate(bearer, new Date(), 'token'),

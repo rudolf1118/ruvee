@@ -48,8 +48,15 @@ export const CONFIG_INVENTORY: Record<keyof Env, { handling: ConfigHandling; why
   },
 };
 
-/** Every table of the database, what it holds, and whether a dump contains secrets from it. */
-export const TABLE_INVENTORY: Record<string, { holds: string; secretMaterial: boolean }> = {
+/**
+ * Every table of the database, what it holds, and whether a dump contains secrets from it.
+ * `transient` tables are dumped without their rows (their definitions only) and emptied again on
+ * restore: they hold state of the running server that no restored server may reuse.
+ */
+export const TABLE_INVENTORY: Record<
+  string,
+  { holds: string; secretMaterial: boolean; transient?: true }
+> = {
   accounts: { holds: 'account id, normalized username', secretMaterial: false },
   opaque_credentials: {
     holds: 'OPAQUE registration record (with the setup file: offline password guessing, V-01)',
@@ -69,6 +76,17 @@ export const TABLE_INVENTORY: Record<string, { holds: string; secretMaterial: bo
   },
   refresh_tokens: { holds: 'SHA-256 of refresh tokens and rotation times', secretMaterial: true },
   auth_throttle: { holds: 'failure counters by hashed subject', secretMaterial: false },
+  rate_windows: {
+    holds: 'request windows by hashed address or session (≤ 15 minutes); no rows in a backup',
+    secretMaterial: false,
+    transient: true,
+  },
+  login_states: {
+    holds:
+      'pending logins (≤ 60 s): SHA-256 of the login id, its binding, and the sealed OPAQUE server state; no rows in a backup',
+    secretMaterial: true,
+    transient: true,
+  },
   bootstrap_tokens: { holds: 'SHA-256 of setup tokens, expiry, use', secretMaterial: true },
   security_events: { holds: 'allow-listed event history (INV-12)', secretMaterial: false },
   pairings: { holds: 'open pairings: ephemeral key, MACs, sealed reply', secretMaterial: true },

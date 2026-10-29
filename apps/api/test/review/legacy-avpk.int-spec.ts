@@ -78,7 +78,7 @@ describe('a pre-D-31 account never acquires a trusted AVPK (real database)', () 
 
   beforeEach(async () => {
     const { ThrottleService } = await import('../../src/auth/throttle.service.js');
-    h.app.get(ThrottleService).clearIpWindows();
+    await h.app.get(ThrottleService).clearIpWindows();
     await query(h.db.url, 'DELETE FROM auth_throttle');
     // Each test starts from a D-31 account and turns it into a legacy one where it needs to.
     await query(h.db.url, 'UPDATE account_keys SET ak_verify_key = $1', [

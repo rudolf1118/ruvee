@@ -45,8 +45,8 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
     await h.close();
   });
 
-  beforeEach(() => {
-    h.app.get(ThrottleService).clearIpWindows();
+  beforeEach(async () => {
+    await h.app.get(ThrottleService).clearIpWindows();
   });
 
   async function login(
@@ -248,7 +248,7 @@ describe('account bootstrap, login and sessions (OPAQUE, real database)', () => 
 
   it('throttles repeated failures identically for known and unknown usernames, with Retry-After', async () => {
     for (const username of ['throttle-target', account.username]) {
-      h.app.get(ThrottleService).clearIpWindows();
+      await h.app.get(ThrottleService).clearIpWindows();
       for (let i = 0; i < 5; i++) {
         const client = startLogin('synthetic wrong guess');
         const start = await h

@@ -256,7 +256,9 @@ describe('R3: missing or mismatched OPAQUE setup material fails safely', () => {
     // The Recovery Kit path does not use OPAQUE to authenticate: with the code and the
     // snapshot-time kit, the owner reopens and registers a new password under the new setup.
     await reopen(h, account, code, 'recovery');
-    h.app.get((await import('../src/auth/throttle.service.js')).ThrottleService).clearIpWindows();
+    await h.app
+      .get((await import('../src/auth/throttle.service.js')).ThrottleService)
+      .clearIpWindows();
     expect(await login(h, account, NEW_PASSWORD)).toBeDefined();
     expect(await login(h, account)).toBeUndefined();
   }, 120_000);

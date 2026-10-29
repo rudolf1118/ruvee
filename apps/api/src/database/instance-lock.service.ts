@@ -14,22 +14,21 @@ export const INSTANCE_LOCK_KEY = '8247628470463590505';
 const RETRY_MS = 5_000;
 
 export const ANOTHER_INSTANCE =
-  'Another Ruvee API process serves this database. V1 supports exactly one API process per ' +
-  'database (login state and request limits are kept in its memory); this one serves nothing.';
+  'Another Ruvee API process serves this database. Ruvee runs one API process per database; ' +
+  'this one serves nothing until the other stops.';
 
 /**
- * V1 runs exactly one API process per database (authentication.md §7, README): login
- * states, per-address windows and per-session limits live in that process's memory, so a second
- * process would split them. The serving process holds a session-level advisory lock on its own
- * connection; a process without it answers health checks only. Starting never waits for the
- * database (liveness stays independent of it): the lock is tried at start and then retried, and
- * taken again if its connection is lost.
+ * An operational guard against starting a second API process by accident: the serving process
+ * holds a session-level advisory lock on its own connection; a process without it answers health
+ * checks only. Starting never waits for the database (liveness stays independent of it): the
+ * lock is tried at start and then retried, and taken again if its connection is lost.
  *
- * A connection can be lost without the client hearing of it (a silent network drop, while the
- * server ends the backend and frees the lock). So the holder confirms on that connection, every
- * `checkIntervalMs`, that it still holds the lock, and stops serving when the check fails or takes
- * longer than READINESS_DB_TIMEOUT_MS (follow-up review S-1). Two processes can still overlap for
- * at most about one interval plus that timeout.
+ * No security property depends on it (follow-up review §17.2, option B). The request windows,
+ * pending logins and every limit are shared in the database, so two processes that overlap (a
+ * lost lock connection, a stalled event loop, a partition) still share one budget and one
+ * single-use login state. The holder still confirms on its connection, every `checkIntervalMs`,
+ * that it holds the lock, and stops serving when the check fails or takes longer than
+ * READINESS_DB_TIMEOUT_MS (follow-up review S-1); that interval bounds nothing a guarantee rests on.
  */
 @Injectable()
 export class InstanceLockService implements OnApplicationBootstrap, OnApplicationShutdown {

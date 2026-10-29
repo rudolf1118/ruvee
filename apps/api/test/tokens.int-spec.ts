@@ -43,8 +43,8 @@ describe('token sessions for the extension (authentication.md §5, real database
     await h.close();
   });
 
-  beforeEach(() => {
-    h.app.get(ThrottleService).clearIpWindows();
+  beforeEach(async () => {
+    await h.app.get(ThrottleService).clearIpWindows();
   });
 
   const extPost = (path: string, body: object, headers: Record<string, string> = EXT_HEADERS) =>

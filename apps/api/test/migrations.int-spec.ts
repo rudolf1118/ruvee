@@ -9,6 +9,7 @@ import {
 
 /** Newest first, the order in which their down scripts run. */
 const MIGRATIONS = [
+  'prisma/migrations/20261029090000_shared_limits',
   'prisma/migrations/20261026200000_device_proof',
   'prisma/migrations/20261026170000_reopening',
   'prisma/migrations/20261026150000_server_restore',

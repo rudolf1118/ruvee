@@ -60,7 +60,7 @@ describe('REVIEW R21, R23 and D-31 verification (real database)', () => {
 
   beforeEach(async () => {
     const { ThrottleService } = await import('../../src/auth/throttle.service.js');
-    h.app.get(ThrottleService).clearIpWindows();
+    await h.app.get(ThrottleService).clearIpWindows();
     await query(h.db.url, 'DELETE FROM auth_throttle');
     await query(h.db.url, 'DELETE FROM pairings');
   });

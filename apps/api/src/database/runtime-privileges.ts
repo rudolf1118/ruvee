@@ -30,6 +30,10 @@ export const RUNTIME_GRANTS: Readonly<Record<string, RuntimeGrant>> = {
   sessions: { table: ['SELECT', 'INSERT', 'UPDATE'] },
   refresh_tokens: { table: ['SELECT', 'INSERT', 'UPDATE'] },
   auth_throttle: { table: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
+  // §17.2 option B: shared request windows (counted with an upsert) and pending logins
+  // (inserted, then consumed with DELETE … RETURNING; never updated).
+  rate_windows: { table: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
+  login_states: { table: ['SELECT', 'INSERT', 'DELETE'] },
   // Setup tokens are issued on the host (`ruvee-admin bootstrap-token`); the API only uses them.
   bootstrap_tokens: { table: ['SELECT', 'UPDATE'] },
   security_events: { table: ['SELECT', 'INSERT'] },

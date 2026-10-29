@@ -107,7 +107,8 @@ describe('server restore into a maintenance-mode installation (real database, re
   let restoreId: string;
   let reopenCode: string;
   let restored: Harness;
-  let clearRestoredThrottle: () => void;
+  let clearRestoredThrottle: () => Promise<void>;
+  let pendingLogin: { loginId: string; finishLoginRequest: string; deviceProof: string };
 
   async function login(h: Harness, deviceId?: string, password = SYNTHETIC_PASSWORD) {
     const client = startLogin(password);
@@ -181,7 +182,7 @@ describe('server restore into a maintenance-mode installation (real database, re
       (started.headers['set-cookie'] as unknown as string[])
         .find((c) => c.startsWith('__Host-ruvee_recovery='))
         ?.split(';')[0] ?? '';
-    source.app.get(ThrottleService).clearIpWindows();
+    await source.app.get(ThrottleService).clearIpWindows();
     const other = await login(source);
     otherDevice = {
       id: sessionResponseSchema.parse(other.body).device.id,
@@ -191,13 +192,38 @@ describe('server restore into a maintenance-mode installation (real database, re
     await source.post('/api/v1/pairings', { pairingId }, owner).expect(201);
     // An open proof nonce at snapshot time (device-proof.md §10): it must not survive a restore.
     await proofNonce(source, owner, 'device_revoke');
+    // A login pending at snapshot time, with its finish already computed and signed: if its state
+    // came back with the restore, the snapshot-time password would finish it after the reopening
+    // (follow-up review §17.2).
+    const pendingClient = startLogin(SYNTHETIC_PASSWORD);
+    const pendingStart = loginStartResponseSchema.parse(
+      (
+        await source
+          .post('/api/v1/auth/login/start', {
+            username: account.username,
+            startLoginRequest: pendingClient.startLoginRequest,
+            platform: 'web',
+            deviceId: account.deviceId,
+          })
+          .expect(200)
+      ).body,
+    );
+    const pendingFinish = finishLogin(pendingClient.clientLoginState, pendingStart.loginResponse);
+    if (!pendingFinish) throw new Error('login rejected');
+    pendingLogin = {
+      loginId: pendingStart.loginId,
+      finishLoginRequest: pendingFinish.finishLoginRequest,
+      deviceProof: signLogin(account, pendingStart, pendingFinish.finishLoginRequest),
+    };
 
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-restore-it-'));
     key = await testBackupKey();
     backup = await createBackup({
       databaseUrl: source.db.operator.url,
       outDir,
-      tools,
+      // As a backup from a modified tool would: with the rows of the transient tables, which a
+      // backup never holds. The restore must remove them itself.
+      tools: { ...tools, dump: (t, exclude) => tools.dump(t, { ...exclude, tableData: [] }) },
       recipient: key.recipient,
       syntheticTestOnly: true,
       config,
@@ -216,6 +242,12 @@ describe('server restore into a maintenance-mode installation (real database, re
       'SELECT count(*) AS n FROM proof_nonces',
     );
     expect(nonces?.n).toBe('0');
+    const [transient] = await query<{ logins: number; windows: number }>(
+      target.url,
+      `SELECT (SELECT count(*) FROM login_states)::int AS logins,
+              (SELECT count(*) FROM rate_windows)::int AS windows`,
+    );
+    expect(transient).toEqual({ logins: 0, windows: 0 });
     // Restored sessions are ended, proven or not: none can act after the reopening.
     const [live] = await query<{ n: string }>(
       target.url,
@@ -227,9 +259,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     restored = await startHarness({ database: target });
     // The restored app was built from freshly imported modules: its classes are new objects.
     const fresh = await import('../src/auth/throttle.service.js');
-    clearRestoredThrottle = () => {
-      restored.app.get(fresh.ThrottleService).clearIpWindows();
-    };
+    clearRestoredThrottle = () => restored.app.get(fresh.ThrottleService).clearIpWindows();
   }, 180_000);
 
   afterAll(async () => {
@@ -253,8 +283,8 @@ describe('server restore into a maintenance-mode installation (real database, re
     };
   }
 
-  beforeEach(() => {
-    clearRestoredThrottle();
+  beforeEach(async () => {
+    await clearRestoredThrottle();
   });
 
   it('refuses to take a backup of anything but a synthetic database', async () => {
@@ -399,6 +429,8 @@ describe('server restore into a maintenance-mode installation (real database, re
     expectError(await login(restored, otherDevice.id, NEW_PASSWORD), 'device_revoked');
     // The snapshot-time password no longer works; the new one does. The pairing is gone.
     await expect(login(restored, account.deviceId)).rejects.toThrow(/login rejected/);
+    // Nor does a login it started before the backup, finished now.
+    expectError(await restored.post('/api/v1/auth/login/finish', pendingLogin), 'login_failed');
     const fresh = await login(restored, account.deviceId, NEW_PASSWORD);
     expect(fresh.status, fresh.text).toBe(200);
     const cookie = sessionCookie(fresh);

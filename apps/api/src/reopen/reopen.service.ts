@@ -15,7 +15,7 @@ import {
 import type { ClientContext } from '../auth/auth.service.js';
 import { LoginStateStore } from '../auth/login-state.store.js';
 import { OpaqueServerService } from '../auth/opaque-server.service.js';
-import { ThrottleService } from '../auth/throttle.service.js';
+import { loginSubject, ThrottleService } from '../auth/throttle.service.js';
 import { ApiException } from '../common/api-exception.js';
 import {
   constantTimeEqual,
@@ -91,14 +91,17 @@ export class ReopenService {
   }
 
   /**
-   * The usable code, or a refusal for a wrong one. Addresses that sent too many wrong codes are
-   * refused before any lookup; a wrong code is counted against its address only.
+   * The usable code, or a refusal for a wrong one. Each lookup first reserves one of the
+   * address's wrong-code guesses, atomically across processes; the usable code gives it back, so
+   * only a wrong code stays counted, and only against its address, never against a real code.
    */
   private async presentedCode(reopenCode: string, client: ClientContext): Promise<CodeRow> {
-    this.throttle.assertReopenCodeGuessesAllowed(client.ip);
+    const guess = await this.throttle.reserveReopenCodeGuess(client.ip);
     const code = await this.usableCode(reopenCode);
-    if (code) return code;
-    this.throttle.recordWrongReopenCode(client.ip);
+    if (code) {
+      await this.throttle.releaseReopenCodeGuess(guess);
+      return code;
+    }
     if ((await this.maintenance.state()) === 'reopening')
       await this.events.record('reopen_failed', {
         accountId: null,
@@ -153,7 +156,7 @@ export class ReopenService {
     body: ReopenLoginStartRequest,
     client: ClientContext,
   ): Promise<LoginStartResponse> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     const code = await this.presentedCode(body.reopenCode, client);
     await this.throttle.assertLoginAllowed(body.username);
     const account = await this.prisma.account.findUnique({
@@ -173,9 +176,9 @@ export class ReopenService {
     } catch {
       throw new ApiException('invalid_request');
     }
-    const { loginId, challenge } = this.loginStates.put({
+    const { loginId, challenge } = await this.loginStates.put({
       serverLoginState: started.serverLoginState,
-      username: body.username,
+      loginSubject: loginSubject(body.username),
       accountId: account.id,
       deviceId: body.deviceId,
       platform: 'web',
@@ -190,12 +193,12 @@ export class ReopenService {
    * opens nothing). Then the code is consumed and the reopen session created.
    */
   async loginFinish(body: LoginFinishRequest, client: ClientContext): Promise<NewReopen> {
-    this.throttle.assertIpAllowed(client.ip);
-    const pending = this.loginStates.consume(body.loginId);
+    await this.throttle.assertIpAllowed(client.ip);
+    const pending = await this.loginStates.consume(body.loginId);
     if (!pending?.reopenCodeId || pending.accountId === null || !pending.deviceId)
       throw new ApiException('reopen_failed');
     const accountId = pending.accountId;
-    await this.throttle.reserveLoginAttempt(pending.username);
+    await this.throttle.reserveLoginAttempt(pending.loginSubject);
     const verified = this.opaque.finishLogin(pending.serverLoginState, body.finishLoginRequest);
     if (!verified) {
       return this.fail(client, pending.reopenCodeId, accountId);
@@ -224,7 +227,7 @@ export class ReopenService {
     const session = await this.prisma.$transaction((tx) =>
       this.consume(tx, code, device.id, 'password', client, now),
     );
-    await this.throttle.resetLogin(pending.username);
+    await this.throttle.resetLogin(pending.loginSubject);
     return {
       accountId,
       deviceId: device.id,
@@ -240,7 +243,7 @@ export class ReopenService {
    * (account-recovery.md §3). The device is new (pending) or this account's own.
    */
   async recoveryStart(body: ReopenRecoveryStartRequest, client: ClientContext): Promise<NewReopen> {
-    this.throttle.assertIpAllowed(client.ip);
+    await this.throttle.assertIpAllowed(client.ip);
     const code = await this.presentedCode(body.reopenCode, client);
     // Only now, with the right code, does this count against the owner's recovery budget.
     await this.throttle.reserveRecoveryAttempt(body.username);
@@ -449,7 +452,7 @@ export class ReopenService {
       where: { id: session.accountId },
     });
     await this.throttle.resetRecovery(account.usernameNormalized);
-    await this.throttle.resetLogin(account.usernameNormalized);
+    await this.throttle.resetLogin(loginSubject(account.usernameNormalized));
     return {
       accountId: session.accountId,
       device: { id: session.deviceId, status: 'active' },

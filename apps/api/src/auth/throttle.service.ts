@@ -3,7 +3,7 @@ import { Injectable } from '@nestjs/common';
 import { ApiException } from '../common/api-exception.js';
 import { sha256, type Bytes } from '../common/secrets.js';
 import { PrismaService } from '../database/prisma.service.js';
-import type { ThrottleScope } from '../generated/prisma/client.js';
+import type { RateScope, ThrottleScope } from '../generated/prisma/client.js';
 
 /**
  * authentication.md §7, as proposed. Throttling delays; it never locks an account for good. Login:
@@ -16,20 +16,39 @@ const BOOTSTRAP_FAILURES_PER_HOUR = 10;
 const RECOVERY_STARTS_PER_HOUR = 5;
 const HOUR_MS = 60 * 60_000;
 
-const IP_WINDOW_MS = 60_000;
-const IP_LIMIT = 20;
+/**
+ * Fixed request windows, kept in the database so that every API process shares one budget
+ * (follow-up review §17.2 option B). Each is counted with one atomic statement before the work
+ * it protects; a refused request is not counted twice.
+ */
+interface WindowRule {
+  readonly scope: RateScope;
+  readonly limit: number;
+  readonly windowMs: number;
+}
+/** Unauthenticated authentication attempts per client address. */
+const ADDRESS: WindowRule = { scope: 'address', limit: 20, windowMs: 60_000 };
 /**
  * Wrong reopening codes per client address (review R11). A code is 256 random bits, so a wrong
  * one is never a step towards the right one; this bounds the load, and it never touches a real
  * code's own failure count.
  */
-const WRONG_CODE_WINDOW_MS = 15 * 60_000;
-const WRONG_CODE_LIMIT = 10;
+const WRONG_CODE: WindowRule = { scope: 'wrong_code', limit: 10, windowMs: 15 * 60_000 };
 /** authentication.md §7: every authenticated request, per session (review R16). */
-const SESSION_WINDOW_MS = 60_000;
-const SESSION_LIMIT = 300;
-/** Bound on remembered addresses, so the limiter cannot itself exhaust memory. */
-const IP_TABLE_MAX = 10_000;
+const SESSION: WindowRule = { scope: 'session', limit: 300, windowMs: 60_000 };
+/** Bound on live windows per scope, so the limiter cannot itself exhaust the database. */
+export const WINDOWS_PER_SCOPE = 10_000;
+/** Expired windows removed per new key, at most. */
+const PRUNE_BATCH = 500;
+/** No address or session id contains NUL: the shared window of keys beyond the bound. */
+const OVERFLOW_KEY = '\u0000overflow';
+
+interface Counted {
+  readonly keyHash: Buffer;
+  readonly hits: number;
+  readonly windowStart: Date;
+  readonly now: Date;
+}
 
 /**
  * The key an address is limited under (review R17): an IPv4 address as it is, an IPv6 address by
@@ -63,73 +82,22 @@ function subject(scope: ThrottleScope, value: string): Bytes {
   return sha256(`${scope}\u0000${value}`);
 }
 
-/** Fixed windows per key, in memory (single process, so each update is atomic). */
-class Windows {
-  private readonly entries = new Map<string, { windowStart: number; count: number }>();
+/** The per-account login subject: SHA-256 of the normalized username, never the name itself. */
+export function loginSubject(username: string): Bytes {
+  return subject('login', username);
+}
 
-  constructor(
-    private readonly limit: number,
-    private readonly windowMs: number,
-  ) {}
+function windowKey(scope: RateScope, key: string): Buffer {
+  return Buffer.from(sha256(`${scope}\u0000${key}`));
+}
 
-  /** Counts one event; throws `rate_limited` once the limit is passed. */
-  hit(key: string, now: number): void {
-    const entry = this.entries.get(key);
-    if (!entry || now - entry.windowStart >= this.windowMs) {
-      if (this.entries.size >= IP_TABLE_MAX) this.sweep(now);
-      this.entries.set(key, { windowStart: now, count: 1 });
-      return;
-    }
-    entry.count++;
-    if (entry.count > this.limit) this.refuse(entry, now);
-  }
-
-  /** Throws `rate_limited` if the limit is used up, without counting. */
-  check(key: string, now: number): void {
-    const entry = this.entries.get(key);
-    if (entry && now - entry.windowStart < this.windowMs && entry.count >= this.limit)
-      this.refuse(entry, now);
-  }
-
-  clear(): void {
-    this.entries.clear();
-  }
-
-  private refuse(entry: { windowStart: number }, now: number): never {
-    throw new ApiException(
-      'rate_limited',
-      undefined,
-      (entry.windowStart + this.windowMs - now) / 1000,
-    );
-  }
-
-  /**
-   * Makes room for a new key. Expired windows go first; then, oldest first, windows still under
-   * their limit (forgetting one only resets a partial count). A key that is being refused is
-   * dropped only when every remembered key is, so flooding the table with fresh addresses no
-   * longer releases every client at once (follow-up review F-8).
-   */
-  private sweep(now: number): void {
-    for (const [key, entry] of this.entries)
-      if (now - entry.windowStart >= this.windowMs) this.entries.delete(key);
-    const target = IP_TABLE_MAX - IP_TABLE_MAX / 10;
-    for (const [key, entry] of this.entries) {
-      if (this.entries.size < target) return;
-      if (entry.count < this.limit) this.entries.delete(key);
-    }
-    for (const key of this.entries.keys()) {
-      if (this.entries.size < IP_TABLE_MAX) return;
-      this.entries.delete(key);
-    }
-  }
+function refuse(rule: WindowRule, counted: Counted): never {
+  const retry = (counted.windowStart.getTime() + rule.windowMs - counted.now.getTime()) / 1000;
+  throw new ApiException('rate_limited', undefined, Math.max(retry, 1));
 }
 
 @Injectable()
 export class ThrottleService {
-  private readonly perIp = new Windows(IP_LIMIT, IP_WINDOW_MS);
-  private readonly wrongCodes = new Windows(WRONG_CODE_LIMIT, WRONG_CODE_WINDOW_MS);
-  private readonly perSession = new Windows(SESSION_LIMIT, SESSION_WINDOW_MS);
-
   constructor(private readonly prisma: PrismaService) {}
 
   /**
@@ -155,8 +123,8 @@ export class ThrottleService {
    * delay is in force; otherwise it refuses. However many finishes run in parallel, at most five
    * are evaluated before the delay applies (review R3). A successful check resets the count.
    */
-  async reserveLoginAttempt(username: string, now = new Date()): Promise<void> {
-    const hash = Buffer.from(subject('login', username));
+  async reserveLoginAttempt(login: Bytes, now = new Date()): Promise<void> {
+    const hash = Buffer.from(login);
     const reserved = await this.prisma.$queryRaw<{ failure_count: number }[]>`
       INSERT INTO auth_throttle AS t (scope, subject_hash, failure_count, window_start, blocked_until)
       VALUES ('login', ${hash}, 1, ${now}, NULL)
@@ -171,15 +139,21 @@ export class ThrottleService {
       WHERE t.blocked_until IS NULL OR t.blocked_until <= ${now}
       RETURNING failure_count`;
     if (reserved.length === 1) return;
-    await this.assertLoginAllowed(username, now);
+    const row = await this.prisma.authThrottle.findUnique({
+      where: { scope_subjectHash: { scope: 'login', subjectHash: login } },
+    });
+    if (row?.blockedUntil && row.blockedUntil > now)
+      throw new ApiException(
+        'rate_limited',
+        undefined,
+        (row.blockedUntil.getTime() - now.getTime()) / 1000,
+      );
     // The delay ended between the two statements: refuse this one anyway; the next may proceed.
     throw new ApiException('rate_limited', undefined, 1);
   }
 
-  async resetLogin(username: string): Promise<void> {
-    await this.prisma.authThrottle.deleteMany({
-      where: { scope: 'login', subjectHash: subject('login', username) },
-    });
+  async resetLogin(login: Bytes): Promise<void> {
+    await this.prisma.authThrottle.deleteMany({ where: { scope: 'login', subjectHash: login } });
   }
 
   /**
@@ -230,37 +204,120 @@ export class ThrottleService {
     });
   }
 
-  /** In-memory, per client address: 20 unauthenticated auth attempts per minute. */
-  assertIpAllowed(ip: string | undefined, now = Date.now()): void {
-    if (ip === undefined) return;
-    this.perIp.hit(addressKey(ip), now);
-  }
-
-  /** In memory: 300 authenticated requests per minute per session (authentication.md §7). */
-  assertSessionAllowed(sessionId: string, now = Date.now()): void {
-    this.perSession.hit(sessionId, now);
-  }
-
-  /** Before a reopening code is looked up: an address that sent too many wrong codes waits. */
-  assertReopenCodeGuessesAllowed(ip: string | undefined, now = Date.now()): void {
-    if (ip === undefined) return;
-    this.wrongCodes.check(addressKey(ip), now);
-  }
-
-  /** A wrong, malformed, expired or used code from this address (review R11). */
-  recordWrongReopenCode(ip: string | undefined, now = Date.now()): void {
-    if (ip === undefined) return;
-    try {
-      this.wrongCodes.hit(addressKey(ip), now);
-    } catch {
-      // Already over the limit: the next request is refused by the check above.
+  /**
+   * Counts one request in `rule`'s window for `key` and refuses it once the window's limit is
+   * passed, in database time, so every process agrees on the window. A key that has a window is
+   * one atomic UPDATE. Otherwise one statement removes up to PRUNE_BATCH expired windows of the
+   * scope and inserts the key's window, or, while the scope already holds WINDOWS_PER_SCOPE live
+   * windows, counts the request in one overflow window shared by every new key, under the same
+   * limit. Live windows are never removed to make room (follow-up review F-8). Statements that
+   * run at the same moment can each see room, so the bound may be passed by at most their number.
+   * A database error refuses the request.
+   */
+  private async hit(rule: WindowRule, key: string, now?: Date): Promise<Counted> {
+    const at = now ?? null;
+    const keyHash = windowKey(rule.scope, key);
+    const window = rule.windowMs;
+    const [existing] = await this.prisma.$queryRaw<
+      { hits: number; window_start: Date; now: Date }[]
+    >`
+      WITH t AS (SELECT COALESCE(${at}::timestamptz, now()) AS now)
+      UPDATE rate_windows AS w SET
+        hits = CASE WHEN w.window_start <= t.now - ${window} * interval '1 millisecond'
+               THEN 1 ELSE LEAST(w.hits + 1, ${rule.limit + 1}) END,
+        window_start = CASE WHEN w.window_start <= t.now - ${window} * interval '1 millisecond'
+               THEN t.now ELSE w.window_start END
+      FROM t
+      WHERE w.scope = ${rule.scope}::rate_scope AND w.key_hash = ${keyHash}
+      RETURNING w.hits, w.window_start, t.now`;
+    let counted: Counted | undefined = existing && {
+      keyHash,
+      hits: existing.hits,
+      windowStart: existing.window_start,
+      now: existing.now,
+    };
+    if (!counted) {
+      const overflow = windowKey(rule.scope, OVERFLOW_KEY);
+      const [added] = await this.prisma.$queryRaw<
+        { key_hash: Uint8Array; hits: number; window_start: Date; now: Date }[]
+      >`
+        WITH t AS (SELECT COALESCE(${at}::timestamptz, now()) AS now),
+        pruned AS (
+          DELETE FROM rate_windows
+          WHERE scope = ${rule.scope}::rate_scope
+            AND window_start <= (SELECT now FROM t) - ${window} * interval '1 millisecond'
+            AND key_hash NOT IN (${keyHash}::bytea, ${overflow}::bytea)
+            AND key_hash IN (
+              SELECT key_hash FROM rate_windows
+              WHERE scope = ${rule.scope}::rate_scope
+                AND window_start <= (SELECT now FROM t) - ${window} * interval '1 millisecond'
+              LIMIT ${PRUNE_BATCH})
+          RETURNING 1),
+        live AS (
+          SELECT count(*) AS n FROM rate_windows
+          WHERE scope = ${rule.scope}::rate_scope
+            AND window_start > (SELECT now FROM t) - ${window} * interval '1 millisecond')
+        INSERT INTO rate_windows AS w (scope, key_hash, window_start, hits)
+        SELECT ${rule.scope}::rate_scope,
+               CASE WHEN live.n < ${WINDOWS_PER_SCOPE} THEN ${keyHash}::bytea ELSE ${overflow}::bytea END,
+               t.now, 1
+        FROM t, live
+        ON CONFLICT (scope, key_hash) DO UPDATE SET
+          hits = CASE WHEN w.window_start <= EXCLUDED.window_start - ${window} * interval '1 millisecond'
+                 THEN 1 ELSE LEAST(w.hits + 1, ${rule.limit + 1}) END,
+          window_start = CASE WHEN w.window_start <= EXCLUDED.window_start - ${window} * interval '1 millisecond'
+                 THEN EXCLUDED.window_start ELSE w.window_start END
+        RETURNING w.key_hash, w.hits, w.window_start, (SELECT now FROM t) AS now`;
+      if (!added) throw new Error('rate window not counted');
+      counted = {
+        keyHash: Buffer.from(added.key_hash),
+        hits: added.hits,
+        windowStart: added.window_start,
+        now: added.now,
+      };
     }
+    if (counted.hits > rule.limit) refuse(rule, counted);
+    return counted;
   }
 
-  /** Forgets the in-memory windows (a restart does the same). Used by tests between cases. */
-  clearIpWindows(): void {
-    this.perIp.clear();
-    this.wrongCodes.clear();
-    this.perSession.clear();
+  /** Per client address: 20 unauthenticated authentication attempts per minute. */
+  async assertIpAllowed(ip: string | undefined, now?: Date): Promise<void> {
+    if (ip === undefined) return;
+    await this.hit(ADDRESS, addressKey(ip), now);
+  }
+
+  /** 300 authenticated requests per minute per session (authentication.md §7). */
+  async assertSessionAllowed(sessionId: string, now?: Date): Promise<void> {
+    await this.hit(SESSION, sessionId, now);
+  }
+
+  /**
+   * Reserves one reopening-code guess for this address before the code is looked up (review
+   * R11): parallel requests share the address's ten. A code that turns out to be the usable one
+   * gives its reservation back with `releaseReopenCodeGuess`, so only wrong, malformed, expired
+   * or used codes stay counted. An address that has used up its guesses is refused even with the
+   * right code until its window ends.
+   */
+  async reserveReopenCodeGuess(ip: string | undefined, now?: Date): Promise<ReopenGuess> {
+    if (ip === undefined) return undefined;
+    const counted = await this.hit(WRONG_CODE, addressKey(ip), now);
+    return { keyHash: counted.keyHash, windowStart: counted.windowStart };
+  }
+
+  /** The guess was the usable code: it is not counted against the address. */
+  async releaseReopenCodeGuess(guess: ReopenGuess): Promise<void> {
+    if (guess === undefined) return;
+    await this.prisma.$executeRaw`
+      UPDATE rate_windows SET hits = hits - 1
+      WHERE scope = 'wrong_code' AND key_hash = ${guess.keyHash}
+        AND window_start = ${guess.windowStart} AND hits > 0`;
+  }
+
+  /** Empties every request window (a restore does the same). Used by tests between cases. */
+  async clearIpWindows(): Promise<void> {
+    await this.prisma.$executeRaw`DELETE FROM rate_windows`;
   }
 }
+
+/** A reserved reopening-code guess, to give back if the code was the usable one. */
+export type ReopenGuess = { readonly keyHash: Buffer; readonly windowStart: Date } | undefined;

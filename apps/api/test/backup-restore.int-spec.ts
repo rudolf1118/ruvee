@@ -48,8 +48,8 @@ describe('restoring a raw older database copy (characterization, why D-28 exists
     await h.close();
   });
 
-  beforeEach(() => {
-    h.app.get(ThrottleService).clearIpWindows();
+  beforeEach(async () => {
+    await h.app.get(ThrottleService).clearIpWindows();
   });
 
   async function loginNewDevice(): Promise<{ cookie: string; deviceId: string }> {

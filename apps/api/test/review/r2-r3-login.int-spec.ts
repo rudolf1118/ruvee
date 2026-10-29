@@ -50,7 +50,7 @@ describe('REVIEW R2 (regression): the password alone never acts as an enrolled d
 
   beforeEach(async () => {
     const { ThrottleService } = await import('../../src/auth/throttle.service.js');
-    h.app.get(ThrottleService).clearIpWindows();
+    await h.app.get(ThrottleService).clearIpWindows();
     await query(h.db.url, 'DELETE FROM auth_throttle');
   });
 

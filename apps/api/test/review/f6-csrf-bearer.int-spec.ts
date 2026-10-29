@@ -94,8 +94,8 @@ describe('F-6: CSRF and bearer tokens are decided together (real database)', () 
     await h.close();
   });
 
-  beforeEach(() => {
-    h.app.get(ThrottleService).clearIpWindows();
+  beforeEach(async () => {
+    await h.app.get(ThrottleService).clearIpWindows();
   });
 
   const post = (path: string, headers: Record<string, string>) =>

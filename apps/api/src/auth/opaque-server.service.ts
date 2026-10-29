@@ -1,3 +1,4 @@
+import { hkdfSync } from 'node:crypto';
 import { readFileSync, statSync } from 'node:fs';
 import { Injectable, type OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -53,6 +54,24 @@ export class OpaqueServerService implements OnModuleInit {
     this.setup = loadServerSetup(
       this.config.get('OPAQUE_SERVER_SETUP_FILE', { infer: true }),
       this.config.get('NODE_ENV', { infer: true }) === 'production',
+    );
+  }
+
+  /**
+   * The key pending login states are sealed with in the database (login-state.store.ts):
+   * HKDF-SHA-256 of the setup, under its own label. Like the setup it never reaches the database
+   * or a log, and every process that serves one database must have the same setup file anyway,
+   * so a login started on one process can be finished on another.
+   */
+  loginStateKey(): Buffer {
+    return Buffer.from(
+      hkdfSync(
+        'sha256',
+        Buffer.from(this.serverSetup(), 'base64url'),
+        Buffer.alloc(0),
+        'ruvee/login-state-seal/v1',
+        32,
+      ),
     );
   }
 

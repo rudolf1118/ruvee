@@ -84,6 +84,21 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     window_start: 'S',
     blocked_until: 'S',
   },
+  rate_windows: { scope: 'S', key_hash: 'S', window_start: 'S', hits: 'S' },
+  login_states: {
+    id_hash: 'V',
+    purpose: 'S',
+    login_subject: 'S',
+    account_id: 'M',
+    device_id: 'M',
+    platform: 'M',
+    session_id: 'M',
+    reopen_code_id: 'S',
+    // The OPAQUE server login state and the device challenge, sealed (login-state.store.ts).
+    sealed: 'O',
+    created_at: 'S',
+    expires_at: 'S',
+  },
   bootstrap_tokens: { id: 'S', token_hash: 'V', created_at: 'S', expires_at: 'S', used_at: 'S' },
   security_events: {
     id: 'S',

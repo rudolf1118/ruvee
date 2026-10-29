@@ -9,8 +9,10 @@ import { pgToolsFromEnv } from '../src/admin/pg-tools.js';
 import { createBackup, type BackupResult } from '../src/admin/server-restore.js';
 import { sessionCookie, startHarness, WRITE_HEADERS, type Harness } from './support/api-harness.js';
 import { testBackupKey, type TestBackupKey } from './support/backup-keys.js';
+import { query } from './support/temp-database.js';
 import {
   finishRegistration,
+  startLogin,
   startRegistration,
   SYNTHETIC_PASSWORD,
   syntheticAccount,
@@ -79,6 +81,22 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
     });
     // A setup token minted after the account: refused by the API, but its hash is in the dump.
     unusedSetupToken = await h.bootstrapToken();
+    // A login left pending, so the transient tables hold rows when the backup is taken.
+    await h
+      .post('/api/v1/auth/login/start', {
+        username: account.username,
+        startLoginRequest: startLogin().startLoginRequest,
+        platform: 'web',
+        deviceId: account.deviceId,
+      })
+      .expect(200);
+    const [pending] = await query<{ logins: number; windows: number }>(
+      h.db.url,
+      `SELECT (SELECT count(*) FROM login_states)::int AS logins,
+              (SELECT count(*) FROM rate_windows)::int AS windows`,
+    );
+    expect(pending).toEqual({ logins: 1, windows: expect.any(Number) as number });
+    expect(pending?.windows).toBeGreaterThan(0);
 
     key = await testBackupKey();
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-r13-it-'));
@@ -117,8 +135,12 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
   });
 
   it('is the whole database: every inventoried table, and never the restore guard', () => {
-    for (const table of Object.keys(TABLE_INVENTORY))
-      expect(sql, table).toMatch(new RegExp(`COPY public\\.${table} `));
+    for (const [table, entry] of Object.entries(TABLE_INVENTORY)) {
+      expect(sql, table).toMatch(new RegExp(`CREATE TABLE public\\.${table} `));
+      // Transient state (pending logins, request windows) is dumped without rows (§17.2).
+      if (entry.transient) expect(sql, table).not.toMatch(new RegExp(`COPY public\\.${table} `));
+      else expect(sql, table).toMatch(new RegExp(`COPY public\\.${table} `));
+    }
     // The restore tool's control schema (guard and reopening codes) is never in a backup.
     expect(sql).not.toContain('ruvee_control');
     expect(sql).not.toContain('restore_guard');

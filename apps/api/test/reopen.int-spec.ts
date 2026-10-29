@@ -135,9 +135,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       h,
       restoreId: result.restoreId,
       code: done.reopen.code,
-      clearThrottle: () => {
-        h.app.get(throttle).clearIpWindows();
-      },
+      clearThrottle: () => h.app.get(throttle).clearIpWindows(),
     };
   }
 
@@ -180,8 +178,8 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     afterAll(async () => {
       await (r as typeof r | undefined)?.h.close();
     });
-    beforeEach(() => {
-      r.clearThrottle();
+    beforeEach(async () => {
+      await r.clearThrottle();
     });
 
     it('keeps everything but /reopen/* closed, and old credentials alone open nothing', async () => {
@@ -434,8 +432,8 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     afterAll(async () => {
       await (r as typeof r | undefined)?.h.close();
     });
-    beforeEach(() => {
-      r.clearThrottle();
+    beforeEach(async () => {
+      await r.clearThrottle();
     });
 
     it('needs the code and the snapshot-time kit; a wrong kit counts and consumes nothing', async () => {
@@ -543,8 +541,8 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     afterAll(async () => {
       await (r as typeof r | undefined)?.h.close();
     });
-    beforeEach(() => {
-      r.clearThrottle();
+    beforeEach(async () => {
+      await r.clearThrottle();
     });
 
     it('refuses the kit path at its start and leaves the code unspent', async () => {
@@ -604,8 +602,8 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     afterAll(async () => {
       await (r as typeof r | undefined)?.h.close();
     });
-    beforeEach(() => {
-      r.clearThrottle();
+    beforeEach(async () => {
+      await r.clearThrottle();
     });
 
     const wrongCode = () => `RC1-${randomBytes(32).toString('base64url')}`;
@@ -625,7 +623,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       // A malformed code is refused by the contract before anything is looked up.
       expectError((await reopenWithPassword(r.h, account, 'RC1-short')).start, 'invalid_request');
       // From another address (a restart forgets the windows too), the owner still reopens.
-      r.clearThrottle();
+      await r.clearThrottle();
       const owner = await reopenWithPassword(r.h, account, r.code);
       expect(owner.finish?.status, owner.finish?.text).toBe(200);
       r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
@@ -635,10 +633,10 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       // Eight wrong codes on the Recovery Kit path, from as many addresses: more than the
       // owner's five recovery attempts an hour, and none of them counts.
       for (let i = 0; i < 8; i++) {
-        r.clearThrottle();
+        await r.clearThrottle();
         expectError(await reopenWithKit(r.h, account, wrongCode()), 'reopen_failed');
       }
-      r.clearThrottle();
+      await r.clearThrottle();
       const owner = await reopenWithKit(r.h, account, r.code);
       expect(owner.status, owner.text).toBe(200);
       expect(await codes(r.db.url)).toContainEqual({
@@ -742,8 +740,8 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     afterAll(async () => {
       await (r as typeof r | undefined)?.h.close();
     });
-    beforeEach(() => {
-      r.clearThrottle();
+    beforeEach(async () => {
+      await r.clearThrottle();
     });
 
     it('refuses the code and the snapshot-time password without the device proof', async () => {

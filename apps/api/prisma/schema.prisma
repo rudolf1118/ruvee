@@ -65,6 +65,23 @@ enum RevokeReason {
   @@map("revoke_reason")
 }
 
+/// Request windows kept in the database (follow-up review §17.2 option B).
+enum RateScope {
+  address
+  wrong_code
+  session
+
+  @@map("rate_scope")
+}
+
+enum LoginPurpose {
+  login
+  reauth
+  reopen
+
+  @@map("login_purpose")
+}
+
 enum ThrottleScope {
   login
   recovery
@@ -133,6 +150,7 @@ model Account {
   vaults           Vault[]
   pairings         Pairing[]
   proofNonces      ProofNonce[]
+  loginStates      LoginState[]
 
   @@map("accounts")
 }
@@ -219,6 +237,7 @@ model Session {
   device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
   refreshTokens RefreshToken[]
   proofNonces   ProofNonce[]
+  loginStates   LoginState[]
 
   @@index([accountId])
   @@index([deviceId])
@@ -320,6 +339,39 @@ model ProofNonce {
 
   @@index([sessionId])
   @@map("proof_nonces")
+}
+
+/// A fixed request window (rate-windows in throttle.service.ts). Transient: no rows in backups.
+model RateWindow {
+  scope       RateScope
+  keyHash     Bytes     @map("key_hash")
+  windowStart DateTime  @map("window_start") @db.Timestamptz(3)
+  hits        Int
+
+  @@id([scope, keyHash])
+  @@index([scope, windowStart])
+  @@map("rate_windows")
+}
+
+/// A pending OPAQUE login, step-up or reopening (login-state.store.ts). Transient.
+model LoginState {
+  idHash       Bytes          @id @map("id_hash")
+  purpose      LoginPurpose
+  loginSubject Bytes          @map("login_subject")
+  accountId    String?        @map("account_id") @db.Uuid
+  deviceId     String?        @map("device_id") @db.Uuid
+  platform     DevicePlatform
+  sessionId    String?        @map("session_id") @db.Uuid
+  reopenCodeId String?        @map("reopen_code_id") @db.Uuid
+  sealed       Bytes
+  createdAt    DateTime       @map("created_at") @db.Timestamptz(3)
+  expiresAt    DateTime       @map("expires_at") @db.Timestamptz(3)
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("login_states")
 }
 
 model Vault {

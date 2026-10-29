@@ -143,7 +143,7 @@ describe('REVIEW R7 (regression): a backup reads exactly the database that was c
   });
 
   it('reads the database name pg_dump records in its archive header', async () => {
-    const run = tools.dump(parseDbTarget(otherUrl()), { tables: [], schemas: [] });
+    const run = tools.dump(parseDbTarget(otherUrl()), { tables: [], tableData: [], schemas: [] });
     const chunks: Buffer[] = [];
     for await (const c of run.stdout as AsyncIterable<Buffer>) chunks.push(c);
     await run.done;

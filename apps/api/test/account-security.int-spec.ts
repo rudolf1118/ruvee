@@ -53,8 +53,8 @@ describe('step-up, sessions, revocation and password change (real database)', ()
     await h.close();
   });
 
-  beforeEach(() => {
-    h.app.get(ThrottleService).clearIpWindows();
+  beforeEach(async () => {
+    await h.app.get(ThrottleService).clearIpWindows();
   });
 
   async function login(password = SYNTHETIC_PASSWORD, deviceId?: string) {
@@ -588,7 +588,7 @@ describe('step-up, sessions, revocation and password change (real database)', ()
       await recoveryStart(rakOf(account.recoveryKeyText).recoveryAuthKey),
       'recovery_failed',
     );
-    h.app.get(ThrottleService).clearIpWindows();
+    await h.app.get(ThrottleService).clearIpWindows();
     expect((await recoveryStart(derived.recoveryAuthKey)).status).toBe(200);
     const rotated = await query(
       h.db.url,

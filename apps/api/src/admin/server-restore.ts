@@ -65,6 +65,14 @@ import type { PgTools } from './pg-tools.js';
  * task-owned test database.
  */
 
+/**
+ * Tables of the running server's transient state (backup-inventory.ts, `transient`): a backup
+ * holds their definitions but no rows, and APPLY POLICY empties them. Pending logins (60 s) and
+ * request windows (≤ 15 minutes) of the old server mean nothing on the restored one, and a
+ * login state must never be finishable after a restore.
+ */
+export const TRANSIENT_TABLES = ['rate_windows', 'login_states'] as const;
+
 export { BACKUP_FORMAT, GUARD_TABLE };
 /** Names of the throwaway databases the test suites create; nothing else may be backed up yet. */
 const SYNTHETIC_DATABASE = /^ruvee_(it|e2e)_[0-9a-f]+$/;
@@ -198,6 +206,7 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
   };
   const run = options.tools.dump(target, {
     tables: [],
+    tableData: TRANSIENT_TABLES.map((t) => `public.${t}`),
     // The restore tool's own state is never part of a backup (R8).
     schemas: [CONTROL_SCHEMA],
   });
@@ -552,6 +561,9 @@ async function restoreVerified(
       const pairings = await c.query('DELETE FROM pairings');
       // Proof nonces are never trusted after a restore (device-proof.md §10).
       await c.query('DELETE FROM proof_nonces');
+      // Pending logins and request windows belong to the server that was backed up. A backup
+      // holds no rows of them; a forged one that does gets them removed here (§3.2c).
+      for (const table of TRANSIENT_TABLES) await c.query(`DELETE FROM ${table}`);
       const setupTokens = await c.query('DELETE FROM bootstrap_tokens WHERE used_at IS NULL');
       // F-25: LOAD and MIGRATE ran as the operator; the schema owner takes every object, and the
       // runtime role gets exactly its listed privileges and the reopening functions.

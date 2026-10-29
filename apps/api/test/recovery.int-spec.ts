@@ -58,8 +58,8 @@ describe('recovery with the Recovery Kit (account-recovery §3, real database)',
     await h.close();
   });
 
-  beforeEach(() => {
-    h.app.get(ThrottleService).clearIpWindows();
+  beforeEach(async () => {
+    await h.app.get(ThrottleService).clearIpWindows();
   });
 
   const start = (username: string, rak: Uint8Array, deviceId = account.crypto.generateUuid()) =>
