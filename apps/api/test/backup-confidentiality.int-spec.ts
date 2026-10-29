@@ -83,7 +83,7 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
     key = await testBackupKey();
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-r13-it-'));
     backup = await createBackup({
-      databaseUrl: h.db.url,
+      databaseUrl: h.db.operator.url,
       outDir,
       tools,
       recipient: key.recipient,

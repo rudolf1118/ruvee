@@ -8,7 +8,13 @@ import pg from 'pg';
 /**
  * Integration tests never migrate the database in DATABASE_URL. They create a uniquely named
  * database on the same server (`ruvee_it_<random>`), migrate that, and drop it afterwards.
- * The role in DATABASE_URL therefore needs CREATEDB.
+ * The role in DATABASE_URL therefore needs CREATEDB and CREATEROLE (a superuser in CI).
+ *
+ * Each database gets its own three roles (database-roles.md, F-25), named after it
+ * (`<name>_owner`, `<name>_operator`, `<name>_runtime`) and made with the same statements the
+ * guide gives the cluster administrator. The API under test connects as the runtime role,
+ * migrations run as the owner and `ruvee-admin` steps as the operator; the URL in DATABASE_URL
+ * (`url`) is only the test's own view, to set up and inspect.
  */
 const PREFIX = 'ruvee_it_';
 /** Exactly the names this module creates; nothing else is ever dropped. */
@@ -44,7 +50,9 @@ function maintenanceUrl(serverUrl: string): string {
   return fallback;
 }
 
-/** Drops one database by its exact, checked name. */
+const ROLE_SUFFIXES = ['owner', 'operator', 'runtime'] as const;
+
+/** Drops one database by its exact, checked name, and then its three roles by theirs. */
 export async function dropDatabase(serverUrl: string, name: string): Promise<void> {
   if (!TEMP_DATABASE_NAME.test(name))
     throw new Error('refusing to drop a database the test did not create');
@@ -52,6 +60,9 @@ export async function dropDatabase(serverUrl: string, name: string): Promise<voi
   await client.connect();
   try {
     await client.query(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+    // The roles own nothing anywhere else; the operator is dropped before the owner it inherits.
+    for (const suffix of ['runtime', 'operator', 'owner'])
+      await client.query(`DROP ROLE IF EXISTS "${name}_${suffix}"`);
   } finally {
     await client.end();
   }
@@ -81,29 +92,75 @@ function withDatabase(url: string, database: string): string {
   return u.toString();
 }
 
-export interface TempDatabase {
+export interface TempRole {
   readonly name: string;
   readonly url: string;
+}
+
+export interface TempDatabase {
+  readonly name: string;
+  /** The test's own superuser view of this database: setup and inspection only. */
+  readonly url: string;
+  /** The schema owner: migrations. */
+  readonly owner: TempRole;
+  /** The operator: `ruvee-admin` (init, backup, restore and review). */
+  readonly operator: TempRole;
+  /** The API's runtime role. */
+  readonly runtime: TempRole;
   drop(): Promise<void>;
+}
+
+function roleUrl(serverUrl: string, database: string, role: string, password: string): string {
+  const u = new URL(withDatabase(serverUrl, database));
+  u.username = role;
+  u.password = password;
+  return u.toString();
 }
 
 export async function createTempDatabase(): Promise<TempDatabase> {
   const name = `${PREFIX}${randomBytes(6).toString('hex')}`;
   // Captured now: a harness later points DATABASE_URL at the temporary database itself.
   const serverUrl = adminUrl();
+  const names = {
+    owner: `${name}_owner`,
+    operator: `${name}_operator`,
+    runtime: `${name}_runtime`,
+  };
+  const passwords = Object.fromEntries(
+    ROLE_SUFFIXES.map((r) => [r, randomBytes(18).toString('base64url')]),
+  ) as Record<(typeof ROLE_SUFFIXES)[number], string>;
+  const { databaseSetupStatements, roleSetupStatements } =
+    await import('../../src/admin/database-roles.js');
   const admin = new pg.Client({ connectionString: serverUrl });
   await admin.connect();
   try {
     // Recorded before it exists: a process killed between the two still has it in the ledger.
     recordInLedger(name);
     tracked.set(name, serverUrl);
-    await admin.query(`CREATE DATABASE "${name}"`);
+    for (const sql of roleSetupStatements(names)) await admin.query(sql);
+    for (const r of ROLE_SUFFIXES)
+      await admin.query(`ALTER ROLE "${names[r]}" PASSWORD ${admin.escapeLiteral(passwords[r])}`);
+    await admin.query(`CREATE DATABASE "${name}" OWNER "${names.operator}"`);
   } finally {
     await admin.end();
   }
+  const inDb = new pg.Client({ connectionString: withDatabase(serverUrl, name) });
+  await inDb.connect();
+  try {
+    for (const sql of databaseSetupStatements(name, names)) await inDb.query(sql);
+  } finally {
+    await inDb.end();
+  }
+  const role = (r: (typeof ROLE_SUFFIXES)[number]): TempRole => ({
+    name: names[r],
+    url: roleUrl(serverUrl, name, names[r], passwords[r]),
+  });
   return {
     name,
     url: withDatabase(serverUrl, name),
+    owner: role('owner'),
+    operator: role('operator'),
+    runtime: role('runtime'),
     async drop() {
       await dropDatabase(serverUrl, name);
       tracked.delete(name);
@@ -111,13 +168,16 @@ export async function createTempDatabase(): Promise<TempDatabase> {
   };
 }
 
-/** `ruvee-admin init`'s effect: the database becomes a fresh installation the API serves. */
-export async function initFresh(url: string): Promise<void> {
+/**
+ * `ruvee-admin init`'s effect, as the operator: the database becomes a fresh installation the API
+ * serves, and the runtime role gets its list.
+ */
+export async function initFresh(db: TempDatabase): Promise<void> {
   const { initInstallation } = await import('../../src/admin/installation.js');
-  const client = new pg.Client({ connectionString: url });
+  const client = new pg.Client({ connectionString: db.operator.url });
   await client.connect();
   try {
-    await initInstallation(client);
+    await initInstallation(client, db.runtime.name);
   } finally {
     await client.end();
   }

@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { ApiException } from '../common/api-exception.js';
+import type { Env } from '../config/env.js';
 import { PrismaService } from '../database/prisma.service.js';
+import { privilegeProblems } from '../database/runtime-privileges.js';
 import type { RouteClass } from '../sessions/route-class.js';
 
 export type GuardState = 'uninitialized' | 'restoring' | 'review' | 'reopening' | 'open';
@@ -17,15 +20,46 @@ const RESTORE_STATES = new Set<GuardState>(['restoring', 'review', 'reopening', 
  * Only `open` is cached, because a database never goes from open back to closed. Every other
  * answer is read again on the next request, so a database that becomes a restore target, or
  * moves from `restoring` to `reopening`, is seen at once (review R14).
+ *
+ * F-25: the API's role may only read the gate's columns. If it cannot (a grant missing after a
+ * restore or a migration), the answer is closed, never an error that some caller might treat as
+ * open. And the role itself is checked once against runtime-privileges.ts: in production a role
+ * with more than its list (a superuser, the schema owner, CREATE anywhere) serves nothing.
+ * Privileges it lacks are not counted there: they fail closed where they are used, and a database
+ * that is not set up yet, or is being restored, is supposed to lack them.
  */
 @Injectable()
 export class MaintenanceService {
+  private readonly logger = new Logger(MaintenanceService.name);
   private open = false;
+  private excess: string[] | undefined;
+  private reportedPrivileges = false;
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly config: ConfigService<Env, true>,
+  ) {}
 
   async state(): Promise<GuardState> {
     if (this.open) return 'open';
+    let state: GuardState;
+    try {
+      state = await this.read();
+    } catch (error) {
+      if (!isPrivilegeError(error)) throw error;
+      if (!this.reportedPrivileges) {
+        this.reportedPrivileges = true;
+        this.logger.error(
+          'The API role may not read the installation state; serving nothing. Run ruvee-admin grant-runtime (docs/guides/database-roles.md).',
+        );
+      }
+      return 'restoring';
+    }
+    if (state === 'open') this.open = true;
+    return state;
+  }
+
+  private async read(): Promise<GuardState> {
     // Two statements: PostgreSQL resolves every table a statement names, even in a CASE branch
     // that is not taken.
     const [found] = await this.prisma.$queryRaw<
@@ -48,8 +82,30 @@ export class MaintenanceService {
         SELECT origin FROM ruvee_control.installation WHERE id = 1`;
       state = row?.origin === 'fresh' ? 'open' : 'uninitialized';
     } else state = 'restoring';
-    if (state === 'open') this.open = true;
     return state;
+  }
+
+  /**
+   * What the connected role holds beyond the runtime list, read once (a change needs a restart).
+   * Logged once; in production any of it closes every route but health.
+   */
+  private async checkRole(): Promise<string[]> {
+    if (this.excess) return this.excess;
+    const [me] = await this.prisma.$queryRaw<{ name: string }[]>`SELECT current_user AS name`;
+    const problems = (
+      await privilegeProblems(
+        (sql, params) => this.prisma.$queryRawUnsafe<Record<string, unknown>[]>(sql, ...params),
+        me?.name ?? '',
+      )
+    ).filter((p) => !p.startsWith('missing '));
+    this.excess = problems;
+    if (problems.length > 0) {
+      const production = this.config.get('NODE_ENV', { infer: true }) === 'production';
+      const message = `The API's database role is not the runtime role (database-roles.md): ${problems.slice(0, 5).join('; ')}${problems.length > 5 ? `; and ${String(problems.length - 5)} more` : ''}`;
+      if (production) this.logger.error(`${message}. Serving nothing.`);
+      else this.logger.warn(message);
+    }
+    return problems;
   }
 
   async isOpen(): Promise<boolean> {
@@ -63,6 +119,9 @@ export class MaintenanceService {
    */
   async gate(routeClass: RouteClass): Promise<void> {
     if (routeClass === 'health') return;
+    const problems = await this.checkRole();
+    if (problems.length > 0 && this.config.get('NODE_ENV', { infer: true }) === 'production')
+      throw new ApiException('server_unavailable');
     const state = await this.state();
     if (state === 'open') return;
     if (state === 'reopening') {
@@ -71,4 +130,16 @@ export class MaintenanceService {
     }
     throw new ApiException('maintenance');
   }
+}
+
+/** PostgreSQL's insufficient_privilege or undefined_function, through Prisma's error wrapping. */
+export function isPrivilegeError(error: unknown, depth = 0): boolean {
+  if (depth > 5 || typeof error !== 'object' || error === null) return false;
+  for (const [key, value] of Object.entries(error)) {
+    if ((key === 'code' || key === 'originalCode') && (value === '42501' || value === '42883'))
+      return true;
+    if (typeof value === 'object' && isPrivilegeError(value, depth + 1)) return true;
+  }
+  const cause = (error as { cause?: unknown }).cause;
+  return cause !== undefined && isPrivilegeError(cause, depth + 1);
 }

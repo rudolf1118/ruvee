@@ -154,6 +154,10 @@ try {
     'CREATE TABLE ruvee_control.restore_guard (id smallint PRIMARY KEY, state text NOT NULL)',
   );
   await db.query(`INSERT INTO ruvee_control.restore_guard VALUES (1, 'reopening')`);
+  // What a restore's PREPARE grants the API's runtime role (e2e-roles.mjs names it): the gate.
+  await db.query(
+    `GRANT SELECT (id, state) ON ruvee_control.restore_guard TO "${database}_runtime"`,
+  );
   await db.end();
 
   // ---- Caddy in front of it ----

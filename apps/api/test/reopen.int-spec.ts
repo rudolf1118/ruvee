@@ -114,13 +114,14 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       manifestPath: backup.manifestPath,
       identityPath: key.identityPath,
       trustedDigest: backup.digest,
-      targetDatabaseUrl: db.url,
+      targetDatabaseUrl: db.operator.url,
+      runtimeRole: db.runtime.name,
       tools,
       migrate,
       knownMigrations: MIGRATIONS,
     });
     if (!('removed' in result)) throw new Error('restore stopped');
-    const done = await completeRestore(db.url, {
+    const done = await completeRestore(db.operator.url, {
       restoreId: result.restoreId,
       devicesReviewed: true,
       acceptRestoredCredentials: true,
@@ -155,7 +156,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     key = await testBackupKey();
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-reopen-it-'));
     backup = await createBackup({
-      databaseUrl: source.db.url,
+      databaseUrl: source.db.operator.url,
       outDir,
       tools,
       recipient: key.recipient,
@@ -275,7 +276,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         { failed_attempts: 5, revoked: true, consumed: false },
       ]);
       expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
-      const fresh = await issueReopenCode(r.db.url, { restoreId: r.restoreId });
+      const fresh = await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId });
       r.code = fresh.code;
       expect(await guardState(r.db.url)).toBe('reopening');
     });
@@ -286,7 +287,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         `UPDATE ruvee_control.reopen_codes SET expires_at = now() - interval '1 second' WHERE revoked_at IS NULL`,
       );
       expectError((await reopenWithPassword(r.h, account, r.code)).start, 'reopen_failed');
-      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
       // A reopening that starts, then is abandoned (tab closed): the session is lost.
       const started = await reopenWithPassword(r.h, account, r.code);
       expect(started.finish?.status, started.finish?.text).toBe(200);
@@ -302,7 +303,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       expectError(await r.h.get('/api/v1/account/keys', lost), 'reopening');
       expect(await guardState(r.db.url)).toBe('reopening');
       // The host retry ends that session and issues a new code.
-      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
       expectError(await r.h.get('/api/v1/reopen/material', lost), 'unauthenticated');
     });
 
@@ -362,7 +363,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       );
       expect(await guardState(r.db.url)).toBe('reopening');
       // The old password still works for reopening only (a new password was never installed).
-      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
       expectError(await r.h.get('/api/v1/reopen/material', cookie), 'unauthenticated');
     });
 
@@ -465,7 +466,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       expect(sessions[0]?.n).toBe('1');
       // The losing device row stays pending and can do nothing.
       expect(await guardState(r.db.url)).toBe('reopening');
-      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
     });
 
     it('opens with a new password and kit; the new device is enrolled by recovery', async () => {
@@ -590,7 +591,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
         await query(r.db.url, 'UPDATE account_keys SET ak_verify_key = $1', [
           Buffer.from(account.akVerifyKey),
         ]);
-        r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+        r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
       });
   });
 
@@ -627,7 +628,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       r.clearThrottle();
       const owner = await reopenWithPassword(r.h, account, r.code);
       expect(owner.finish?.status, owner.finish?.text).toBe(200);
-      r.code = (await issueReopenCode(r.db.url, { restoreId: r.restoreId })).code;
+      r.code = (await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId })).code;
     });
 
     it('charges the recovery budget only once the code is right', async () => {
@@ -707,7 +708,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
     it('refuses a completion whose session the host ended after it was authenticated', async () => {
       const { complete } = await readyToComplete();
       // The request is past authentication; then the host issues a new code (`restore-reopen-code`).
-      await issueReopenCode(r.db.url, { restoreId: r.restoreId });
+      await issueReopenCode(r.db.operator.url, { restoreId: r.restoreId });
       await expect(complete()).rejects.toMatchObject({ code: 'reopen_failed' });
       expect(await guardState(r.db.url)).toBe('reopening');
       // The consumed code is revoked too, so nothing links that session to the restore any more.
@@ -718,7 +719,7 @@ describe('reopening a restored installation (real database, real dumps)', () => 
       const { complete } = await readyToComplete();
       const [completed, issued] = await Promise.allSettled([
         complete(),
-        issueReopenCode(r.db.url, { restoreId: r.restoreId }),
+        issueReopenCode(r.db.operator.url, { restoreId: r.restoreId }),
       ]);
       const state = await guardState(r.db.url);
       if (completed.status === 'fulfilled') {

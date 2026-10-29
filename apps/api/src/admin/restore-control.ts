@@ -50,6 +50,18 @@ export async function createControlSchema(c: pg.Client): Promise<void> {
   await c.query(`REVOKE ALL ON SCHEMA ${CONTROL_SCHEMA} FROM PUBLIC`);
 }
 
+/**
+ * PREPARE: the runtime role may connect and read whether the database is being restored (the
+ * maintenance gate, so clients see `maintenance`), and nothing else until APPLY POLICY grants its
+ * full list.
+ */
+export async function grantGateRead(c: pg.Client, runtimeRole: string): Promise<void> {
+  const { rows } = await c.query<{ db: string }>('SELECT current_database() AS db');
+  await c.query(`GRANT CONNECT ON DATABASE ${ident(rows[0]?.db ?? '')} TO ${ident(runtimeRole)}`);
+  await c.query(`GRANT USAGE ON SCHEMA ${CONTROL_SCHEMA} TO ${ident(runtimeRole)}`);
+  await c.query(`GRANT SELECT (id, state) ON ${GUARD_TABLE} TO ${ident(runtimeRole)}`);
+}
+
 /** The loader role's name for a restore; recorded in the guard so a stray one can be found. */
 export const loaderRoleName = (restoreId: string) =>
   `ruvee_loader_${restoreId.replace(/-/g, '').slice(0, 16)}`;

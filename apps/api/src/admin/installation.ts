@@ -1,4 +1,5 @@
 import type pg from 'pg';
+import { applyRuntimeGrants, assertOperator, RoleError, schemaOwner } from './database-roles.js';
 import { CONTROL_SCHEMA, GUARD_TABLE, createControlSchema } from './restore-control.js';
 
 /**
@@ -12,18 +13,27 @@ import { CONTROL_SCHEMA, GUARD_TABLE, createControlSchema } from './restore-cont
  *   guard table without its row is an interrupted restore, closed;
  * - anything else (a schema with neither table): closed.
  *
- * Both tables are owned by the admin role and never part of a backup.
+ * Both tables are owned by the operator role and never part of a backup; the runtime role may
+ * read only the columns the gate needs (runtime-privileges.ts).
  */
 export const INSTALLATION_TABLE = `${CONTROL_SCHEMA}.installation`;
 
 export class InstallationError extends Error {}
 
 /**
- * `ruvee-admin init`, as the admin role: marks a database that was never restored as a fresh
- * installation. Refuses a database that already has a control schema (initialized, or restored:
- * a restored database is opened only by its reopening).
+ * `ruvee-admin init`, as the operator role: marks a database that was never restored as a fresh
+ * installation, and gives the runtime role exactly its listed privileges (F-25). Refuses a
+ * database that already has a control schema (initialized, or restored: a restored database is
+ * opened only by its reopening), a superuser connection and an unusable runtime role.
  */
-export async function initInstallation(c: pg.Client): Promise<void> {
+export async function initInstallation(c: pg.Client, runtimeRole: string): Promise<void> {
+  try {
+    await assertOperator(c, runtimeRole);
+    await schemaOwner(c, runtimeRole);
+  } catch (error) {
+    if (error instanceof RoleError) throw new InstallationError(error.message);
+    throw error;
+  }
   const { rows } = await c.query<{ schema: string | null }>(
     `SELECT to_regnamespace('${CONTROL_SCHEMA}')::text AS schema`,
   );
@@ -40,9 +50,11 @@ export async function initInstallation(c: pg.Client): Promise<void> {
       initialized_at timestamptz NOT NULL DEFAULT now()
     )`);
     await c.query(`INSERT INTO ${INSTALLATION_TABLE} (id, origin) VALUES (1, 'fresh')`);
+    await applyRuntimeGrants(c, runtimeRole);
     await c.query('COMMIT');
   } catch (error) {
     await c.query('ROLLBACK');
+    if (error instanceof RoleError) throw new InstallationError(error.message);
     throw error;
   }
 }

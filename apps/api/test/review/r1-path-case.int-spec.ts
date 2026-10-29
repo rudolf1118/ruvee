@@ -1,7 +1,6 @@
 import { loginStartResponseSchema } from '@ruvee/contracts';
 import { registerAccount, startHarness, type Harness } from '../support/api-harness.js';
 import {
-  finishLogin,
   startLogin,
   syntheticAccount,
   type SyntheticAccount,
@@ -44,18 +43,26 @@ describe('REVIEW R1 (regression): no path spelling bypasses the gate, CSRF or be
       `CREATE TABLE ruvee_control.restore_guard (id smallint PRIMARY KEY, state text NOT NULL)`,
     );
     await query(setup.db.url, `INSERT INTO ruvee_control.restore_guard VALUES (1, 'reopening')`);
+    // What PREPARE grants the runtime role, so the API reads `reopening`, not just "closed".
+    await query(
+      setup.db.url,
+      `GRANT SELECT (id, state) ON ruvee_control.restore_guard TO "${setup.db.runtime.name}"`,
+    );
     await query(setup.db.url, `UPDATE sessions SET revoked_at = now(), revoke_reason = 'restored'`);
+    // One API process per database (S-1): the first app must stop, or it keeps the instance lock
+    // and the second answers every route `server_unavailable`, never reaching the gate.
+    await setup.app.close();
     vi.resetModules();
     h = await startHarness({ database: setup.db });
   }, 60_000);
 
   afterAll(async () => {
     await h.close();
-    await setup.close();
   });
 
   it('closes the lower-case route and serves health', async () => {
-    expect((await h.get('/api/v1/account/keys', cookie)).status).toBe(503);
+    const closed = await h.get('/api/v1/account/keys', cookie);
+    expect([closed.status, (closed.body as { error?: string }).error]).toEqual([503, 'reopening']);
     expect((await h.get('/health/live')).status).toBe(200);
   });
 
@@ -92,38 +99,23 @@ describe('REVIEW R1 (regression): no path spelling bypasses the gate, CSRF or be
   });
 
   it('applies CSRF and the cookie-xor-bearer rule on every spelling that routes', async () => {
-    // In the open state (the `setup` app), with a fresh, valid session.
-    const fresh = await registerFresh();
-    for (const path of ['/api/v1/auth/logout', '/API/v1/auth/logout', '/Api/v1/auth/logout']) {
-      const res = await setup.http().post(path).set('Cookie', fresh);
-      expect([403, 404], `${path}: ${String(res.status)}`).toContain(res.status);
+    // In an open installation of its own (one API process per database, S-1), with a live session.
+    vi.resetModules();
+    const open = await startHarness();
+    try {
+      const fresh = await registerAccount(open, await syntheticAccount('synthetic-review-r1-open'));
+      for (const path of ['/api/v1/auth/logout', '/API/v1/auth/logout', '/Api/v1/auth/logout']) {
+        const res = await open.http().post(path).set('Cookie', fresh);
+        expect([403, 404], `${path}: ${String(res.status)}`).toContain(res.status);
+      }
+      const both = await open
+        .http()
+        .get('/api/v1/account/keys')
+        .set('Cookie', fresh)
+        .set('Authorization', `Bearer ${'A'.repeat(43)}`);
+      expect(both.status).toBe(400);
+    } finally {
+      await open.close();
     }
-    const both = await setup
-      .http()
-      .get('/api/v1/account/keys')
-      .set('Cookie', fresh)
-      .set('Authorization', `Bearer ${'A'.repeat(43)}`);
-    expect(both.status).toBe(400);
   });
-
-  /** A live session in the open installation (`setup`): log in as the enrolled device. */
-  async function registerFresh(): Promise<string> {
-    const client = startLogin();
-    const start = loginStartResponseSchema.parse(
-      (
-        await setup.post('/api/v1/auth/login/start', {
-          username: account.username,
-          startLoginRequest: client.startLoginRequest,
-          platform: 'web',
-          deviceId: account.deviceId,
-        })
-      ).body,
-    );
-    const finished = finishLogin(client.clientLoginState, start.loginResponse);
-    const res = await setup.post('/api/v1/auth/login/finish', {
-      loginId: start.loginId,
-      finishLoginRequest: finished?.finishLoginRequest,
-    });
-    return (res.headers['set-cookie'] as unknown as string[])[0]?.split(';')[0] ?? '';
-  }
 });

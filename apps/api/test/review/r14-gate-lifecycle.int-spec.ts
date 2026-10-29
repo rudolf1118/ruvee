@@ -1,7 +1,13 @@
 import pg from 'pg';
-import { initInstallation, InstallationError } from '../../src/admin/installation.js';
+import { initInstallation } from '../../src/admin/installation.js';
 import { startHarness, type Harness } from '../support/api-harness.js';
-import { createTempDatabase, initFresh, migrate, query } from '../support/temp-database.js';
+import {
+  createTempDatabase,
+  initFresh,
+  migrate,
+  query,
+  type TempDatabase,
+} from '../support/temp-database.js';
 
 /**
  * Regression for predeployment-review R14: the gate opens only on an explicit answer, and only
@@ -15,11 +21,20 @@ const KEYS = '/api/v1/account/keys';
 async function migratedDatabase() {
   process.env.DATABASE_URL = SERVER_URL;
   const db = await createTempDatabase();
-  migrate(db.url);
+  migrate(db.owner.url);
   return db;
 }
 
-async function serve(db: Awaited<ReturnType<typeof createTempDatabase>>) {
+/** What PREPARE grants the runtime role on a restore target: reading the gate, nothing else. */
+async function grantGateRead(db: TempDatabase) {
+  await query(db.url, `GRANT USAGE ON SCHEMA ruvee_control TO "${db.runtime.name}"`);
+  await query(
+    db.url,
+    `GRANT SELECT (id, state) ON ruvee_control.restore_guard TO "${db.runtime.name}"`,
+  );
+}
+
+async function serve(db: TempDatabase) {
   vi.resetModules();
   return startHarness({ database: db });
 }
@@ -62,6 +77,9 @@ describe('REVIEW R14 (regression): no missing or stale state opens the gate', ()
       db.url,
       'CREATE TABLE ruvee_control.restore_guard (id smallint PRIMARY KEY, state text NOT NULL)',
     );
+    // Before PREPARE's grant the runtime role cannot even read the guard: closed (F-25).
+    expect(await errorOf(h)).toEqual({ status: 503, error: 'maintenance' });
+    await grantGateRead(db);
     // The guard table without its row.
     expect(await errorOf(h)).toEqual({ status: 503, error: 'maintenance' });
     await query(db.url, `INSERT INTO ruvee_control.restore_guard VALUES (1, 'restoring')`);
@@ -77,25 +95,26 @@ describe('REVIEW R14 (regression): no missing or stale state opens the gate', ()
 
   it('a restore guard decides even next to a fresh-installation row', async () => {
     const db = await migratedDatabase();
-    await initFresh(db.url);
+    await initFresh(db);
     await query(
       db.url,
       'CREATE TABLE ruvee_control.restore_guard (id smallint PRIMARY KEY, state text NOT NULL)',
     );
     await query(db.url, `INSERT INTO ruvee_control.restore_guard VALUES (1, 'review')`);
+    await grantGateRead(db);
     h = await serve(db);
     expect(await errorOf(h)).toEqual({ status: 503, error: 'maintenance' });
   });
 
   it('opens a fresh installation only after `init`, which refuses a database twice', async () => {
     const db = await migratedDatabase();
-    await initFresh(db.url);
+    await initFresh(db);
     h = await serve(db);
     expect(await errorOf(h)).toEqual({ status: 401, error: 'unauthenticated' });
-    const c = new pg.Client({ connectionString: db.url });
+    const c = new pg.Client({ connectionString: db.operator.url });
     await c.connect();
     try {
-      await expect(initInstallation(c)).rejects.toBeInstanceOf(InstallationError);
+      await expect(initInstallation(c, db.runtime.name)).rejects.toThrow(/already has a control/);
     } finally {
       await c.end();
     }
@@ -106,10 +125,12 @@ describe('REVIEW R14 (regression): no missing or stale state opens the gate', ()
     try {
       await query(db.url, 'CREATE SCHEMA ruvee_control');
       await query(db.url, 'CREATE TABLE ruvee_control.restore_guard (id smallint, state text)');
-      const c = new pg.Client({ connectionString: db.url });
+      const c = new pg.Client({ connectionString: db.operator.url });
       await c.connect();
       try {
-        await expect(initInstallation(c)).rejects.toThrow(/opens only by its reopening/);
+        await expect(initInstallation(c, db.runtime.name)).rejects.toThrow(
+          /opens only by its reopening/,
+        );
       } finally {
         await c.end();
       }

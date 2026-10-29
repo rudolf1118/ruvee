@@ -3,11 +3,14 @@
  * HTTP administration API. Output goes to this terminal only; nothing is logged.
  *
  *   ruvee-admin opaque-setup --out <path>   create the OPAQUE server setup file (mode 0600)
- *   ruvee-admin init                        mark DATABASE_URL as a fresh installation (once, before
- *                                           first use); a database without it is never served
+ *   ruvee-admin init                        mark the database as a fresh installation (once, before
+ *                                           first use) and grant the runtime role its list; a
+ *                                           database without it is never served
+ *   ruvee-admin grant-runtime               set the runtime role's privileges to exactly its list
+ *                                           (after every migration)
  *   ruvee-admin bootstrap-token             print a single-use setup token valid for 60 minutes
  *   ruvee-admin backup --out <dir> --synthetic-test-only
- *                                           encrypted dump of DATABASE_URL to BACKUP_AGE_RECIPIENT
+ *                                           encrypted dump of the database to BACKUP_AGE_RECIPIENT
  *   ruvee-admin restore --manifest <file> --identity <file> (--trusted-digest <sha256> | --no-trusted-digest)
  *                                           restore into RESTORE_DATABASE_URL (new, empty)
  *   ruvee-admin restore-review [--revoke-device <id> --reason lost|retired]
@@ -17,7 +20,10 @@
  *                                           a new reopening code (revokes the previous one)
  *
  * Restore commands read RESTORE_DATABASE_URL, never a command-line URL, so no password appears
- * in the process list (backup-restore.md §3.5, §3.6a).
+ * in the process list (backup-restore.md §3.5, §3.6a). Every other database command reads
+ * RUVEE_ADMIN_DATABASE_URL. Both are the **operator** role's credentials, never the API's
+ * DATABASE_URL (database-roles.md, follow-up review F-25); RUVEE_RUNTIME_ROLE names the API's
+ * role (a name, no password) for the commands that grant it its list.
  */
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -26,6 +32,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import * as opaque from '@serenity-kit/opaque';
 import { randomToken, sha256 } from '../common/secrets.js';
 import { PrismaClient } from '../generated/prisma/client.js';
+import { applyRuntimeGrants, assertOperator, checkRoleName, RoleError } from './database-roles.js';
 import { connectTo, DbTargetError, parseDbTarget } from './db-target.js';
 import { InstallationError, initInstallation } from './installation.js';
 import { pgToolsFromEnv } from './pg-tools.js';
@@ -59,6 +66,25 @@ function restoreUrl(): string {
   return url;
 }
 
+/** The operator role's URL for the commands that are not restore commands. */
+function adminUrl(): string {
+  const url = process.env.RUVEE_ADMIN_DATABASE_URL;
+  if (!url)
+    fail(
+      'RUVEE_ADMIN_DATABASE_URL is not set (the operator role, not the API runtime DATABASE_URL; see docs/guides/database-roles.md)',
+    );
+  return url;
+}
+
+function runtimeRole(): string {
+  try {
+    return checkRoleName(process.env.RUVEE_RUNTIME_ROLE, 'RUVEE_RUNTIME_ROLE');
+  } catch (error) {
+    if (error instanceof RoleError) fail(`${error.message} (the API's database role)`);
+    throw error;
+  }
+}
+
 /** SIGINT and SIGTERM stop a backup or restore cleanly instead of killing it mid-write. */
 function interruptible(): AbortSignal {
   const controller = new AbortController();
@@ -70,12 +96,12 @@ function interruptible(): AbortSignal {
 }
 
 async function backup(args: string[]): Promise<void> {
-  const url = process.env.DATABASE_URL;
   const out = option(args, '--out');
-  if (!url || !out)
+  if (!out)
     fail(
-      'usage: DATABASE_URL=… BACKUP_AGE_RECIPIENT=age1… ruvee-admin backup --out <dir> --synthetic-test-only',
+      'usage: RUVEE_ADMIN_DATABASE_URL=… BACKUP_AGE_RECIPIENT=age1… ruvee-admin backup --out <dir> --synthetic-test-only',
     );
+  const url = adminUrl();
   const result = await createBackup({
     databaseUrl: url,
     outDir: out,
@@ -119,6 +145,7 @@ async function restore(args: string[]): Promise<void> {
     trustedDigest: digest ?? false,
     ...(staging ? { stagingRoot: staging } : {}),
     targetDatabaseUrl: restoreUrl(),
+    runtimeRole: runtimeRole(),
     tools: pgToolsFromEnv(),
     knownMigrations: knownMigrations(`${apiRoot}prisma/migrations`),
     migrate: (url) => {
@@ -256,8 +283,7 @@ async function opaqueSetup(args: string[]): Promise<void> {
 }
 
 async function bootstrapToken(): Promise<void> {
-  const url = process.env.DATABASE_URL;
-  if (!url) fail('DATABASE_URL is not set');
+  const url = adminUrl();
   const prisma = new PrismaClient({ adapter: new PrismaPg({ connectionString: url }) });
   try {
     if ((await prisma.account.count()) > 0)
@@ -285,18 +311,20 @@ async function bootstrapToken(): Promise<void> {
  * serves nothing but health checks, so a database that was never set up, or a restore target,
  * can never be mistaken for an open installation.
  */
-async function init(): Promise<void> {
-  const url = process.env.DATABASE_URL;
-  if (!url) fail('DATABASE_URL is not set');
-  let c;
+async function adminClient() {
   try {
-    c = await connectTo(parseDbTarget(url));
+    return await connectTo(parseDbTarget(adminUrl()));
   } catch (error) {
     if (error instanceof DbTargetError) fail(error.message);
     throw error;
   }
+}
+
+async function init(): Promise<void> {
+  const role = runtimeRole();
+  const c = await adminClient();
   try {
-    await initInstallation(c);
+    await initInstallation(c, role);
   } catch (error) {
     if (error instanceof InstallationError) fail(error.message);
     throw error;
@@ -308,10 +336,40 @@ async function init(): Promise<void> {
   );
 }
 
+/**
+ * After every `prisma migrate deploy` (which runs as the schema owner): the runtime role gets
+ * exactly its list, including a table the migration added only once runtime-privileges.ts lists
+ * it. Also how a database set up before F-25 is moved to the separated roles (the guide).
+ */
+async function grantRuntime(): Promise<void> {
+  const role = runtimeRole();
+  const c = await adminClient();
+  try {
+    await assertOperator(c, role);
+    await c.query('BEGIN');
+    try {
+      await applyRuntimeGrants(c, role);
+      await c.query('COMMIT');
+    } catch (error) {
+      await c.query('ROLLBACK');
+      throw error;
+    }
+  } catch (error) {
+    if (error instanceof RoleError) fail(error.message);
+    throw error;
+  } finally {
+    await c.end();
+  }
+  process.stdout.write(`The runtime role ${role} now has exactly its listed privileges.\n`);
+}
+
 const [command, ...rest] = process.argv.slice(2);
 switch (command) {
   case 'init':
     await init();
+    break;
+  case 'grant-runtime':
+    await grantRuntime();
     break;
   case 'opaque-setup':
     await opaqueSetup(rest);
@@ -337,6 +395,6 @@ switch (command) {
     break;
   default:
     fail(
-      'commands: init | opaque-setup | bootstrap-token | backup | restore | restore-review | restore-complete | restore-reopen-code',
+      'commands: init | grant-runtime | opaque-setup | bootstrap-token | backup | restore | restore-review | restore-complete | restore-reopen-code',
     );
 }

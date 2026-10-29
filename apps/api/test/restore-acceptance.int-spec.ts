@@ -85,13 +85,14 @@ async function restoredServer(backup: BackupResult, key: TestBackupKey) {
     manifestPath: backup.manifestPath,
     identityPath: key.identityPath,
     trustedDigest: backup.digest,
-    targetDatabaseUrl: db.url,
+    targetDatabaseUrl: db.operator.url,
+    runtimeRole: db.runtime.name,
     tools,
     migrate,
     knownMigrations: MIGRATIONS,
   });
   if (!('removed' in result)) throw new Error('restore stopped');
-  const ended = await completeRestore(db.url, {
+  const ended = await completeRestore(db.operator.url, {
     restoreId: result.restoreId,
     devicesReviewed: true,
     acceptRestoredCredentials: true,
@@ -169,7 +170,7 @@ describe('R1: a backup taken during concurrent commits is a coherent, restorable
     })();
     const seqAtStart = writer.seq;
     const backup = await createBackup({
-      databaseUrl: source.db.url,
+      databaseUrl: source.db.operator.url,
       outDir,
       tools,
       recipient: key.recipient,
@@ -212,7 +213,7 @@ describe('R3: missing or mismatched OPAQUE setup material fails safely', () => {
     key = await testBackupKey();
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-r3-it-'));
     const backup = await createBackup({
-      databaseUrl: source.db.url,
+      databaseUrl: source.db.operator.url,
       outDir,
       tools,
       recipient: key.recipient,

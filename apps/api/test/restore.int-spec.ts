@@ -195,7 +195,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-restore-it-'));
     key = await testBackupKey();
     backup = await createBackup({
-      databaseUrl: source.db.url,
+      databaseUrl: source.db.operator.url,
       outDir,
       tools,
       recipient: key.recipient,
@@ -205,7 +205,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     sourceBefore = await fingerprint(source.db.url);
 
     target = await createTempDatabase();
-    const result = await restoreBackup(restoreArgs(backup, target.url));
+    const result = await restoreBackup(restoreArgs(backup, target));
     if (!('removed' in result)) throw new Error('restore stopped');
     restoreId = result.restoreId;
     expect(result.provenance).toBe('trusted-digest');
@@ -240,12 +240,13 @@ describe('server restore into a maintenance-mode installation (real database, re
     (key as TestBackupKey | undefined)?.drop();
   });
 
-  function restoreArgs(b: BackupResult, targetDatabaseUrl: string) {
+  function restoreArgs(b: BackupResult, target: TempDatabase) {
     return {
       manifestPath: b.manifestPath,
       identityPath: key.identityPath,
       trustedDigest: b.digest,
-      targetDatabaseUrl,
+      targetDatabaseUrl: target.operator.url,
+      runtimeRole: target.runtime.name,
       tools,
       migrate,
       knownMigrations: MIGRATIONS,
@@ -259,7 +260,7 @@ describe('server restore into a maintenance-mode installation (real database, re
   it('refuses to take a backup of anything but a synthetic database', async () => {
     const base = { outDir, tools, recipient: key.recipient, config };
     await expect(
-      createBackup({ ...base, databaseUrl: source.db.url, syntheticTestOnly: false }),
+      createBackup({ ...base, databaseUrl: source.db.operator.url, syntheticTestOnly: false }),
     ).rejects.toThrow(/synthetic-test-only/);
     const other = new URL(source.db.url);
     other.pathname = '/ruvee';
@@ -269,7 +270,7 @@ describe('server restore into a maintenance-mode installation (real database, re
   });
 
   it('never restores into a database that is not empty', async () => {
-    await expect(restoreBackup(restoreArgs(backup, source.db.url))).rejects.toBeInstanceOf(
+    await expect(restoreBackup(restoreArgs(backup, source.db))).rejects.toBeInstanceOf(
       RestoreError,
     );
     expect(await fingerprint(source.db.url)).toBe(sourceBefore);
@@ -307,7 +308,7 @@ describe('server restore into a maintenance-mode installation (real database, re
   });
 
   it('reviews the snapshot without secrets, revokes a device again, and ends the review only when told', async () => {
-    const review = await reviewRestore(target.url);
+    const review = await reviewRestore(target.operator.url);
     expect(review).toMatchObject({
       state: 'review',
       restoreId,
@@ -317,16 +318,16 @@ describe('server restore into a maintenance-mode installation (real database, re
     expect(review.validAgain.keysetVersion).toBe(1);
     expect(JSON.stringify(review)).not.toMatch(/wrapped|verifier|secret_hash|token_hash/i);
 
-    await revokeDeviceInReview(target.url, otherDevice.id, 'lost');
+    await revokeDeviceInReview(target.operator.url, otherDevice.id, 'lost');
     await expect(
-      completeRestore(target.url, {
+      completeRestore(target.operator.url, {
         restoreId,
         devicesReviewed: true,
         acceptRestoredCredentials: false,
       }),
     ).rejects.toMatchObject({ stage: 'complete' });
     await expect(
-      completeRestore(target.url, {
+      completeRestore(target.operator.url, {
         restoreId: account.crypto.generateUuid(),
         devicesReviewed: true,
         acceptRestoredCredentials: true,
@@ -335,7 +336,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     // Still closed.
     expectError(await restored.get('/api/v1/account/keys', owner), 'maintenance');
 
-    const ended = await completeRestore(target.url, {
+    const ended = await completeRestore(target.operator.url, {
       restoreId,
       devicesReviewed: true,
       acceptRestoredCredentials: true,
@@ -418,7 +419,7 @@ describe('server restore into a maintenance-mode installation (real database, re
 
   it('never carries the restore guard into a backup, so a restored server can be backed up and restored again', async () => {
     const second = await createBackup({
-      databaseUrl: target.url,
+      databaseUrl: target.operator.url,
       outDir,
       tools,
       recipient: key.recipient,
@@ -428,7 +429,7 @@ describe('server restore into a maintenance-mode installation (real database, re
     });
     const again = await createTempDatabase();
     try {
-      const result = await restoreBackup(restoreArgs(second, again.url));
+      const result = await restoreBackup(restoreArgs(second, again));
       expect('removed' in result).toBe(true);
       const state = await query<{ state: string }>(
         again.url,

@@ -92,7 +92,7 @@ describe('encrypted server backups (real dumps, real age)', () => {
     );
 
   const backupArgs = (outDir: string, extra: Partial<Parameters<typeof createBackup>[0]> = {}) => ({
-    databaseUrl: h.db.url,
+    databaseUrl: h.db.operator.url,
     outDir,
     tools,
     recipient: key.recipient,
@@ -102,13 +102,14 @@ describe('encrypted server backups (real dumps, real age)', () => {
   });
   const restoreArgs = (
     manifestPath: string,
-    targetDatabaseUrl: string,
+    target: TempDatabase,
     extra: Partial<Parameters<typeof restoreBackup>[0]> = {},
   ) => ({
     manifestPath,
     identityPath: key.identityPath,
     trustedDigest: false as const,
-    targetDatabaseUrl,
+    targetDatabaseUrl: target.operator.url,
+    runtimeRole: target.runtime.name,
     tools,
     migrate,
     knownMigrations: MIGRATIONS,
@@ -288,9 +289,9 @@ describe('encrypted server backups (real dumps, real age)', () => {
       });
       const db = await target();
       await expect(
-        restoreBackup(restoreArgs(`${paths.manifest}.partial`, db.url)),
+        restoreBackup(restoreArgs(`${paths.manifest}.partial`, db)),
       ).rejects.toMatchObject({ stage: 'verify' });
-      await expect(restoreBackup(restoreArgs(paths.manifest, db.url))).rejects.toMatchObject({
+      await expect(restoreBackup(restoreArgs(paths.manifest, db))).rejects.toMatchObject({
         stage: 'verify',
       });
       expect(await tableCount(db.url)).toBe(0);
@@ -311,7 +312,7 @@ describe('encrypted server backups (real dumps, real age)', () => {
       message: RegExp,
       extra: Partial<Parameters<typeof restoreBackup>[0]> = {},
     ) => {
-      await expect(restoreBackup(restoreArgs(manifestPath, db.url, extra))).rejects.toMatchObject({
+      await expect(restoreBackup(restoreArgs(manifestPath, db, extra))).rejects.toMatchObject({
         stage: 'verify',
         message: expect.stringMatching(message) as unknown,
       });
@@ -419,13 +420,13 @@ describe('encrypted server backups (real dumps, real age)', () => {
     // recipient could produce. Only the operator's own digest tells it apart.
     const checked = await target();
     await expect(
-      restoreBackup(restoreArgs(other.manifestPath, checked.url, { trustedDigest: backup.digest })),
+      restoreBackup(restoreArgs(other.manifestPath, checked, { trustedDigest: backup.digest })),
     ).rejects.toMatchObject({ stage: 'verify' });
     expect(await tableCount(checked.url)).toBe(0);
     const unchecked = await target();
-    const result = await restoreBackup(restoreArgs(other.manifestPath, unchecked.url));
+    const result = await restoreBackup(restoreArgs(other.manifestPath, unchecked));
     expect(result).toMatchObject({ provenance: 'unchecked', digest: other.digest });
-    expect(await reviewRestore(unchecked.url)).toMatchObject({
+    expect(await reviewRestore(unchecked.operator.url)).toMatchObject({
       provenance: 'unchecked',
       backupDigest: other.digest,
     });
@@ -437,7 +438,7 @@ describe('encrypted server backups (real dumps, real age)', () => {
     const stagingRoot = dir();
     await expect(
       restoreBackup(
-        restoreArgs(paths.manifest, db.url, {
+        restoreArgs(paths.manifest, db, {
           trustedDigest: backup.digest,
           stagingRoot,
           // VERIFY passed; the staged copy LOAD reads changes in between (the source directory
@@ -455,7 +456,7 @@ describe('encrypted server backups (real dumps, real age)', () => {
     );
     expect(guard?.state).toBe('restoring');
     await expect(
-      completeRestore(db.url, {
+      completeRestore(db.operator.url, {
         restoreId: guard?.restore_id ?? '',
         devicesReviewed: true,
         acceptRestoredCredentials: true,
@@ -466,7 +467,7 @@ describe('encrypted server backups (real dumps, real age)', () => {
   it('restores the genuine backup with its trusted digest', async () => {
     const db = await target();
     const result = await restoreBackup(
-      restoreArgs(backup.manifestPath, db.url, { trustedDigest: backup.digest }),
+      restoreArgs(backup.manifestPath, db, { trustedDigest: backup.digest }),
     );
     expect(result).toMatchObject({ provenance: 'trusted-digest', digest: backup.digest });
     const accounts = await query<{ username_normalized: string }>(

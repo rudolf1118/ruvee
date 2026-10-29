@@ -31,13 +31,13 @@ import { SecurityEventsService } from '../security-events/security-events.servic
 import { proveCompletion } from '../sessions/completion-proof.js';
 import { ProofService } from '../sessions/proof.service.js';
 import { SessionService, type AuthenticatedSession } from '../sessions/session.service.js';
-import { REOPEN_MAX_FAILURES, reopenCodeHash } from './reopen-codes.js';
+import { reopenCodeHash } from './reopen-codes.js';
 
 /** Compared against when the username is unknown, so both paths do the same work. */
 const DUMMY_VERIFIER = new Uint8Array(32);
 
 interface CodeRow {
-  id: string;
+  code_id: string;
   restore_id: string;
   account_id: string;
 }
@@ -56,6 +56,10 @@ type NewReopen = ReopenStartResponse & { token: string; absoluteExpiresAt: Date 
  * the usable code, so nobody can use that code up without holding it. Wrong credentials (or
  * another account or device) presented **with** the usable code count on that code, and five
  * revoke it. The owner's recovery budget is charged only once the code is right.
+ *
+ * The codes and the guard belong to the operator role (F-25): this service reads and changes them
+ * only through the `ruvee_control.reopen_*` functions (admin/reopen-functions.ts), each of which
+ * checks the persisted state itself.
  */
 @Injectable()
 export class ReopenService {
@@ -82,10 +86,7 @@ export class ReopenService {
     const hash = reopenCodeHash(reopenCode);
     if (!hash) return undefined;
     const [row] = await this.prisma.$queryRaw<CodeRow[]>`
-      SELECT c.id, c.restore_id, c.account_id FROM ruvee_control.reopen_codes c
-      JOIN ruvee_control.restore_guard g ON g.restore_id = c.restore_id AND g.state = 'reopening'
-      WHERE c.code_hash = ${hash} AND c.revoked_at IS NULL AND c.consumed_at IS NULL
-        AND c.expires_at > now() AND c.failed_attempts < ${REOPEN_MAX_FAILURES}`;
+      SELECT code_id, restore_id, account_id FROM ruvee_control.reopen_code_find(${hash})`;
     return row;
   }
 
@@ -112,10 +113,7 @@ export class ReopenService {
    * the limit is revoked. The operator then issues a new one on the host.
    */
   private async fail(client: ClientContext, codeId: string, accountId: string): Promise<never> {
-    await this.prisma.$executeRaw`
-      UPDATE ruvee_control.reopen_codes SET failed_attempts = failed_attempts + 1,
-        revoked_at = CASE WHEN failed_attempts + 1 >= ${REOPEN_MAX_FAILURES} THEN now() END
-      WHERE id = ${codeId}::uuid AND revoked_at IS NULL AND consumed_at IS NULL`;
+    await this.prisma.$executeRaw`SELECT ruvee_control.reopen_code_failed(${codeId}::uuid)`;
     await this.events.record('reopen_failed', {
       accountId,
       ...client,
@@ -125,29 +123,23 @@ export class ReopenService {
   }
 
   /**
-   * Consumes the code and creates the one reopen session, in one transaction. The guard row is
-   * locked first, so concurrent reopenings serialize; the conditional update lets exactly one
-   * of them consume the code, and the others roll back.
+   * Creates the one reopen session and consumes the code for it, in one transaction. The function
+   * locks the guard row first, so concurrent reopenings serialize, and links the code only if it
+   * is still usable and belongs to this restore and the session's account; the others roll back.
    */
   private async consume(
     tx: Prisma.TransactionClient,
-    code: CodeRow,
+    code: { code_id: string; account_id: string },
     deviceId: string,
     via: 'password' | 'recovery',
     client: ClientContext,
     now: Date,
   ) {
-    const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
-      SELECT state, restore_id FROM ruvee_control.restore_guard WHERE id = 1 FOR UPDATE`;
-    if (g?.state !== 'reopening' || g.restore_id !== code.restore_id)
-      throw new ApiException('reopen_failed');
     const session = await this.sessions.createReopen(code.account_id, deviceId, tx, now);
-    const consumed = await tx.$executeRaw`
-      UPDATE ruvee_control.reopen_codes SET consumed_at = now(), session_id = ${session.id}::uuid,
-        via = ${via}
-      WHERE id = ${code.id}::uuid AND consumed_at IS NULL AND revoked_at IS NULL
-        AND expires_at > now() AND failed_attempts < ${REOPEN_MAX_FAILURES}`;
-    if (consumed !== 1) throw new ApiException('reopen_failed');
+    const [consumed] = await tx.$queryRaw<{ ok: boolean }[]>`
+      SELECT ruvee_control.reopen_code_consume(${code.code_id}::uuid, ${session.id}::uuid, ${via})
+        AS ok`;
+    if (consumed?.ok !== true) throw new ApiException('reopen_failed');
     await this.events.record(
       'reopen_started',
       { accountId: code.account_id, deviceId, ...client, details: { via } },
@@ -170,7 +162,7 @@ export class ReopenService {
     });
     // The code is for one account; any other username fails like a wrong code.
     if (account?.id !== code.account_id || !account.opaqueCredential)
-      return this.fail(client, code.id, code.account_id);
+      return this.fail(client, code.code_id, code.account_id);
     let started: { serverLoginState: string; loginResponse: string };
     try {
       started = this.opaque.startLogin(
@@ -187,7 +179,7 @@ export class ReopenService {
       accountId: account.id,
       deviceId: body.deviceId,
       platform: 'web',
-      reopenCodeId: code.id,
+      reopenCodeId: code.code_id,
     });
     return { loginId, loginResponse: started.loginResponse, challenge: toBase64url(challenge) };
   }
@@ -227,13 +219,10 @@ export class ReopenService {
         device: { publicKey: device.publicKey, signature: fromBase64url(body.deviceProof) },
       });
     if (!proven) return this.fail(client, pending.reopenCodeId, accountId);
-    const code = { id: pending.reopenCodeId, account_id: accountId };
-    const [row] = await this.prisma.$queryRaw<{ restore_id: string }[]>`
-      SELECT restore_id FROM ruvee_control.reopen_codes WHERE id = ${code.id}::uuid`;
-    if (!row) throw new ApiException('reopen_failed');
+    const code = { code_id: pending.reopenCodeId, account_id: accountId };
     const now = new Date();
     const session = await this.prisma.$transaction((tx) =>
-      this.consume(tx, { ...code, restore_id: row.restore_id }, device.id, 'password', client, now),
+      this.consume(tx, code, device.id, 'password', client, now),
     );
     await this.throttle.resetLogin(pending.username);
     return {
@@ -262,13 +251,13 @@ export class ReopenService {
     const stored = account?.accountKeys?.recoveryVerifier ?? DUMMY_VERIFIER;
     const matches = timingSafeEqual(sha256(fromBase64url(body.recoveryAuthKey)), stored);
     if (!account?.accountKeys || !matches || account.id !== code.account_id)
-      return this.fail(client, code.id, code.account_id);
+      return this.fail(client, code.code_id, code.account_id);
     // device-proof.md §9: a snapshot from before D-31 has no AVPK to check AK against, so it
     // cannot be reopened; the code is left as it was.
     if (!account.accountKeys.akVerifyKey) throw new ApiException('migration_required');
     const existing = await this.prisma.device.findUnique({ where: { id: body.device.id } });
     if (existing && (existing.accountId !== account.id || existing.status === 'revoked'))
-      return this.fail(client, code.id, account.id);
+      return this.fail(client, code.code_id, account.id);
     const now = new Date();
     const session = await this.prisma.$transaction(async (tx) => {
       if (!existing)
@@ -382,22 +371,16 @@ export class ReopenService {
       'reopen_complete',
       proof.nonce,
       async (tx) => {
-        // The guard row first: `ruvee-admin restore-reopen-code` locks it too, so a host revocation
-        // either commits before this check (and is seen here) or waits for this transaction (R13).
-        const [g] = await tx.$queryRaw<{ state: string; restore_id: string }[]>`
-        SELECT state, restore_id FROM ruvee_control.restore_guard WHERE id = 1 FOR UPDATE`;
-        // Re-checked under that lock: the session was authenticated before this transaction.
-        const [live] = await tx.$queryRaw<{ id: string }[]>`
-        SELECT id FROM sessions
-        WHERE id = ${session.sessionId}::uuid AND kind = 'reopen' AND revoked_at IS NULL
-          AND absolute_expires_at > now()
-        FOR UPDATE`;
-        const [link] = await tx.$queryRaw<{ restore_id: string }[]>`
-        SELECT restore_id FROM ruvee_control.reopen_codes
-        WHERE session_id = ${session.sessionId}::uuid AND revoked_at IS NULL
-        FOR UPDATE`;
-        if (g?.state !== 'reopening' || !live || link?.restore_id !== g.restore_id)
-          throw new ApiException('reopen_failed');
+        // First, under the guard row's lock (`ruvee-admin restore-reopen-code` takes it too, so a
+        // host revocation either commits before this check or waits for this transaction, R13):
+        // the session, re-checked because it was authenticated before this transaction, must
+        // still be live and linked to an unrevoked code of this restore. Only then does the
+        // function revoke every code and open the guard; the rest of this transaction commits
+        // with that change or rolls it back.
+        const [opened] = await tx.$queryRaw<{ restore_id: string | null }[]>`
+        SELECT ruvee_control.reopen_complete(${session.sessionId}::uuid)::text AS restore_id`;
+        const restoreId = opened?.restore_id;
+        if (!restoreId) throw new ApiException('reopen_failed');
         const updated = await tx.accountKeys.updateMany({
           where: { accountId: session.accountId, rowVersion: BigInt(body.expectedRowVersion) },
           data: {
@@ -424,10 +407,6 @@ export class ReopenService {
           where: { accountId: session.accountId, revokedAt: null },
           data: { revokedAt: now, revokeReason: 'reopened' },
         });
-        await tx.$executeRaw`UPDATE ruvee_control.reopen_codes SET revoked_at = now() WHERE revoked_at IS NULL`;
-        await tx.$executeRaw`
-        UPDATE ruvee_control.restore_guard SET state = 'open', reopened_at = now()
-        WHERE id = 1 AND state = 'reopening'`;
         await tx.device.update({
           where: { id: session.deviceId },
           data:
@@ -452,7 +431,7 @@ export class ReopenService {
         const context = { accountId: session.accountId, deviceId: session.deviceId, ...client };
         await this.events.record(
           'restore_reopened',
-          { ...context, details: { restoreId: g.restore_id, via } },
+          { ...context, details: { restoreId, via } },
           tx,
         );
         await this.events.record('password_changed', context, tx);

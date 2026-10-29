@@ -9,6 +9,7 @@ import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import pg from 'pg';
+import { createDatabaseWithRoles, dropDatabaseWithRoles } from './e2e-roles.mjs';
 
 const adminUrl = process.env.RUVEE_E2E_ADMIN_DATABASE_URL;
 const statePath = process.env.RUVEE_E2E_STATE_FILE;
@@ -23,21 +24,6 @@ const apiRoot = new URL('../', import.meta.url).pathname;
 const name = `ruvee_e2e_${randomBytes(6).toString('hex')}`;
 const dir = join(tmpdir(), `${name}-files`);
 const setupFile = join(dir, 'opaque-server-setup');
-const dbUrl = (() => {
-  const u = new URL(adminUrl);
-  u.pathname = `/${name}`;
-  return u.toString();
-})();
-
-async function admin(sql) {
-  const client = new pg.Client({ connectionString: adminUrl });
-  await client.connect();
-  try {
-    await client.query(sql);
-  } finally {
-    await client.end();
-  }
-}
 
 let api;
 let cleaning = false;
@@ -46,7 +32,7 @@ async function cleanup() {
   cleaning = true;
   api?.kill('SIGTERM');
   await new Promise((resolve) => setTimeout(resolve, 300));
-  await admin(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`).catch(() => undefined);
+  await dropDatabaseWithRoles(adminUrl, name).catch(() => undefined);
   rmSync(dir, { recursive: true, force: true });
   rmSync(statePath, { force: true });
 }
@@ -65,11 +51,19 @@ process.on('unhandledRejection', (error) => {
   void cleanup().finally(() => process.exit(1));
 });
 
-await admin(`CREATE DATABASE "${name}"`);
-const env = { ...process.env, DATABASE_URL: dbUrl, PRISMA_HIDE_UPDATE_MESSAGE: '1' };
+// The database's own roles (F-25): migrations as the schema owner, `ruvee-admin` as the
+// operator, the API as the runtime role.
+const roles = await createDatabaseWithRoles(adminUrl, name);
+const env = {
+  ...process.env,
+  DATABASE_URL: roles.runtime.url,
+  RUVEE_ADMIN_DATABASE_URL: roles.operator.url,
+  RUVEE_RUNTIME_ROLE: roles.runtime.name,
+  PRISMA_HIDE_UPDATE_MESSAGE: '1',
+};
 const migrated = spawnSync('node_modules/.bin/prisma', ['migrate', 'deploy'], {
   cwd: apiRoot,
-  env,
+  env: { ...env, DATABASE_URL: roles.owner.url },
   encoding: 'utf8',
 });
 if (migrated.status !== 0) {
@@ -101,7 +95,7 @@ if (created.status !== 0) {
 }
 // The same row `ruvee-admin bootstrap-token` writes: only the hash is stored.
 const token = randomBytes(32).toString('base64url');
-const client = new pg.Client({ connectionString: dbUrl });
+const client = new pg.Client({ connectionString: roles.operator.url });
 await client.connect();
 await client.query(
   `INSERT INTO bootstrap_tokens (id, token_hash, expires_at) VALUES ($1, $2, now() + interval '60 minutes')`,
@@ -113,10 +107,14 @@ writeFileSync(statePath, JSON.stringify({ bootstrapToken: token, database: name 
   mode: 0o600,
 });
 
+// The API process gets only the runtime role's URL: no operator or administrator credentials.
+const apiEnv = { ...env };
+delete apiEnv.RUVEE_ADMIN_DATABASE_URL;
+delete apiEnv.RUVEE_E2E_ADMIN_DATABASE_URL;
 api = spawn('node', ['dist/main.js'], {
   cwd: apiRoot,
   env: {
-    ...env,
+    ...apiEnv,
     NODE_ENV: 'test',
     API_PORT: apiPort,
     API_HOST: '127.0.0.1',

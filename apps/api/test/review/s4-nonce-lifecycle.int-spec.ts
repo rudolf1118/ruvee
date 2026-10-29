@@ -293,6 +293,8 @@ describe('S-4: proof nonces across failures, retries and concurrency (real datab
     // A database failure inside the transaction, once: after the nonce was consumed and the
     // keys were written, the security event cannot be stored. Sequences are not rolled back.
     await rows(`CREATE SEQUENCE s4_failures`);
+    // The trigger runs as the API's runtime role, which may use nothing it was not given.
+    await rows(`GRANT USAGE ON SEQUENCE s4_failures TO "${server().db.runtime.name}"`);
     await rows(`CREATE FUNCTION s4_fail_once() RETURNS trigger LANGUAGE plpgsql AS $$
       BEGIN
         IF nextval('s4_failures') = 1 THEN RAISE EXCEPTION 's4 synthetic failure'; END IF;

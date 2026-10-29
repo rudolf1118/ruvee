@@ -81,7 +81,8 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
         manifestPath,
         identityPath: key.identityPath,
         trustedDigest: genuine.digest,
-        targetDatabaseUrl: target.url,
+        targetDatabaseUrl: target.operator.url,
+        runtimeRole: target.runtime.name,
         tools,
         migrate,
         knownMigrations: MIGRATIONS,
@@ -110,7 +111,7 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
     await registerAccount(h, await syntheticAccount('synthetic-r9-genuine'));
     key = await testBackupKey();
     genuine = await createBackup({
-      databaseUrl: h.db.url,
+      databaseUrl: h.db.operator.url,
       outDir: dir(),
       tools,
       recipient: key.recipient,
@@ -122,7 +123,7 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
     other = await startHarness();
     await registerAccount(other, await syntheticAccount('synthetic-r9-forged'));
     forged = await createBackup({
-      databaseUrl: other.db.url,
+      databaseUrl: other.db.operator.url,
       outDir: dir(),
       tools,
       recipient: key.recipient,
@@ -240,7 +241,8 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
           manifestPath: p.manifest,
           identityPath: key.identityPath,
           trustedDigest: genuine.digest,
-          targetDatabaseUrl: target.url,
+          targetDatabaseUrl: target.operator.url,
+          runtimeRole: target.runtime.name,
           tools,
           migrate,
           knownMigrations: MIGRATIONS,
@@ -285,7 +287,7 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
          FROM generate_series(1, 4000)`,
       );
       padded = await createBackup({
-        databaseUrl: h.db.url,
+        databaseUrl: h.db.operator.url,
         outDir: dir(),
         tools,
         recipient: key.recipient,
@@ -311,7 +313,8 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
             manifestPath: p.manifest,
             identityPath: key.identityPath,
             trustedDigest: padded.digest,
-            targetDatabaseUrl: target.url,
+            targetDatabaseUrl: target.operator.url,
+            runtimeRole: target.runtime.name,
             tools: restoreTools,
             migrate,
             knownMigrations: MIGRATIONS,
@@ -409,7 +412,8 @@ describe('REVIEW R9 (regression): verified bytes are the bytes restored', () => 
             manifestPath: p.manifest,
             identityPath: key.identityPath,
             trustedDigest: padded.digest,
-            targetDatabaseUrl: target.url,
+            targetDatabaseUrl: target.operator.url,
+            runtimeRole: target.runtime.name,
             tools: exitsEarly,
             migrate,
             knownMigrations: MIGRATIONS,

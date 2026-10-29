@@ -42,11 +42,12 @@ describe('restore edge cases (real database, real dumps)', () => {
   let outDir: string;
   let key: TestBackupKey;
   let backup: BackupResult;
-  const restoreArgs = (targetDatabaseUrl: string) => ({
+  const restoreArgs = (target: TempDatabase) => ({
     manifestPath: backup.manifestPath,
     identityPath: key.identityPath,
     trustedDigest: backup.digest,
-    targetDatabaseUrl,
+    targetDatabaseUrl: target.operator.url,
+    runtimeRole: target.runtime.name,
     tools,
     migrate,
     knownMigrations: MIGRATIONS,
@@ -66,7 +67,7 @@ describe('restore edge cases (real database, real dumps)', () => {
     outDir = mkdtempSync(join(tmpdir(), 'ruvee-restore-edges-it-'));
     key = await testBackupKey();
     backup = await createBackup({
-      databaseUrl: source.db.url,
+      databaseUrl: source.db.operator.url,
       outDir,
       tools,
       recipient: key.recipient,
@@ -88,7 +89,7 @@ describe('restore edge cases (real database, real dumps)', () => {
     async (stopAfter) => {
       const db = await target();
       const result = await restoreBackup({
-        ...restoreArgs(db.url),
+        ...restoreArgs(db),
         stopAfter,
       });
       expect(result).toMatchObject({ stoppedAfter: stopAfter });
@@ -98,19 +99,19 @@ describe('restore edge cases (real database, real dumps)', () => {
       );
       expect(guard).toEqual({ state: 'restoring' });
       await expect(
-        completeRestore(db.url, {
+        completeRestore(db.operator.url, {
           restoreId: result.restoreId,
           devicesReviewed: true,
           acceptRestoredCredentials: true,
         }),
       ).rejects.toMatchObject({ stage: 'complete' });
       await expect(
-        revokeDeviceInReview(db.url, '00000000-0000-4000-8000-000000000000', 'lost'),
+        revokeDeviceInReview(db.operator.url, '00000000-0000-4000-8000-000000000000', 'lost'),
       ).rejects.toMatchObject({ stage: 'review' });
       // And a second restore refuses this half-restored database: it is not empty.
       await expect(
         restoreBackup({
-          ...restoreArgs(db.url),
+          ...restoreArgs(db),
         }),
       ).rejects.toMatchObject({ stage: 'prepare' });
     },
@@ -121,12 +122,12 @@ describe('restore edge cases (real database, real dumps)', () => {
     // The restored harness owns this database and drops it on close.
     const db = await createTempDatabase();
     const result = await restoreBackup({
-      ...restoreArgs(db.url),
+      ...restoreArgs(db),
     });
     if (!('removed' in result)) throw new Error('restore stopped');
     expect(result.removed.setupTokens).toBe(1);
     expect(await query(db.url, 'SELECT id FROM bootstrap_tokens')).toEqual([]);
-    expect((await reviewRestore(db.url)).account).toBeNull();
+    expect((await reviewRestore(db.operator.url)).account).toBeNull();
 
     vi.resetModules();
     const restored = await startHarness({ database: db });
@@ -138,7 +139,7 @@ describe('restore edge cases (real database, real dumps)', () => {
           registrationRequest: startRegistration().registrationRequest,
         });
       expectError(await register(), 'maintenance');
-      await completeRestore(db.url, {
+      await completeRestore(db.operator.url, {
         restoreId: result.restoreId,
         devicesReviewed: true,
         acceptRestoredCredentials: true,

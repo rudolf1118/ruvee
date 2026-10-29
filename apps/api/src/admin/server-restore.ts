@@ -39,10 +39,19 @@ import {
   createLoader,
   loaderRoleName,
   GUARD_TABLE,
+  grantGateRead,
   restoredObjectProblems,
   retireLoader,
 } from './restore-control.js';
 import { EXPECTED_SCHEMA, schemaFingerprint } from './schema-fingerprint.js';
+import {
+  applyRuntimeGrants,
+  assertOperator,
+  assertRuntimeRoleUsable,
+  normalizeOwnership,
+  RoleError,
+  schemaOwner,
+} from './database-roles.js';
 import { connectTo, DumpHeaderCheck, parseDbTarget, type DbTarget } from './db-target.js';
 import type { PgTools } from './pg-tools.js';
 
@@ -284,7 +293,10 @@ export interface RestoreOptions {
   readonly identityPath: string;
   /** The backup digest the operator kept apart from backup storage, or explicitly none. */
   readonly trustedDigest: string | false;
+  /** The new, empty database, as the operator role (database-roles.md); never a superuser. */
   readonly targetDatabaseUrl: string;
+  /** The API's runtime role, which gets exactly its listed privileges in the restored database. */
+  readonly runtimeRole: string;
   readonly tools: PgTools;
   /** Applies the repository's migrations to the target (prisma migrate deploy). */
   readonly migrate: (url: string) => void | Promise<void>;
@@ -429,6 +441,16 @@ async function restoreVerified(
   const target = targetOf(url, 'prepare');
   const loaderName = loaderRoleName(restoreId);
   await withClient(url, async (c) => {
+    // F-25: the operator role restores (a dump's SQL runs with the loading side's rights), the
+    // schema owner takes the restored objects, and the runtime role is checked before anything.
+    try {
+      await assertOperator(c, options.runtimeRole);
+      await schemaOwner(c, options.runtimeRole);
+      await assertRuntimeRoleUsable(c, options.runtimeRole);
+    } catch (error) {
+      if (error instanceof RoleError) throw new RestoreError('prepare', error.message);
+      throw error;
+    }
     if (!(await assertEmptyDatabase(c)))
       throw new RestoreError(
         'prepare',
@@ -453,6 +475,8 @@ async function restoreVerified(
        VALUES (1, 'restoring', $1, $2, $3, $4, $5)`,
       [restoreId, backup.meta.snapshotAt, backup.digest, backup.provenance, loaderName],
     );
+    // The API reads the guard (and sees maintenance) from here on; nothing else of the schema.
+    await grantGateRead(c, options.runtimeRole);
   });
   if (options.stopAfter === 'prepare') return { stoppedAfter: 'prepare', restoreId };
 
@@ -529,6 +553,10 @@ async function restoreVerified(
       // Proof nonces are never trusted after a restore (device-proof.md §10).
       await c.query('DELETE FROM proof_nonces');
       const setupTokens = await c.query('DELETE FROM bootstrap_tokens WHERE used_at IS NULL');
+      // F-25: LOAD and MIGRATE ran as the operator; the schema owner takes every object, and the
+      // runtime role gets exactly its listed privileges and the reopening functions.
+      await normalizeOwnership(c, await schemaOwner(c, options.runtimeRole));
+      await applyRuntimeGrants(c, options.runtimeRole);
       const account = await c.query<{ id: string }>('SELECT id FROM accounts LIMIT 1');
       await c.query(
         `INSERT INTO security_events (id, account_id, type, details, created_at)

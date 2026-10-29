@@ -57,11 +57,13 @@ export async function startHarness(options: { database?: TempDatabase } = {}): P
 
 async function start(db: TempDatabase, fresh: boolean): Promise<Harness> {
   if (fresh) {
-    migrate(db.url);
-    // What the operator does once for a new installation (`ruvee-admin init`, review R14).
-    await initFresh(db.url);
+    // As the schema owner, then what the operator does once for a new installation
+    // (`ruvee-admin init`, review R14, which also grants the runtime role its list).
+    migrate(db.owner.url);
+    await initFresh(db);
   }
-  process.env.DATABASE_URL = db.url;
+  // The API connects as the runtime role, as deployed (F-25), never as an admin role.
+  process.env.DATABASE_URL = db.runtime.url;
   const logs: string[] = [];
   const destination = new Writable({
     write(chunk: Buffer, _encoding, callback) {

@@ -144,12 +144,11 @@ export class SessionService {
     if (session?.kind !== 'reopen' || session.revokedAt !== null)
       throw new ApiException('unauthenticated');
     if (session.absoluteExpiresAt <= now) throw new ApiException('session_expired');
-    const [link] = await this.prisma.$queryRaw<{ via: 'password' | 'recovery' }[]>`
-      SELECT c.via FROM ruvee_control.reopen_codes c
-      JOIN ruvee_control.restore_guard g ON g.restore_id = c.restore_id AND g.state = 'reopening'
-      WHERE c.session_id = ${session.id}::uuid AND c.revoked_at IS NULL
-        AND c.account_id = ${session.accountId}::uuid`;
-    if (!link) throw new ApiException('unauthenticated');
+    // Through the operator's function (F-25): the runtime role cannot read the codes.
+    const [link] = await this.prisma.$queryRaw<{ via: 'password' | 'recovery' | null }[]>`
+      SELECT ruvee_control.reopen_session_via(${session.id}::uuid, ${session.accountId}::uuid)
+        AS via`;
+    if (!link?.via) throw new ApiException('unauthenticated');
     return {
       sessionId: session.id,
       accountId: session.accountId,

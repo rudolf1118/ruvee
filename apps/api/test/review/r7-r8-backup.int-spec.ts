@@ -162,6 +162,7 @@ describe('REVIEW R7 (regression): a backup reads exactly the database that was c
         identityPath: key.identityPath,
         trustedDigest: b.digest,
         targetDatabaseUrl: target.toString(),
+        runtimeRole: h.db.runtime.name,
         tools,
         migrate,
         knownMigrations: MIGRATIONS,
@@ -201,6 +202,8 @@ describe('REVIEW R8 (regression): SQL inside a restored dump cannot reach restor
     const source = await createTempDatabase();
     const target = await createTempDatabase();
     try {
+      // Made with the test's superuser view, beyond what any Ruvee role could do: the hostile
+      // dump may hold anything. Only the restore, as the operator, is the boundary under test.
       migrate(source.url);
       for (const sql of statements) await query(source.url, sql);
       const b = await createBackup({
@@ -216,7 +219,8 @@ describe('REVIEW R8 (regression): SQL inside a restored dump cannot reach restor
         manifestPath: b.manifestPath,
         identityPath: key.identityPath,
         trustedDigest: b.digest,
-        targetDatabaseUrl: target.url,
+        targetDatabaseUrl: target.operator.url,
+        runtimeRole: target.runtime.name,
         tools,
         migrate,
         knownMigrations: MIGRATIONS,
