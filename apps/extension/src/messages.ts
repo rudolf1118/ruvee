@@ -4,19 +4,17 @@ import { z } from 'zod';
  * Messages from the extension's own pages to the service worker (extension-design.md §1). Every
  * message is validated before it is acted on. Account setup and recovery happen in the web app,
  * and the popup never receives a password: there is no `secret`, and filling happens in the
- * worker.
+ * worker. Exactly the methods the extension's pages call (follow-up review F-21): `items`, `detail`
+ * and `acknowledgeRecoveryNotice` were allowed but never used, and are not.
  */
 export const EXTENSION_VAULT_METHODS = [
   'phase',
   'login',
   'unlock',
-  'items',
-  'detail',
   'sync',
   'pairingNeedsPassword',
   'pairingJoin',
   'pairingWait',
-  'acknowledgeRecoveryNotice',
   'logout',
 ] as const;
 export type ExtensionVaultMethod = (typeof EXTENSION_VAULT_METHODS)[number];
