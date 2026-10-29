@@ -94,9 +94,11 @@ cp .env.example .env          # first time only; then set the values below if yo
 pnpm install
 pnpm db:up                    # PostgreSQL on 127.0.0.1:5433
 pnpm turbo run build --filter=@ruvee/api
-(cd apps/api && DATABASE_URL=… npx prisma migrate deploy)              # only on a database you can reset
+# Database roles first: docs/guides/database-roles.md (owner, operator, runtime; F-25)
+(cd apps/api && DATABASE_URL=<owner URL> npx prisma migrate deploy)     # only on a database you can reset
+(cd apps/api && RUVEE_ADMIN_DATABASE_URL=… RUVEE_RUNTIME_ROLE=… node dist/admin/cli.js init)
 mkdir -p .secrets && (cd apps/api && node dist/admin/cli.js opaque-setup --out ../../.secrets/opaque-server-setup)
-(cd apps/api && DATABASE_URL=… node dist/admin/cli.js bootstrap-token)  # prints a 60-minute setup token
+(cd apps/api && RUVEE_ADMIN_DATABASE_URL=… node dist/admin/cli.js bootstrap-token)  # prints a 60-minute setup token
 pnpm dev                      # API on :4000, web on :3100 (/api is forwarded to the API)
 ```
 

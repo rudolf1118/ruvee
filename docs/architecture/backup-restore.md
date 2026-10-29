@@ -188,34 +188,38 @@ functions, triggers or other objects, and, if the restoring role were a superuse
 `COPY … PROGRAM` on the database host. Therefore:
 
 - restore only a set whose digest matches the owner's record; never one from an unknown source;
-- run the restore as a role that owns only the new, empty target database and is **not** a
-  superuser (`--no-owner --no-privileges` make every object owned by that role). The test
-  containers use a superuser for convenience; a deployment must not;
+- run the restore as the **operator** role, which owns only the new, empty target database and is
+  **not** a superuser (`--no-owner --no-privileges` make every object owned by that role until
+  APPLY POLICY hands it to the schema owner). `ruvee-admin restore` refuses a superuser, and the
+  tests and browser stacks restore as an operator role too ([database-roles.md](database-roles.md));
 - the restore's structural checks (§3.3) and clients' checkpoints catch an inconsistent or older
   vault history, not hostile SQL.
 
 What the restore tool itself enforces (predeployment-review R8, 2026-10-26):
 
 - The restore's state (the guard and the reopening codes) is in the schema `ruvee_control`,
-  owned by the admin role, with nothing granted to anyone else. Backups never include it.
+  owned by the operator role. The API's runtime role may read only the gate's columns and
+  change the codes and the guard only through the reopening functions
+  ([database-roles.md](database-roles.md) §4). Backups never include it.
 - `pg_restore` connects as a **loader role** made for this restore: `LOGIN NOINHERIT`, none of
   `SUPERUSER`, `CREATEDB`, `CREATEROLE`, `REPLICATION`, `BYPASSRLS`, with only `CONNECT` on the
   target and `USAGE, CREATE` on `public`; PUBLIC loses its database privileges. A dump's SQL
   (a CHECK constraint, a default, an index expression) runs with that role's rights and cannot
-  read or change `ruvee_control`. The admin role therefore needs `CREATEROLE`.
+  read or change `ruvee_control`. The operator role therefore needs `CREATEROLE`.
 - After loading, before anything can run as the application role, every object in the database
   must be one Ruvee creates (inventory tables, their indexes, sequences and constraints, enums,
   table row types); functions, triggers, rules, views, policies, event triggers, extensions,
   other schemas, other relation kinds or types, collations, operators, text search objects,
   foreign servers, publications, large objects, row security and unknown or missing tables fail
-  LOAD. Then the objects are handed to the admin role and the loader role is dropped. The guard
-  stays `restoring` on every failure, and each later step checks it under a lock.
-- **The application role is the admin role today** (follow-up review F-25). The API connects
-  with `DATABASE_URL` as the role that owns `ruvee_control` and has `CREATEROLE`. It needs read
-  access to the guard and the installation row (the gate), and write access to the reopening
-  codes and the guard (reopening). A separate, less privileged application role is not built.
-  Building one is an open decision; until then, "the application role" in this section means
-  that same admin role.
+  LOAD. Then the objects are handed to the operator role and the loader role is dropped. The
+  guard stays `restoring` on every failure, and each later step checks it under a lock. APPLY
+  POLICY hands every object in `public` to the schema owner and gives the runtime role exactly its
+  list, in the same transaction that moves the guard to `review`.
+- **The application role is the runtime role** (follow-up review F-25, implemented for
+  development on 2026-10-29). The API connects with `DATABASE_URL` as a role that owns nothing,
+  has no role attribute and holds only its listed privileges; the schema owner runs migrations
+  and the operator runs `ruvee-admin`. Matrix, functions and residual risk:
+  [database-roles.md](database-roles.md).
 - The input `pg_restore` reads is the private staged copy of the verified ciphertext, checked
   again while it is decrypted (R9; §3.3).
 
@@ -458,7 +462,8 @@ enrolments, password, Recovery Kit and `SK` changes made after the snapshot.
   reopening) is open. `backup` keeps refusing real databases until M1 is accepted.
 - Interoperability with the Go `age` tool was checked by hand once (§3.2), not in CI.
 - No deployment exists: no scheduled backups, no off-host copy procedure, no restore rehearsal on
-  a real host, no non-superuser restore role set up (§3.2b), no monitoring of backup age.
+  a real host, no monitoring of backup age. The non-superuser roles (§3.2b, F-25) are built and
+  tested on synthetic databases only; no real host has them.
 - R2 (sign-in with the snapshot password in a browser after restore) is covered by R14; R7, R8
   and R10 are covered only by engine tests and the characterization, not as browser tests.
 - Concurrency in R1 is real but small (a local database; `pg_dump` takes under a second).

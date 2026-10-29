@@ -54,7 +54,11 @@ installed server. Change `POSTGRES_PORT` and `DATABASE_URL` together if you need
 
 The API serves a database only once it is marked as a fresh installation (predeployment-review
 R14); until then every API request answers `503 maintenance`. Once per new database, after its
-migrations: `set -a; . ./.env; set +a; pnpm --filter @ruvee/api build && pnpm --filter @ruvee/api admin init`.
+migrations, `ruvee-admin init` marks it, as the **operator** role with `RUVEE_ADMIN_DATABASE_URL`
+and `RUVEE_RUNTIME_ROLE` (it refuses a superuser). The API, the migrations and `ruvee-admin` use
+three separate database roles (follow-up review F-25); the local superuser from `.env` still
+runs the API in development, with a warning. Setup:
+[docs/guides/database-roles.md](docs/guides/database-roles.md).
 
 **Development migration to device keys (D-31, 2026-10-26).** Devices now prove possession of their
 own key ([device-proof.md](docs/security/device-proof.md)). The migration

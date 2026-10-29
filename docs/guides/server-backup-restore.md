@@ -35,8 +35,10 @@ drop such a target and restore into a new one.
 
 ## 1a. A new installation
 
-A new database is served only after you mark it, once, as a fresh installation: run migrations,
-then `DATABASE_URL=… pnpm --filter @ruvee/api admin init`. Until then the API answers
+A new database is served only after you mark it, once, as a fresh installation: run migrations
+as the schema owner, then
+`RUVEE_ADMIN_DATABASE_URL=… RUVEE_RUNTIME_ROLE=… pnpm --filter @ruvee/api admin init` as the
+operator ([database-roles.md](database-roles.md) §2). Until then the API answers
 `503 maintenance` to everything except health checks. `init` refuses a database that was
 restored (it opens only through its reopening, §5) or is already initialized.
 
@@ -67,10 +69,12 @@ offline copy. If you lose every copy, every backup is unreadable.
 ## 3. Make a backup
 
 ```bash
-DATABASE_URL=… BACKUP_AGE_RECIPIENT=age1… pnpm --filter @ruvee/api admin backup --out /backups --synthetic-test-only
+RUVEE_ADMIN_DATABASE_URL=… BACKUP_AGE_RECIPIENT=age1… pnpm --filter @ruvee/api admin backup --out /backups --synthetic-test-only
 ```
 
-- `DATABASE_URL` must be a plain `postgresql://user:password@host:port/database` URL: query
+- `RUVEE_ADMIN_DATABASE_URL` is the **operator** role's URL ([database-roles.md](database-roles.md)),
+  never the API's `DATABASE_URL`: the runtime role cannot read the migration table, so a backup
+  as it fails before writing anything. It must be a plain `postgresql://user:password@host:port/database` URL: query
   parameters (`?dbname=…`, `?options=…`, `?service=…`, `?sslmode=…`), fragments and several hosts
   are refused, and inherited `PG*` variables (`PGDATABASE`, `PGOPTIONS`, `PGSERVICE`, …) are
   ignored. The tool checks on its own connection which database and user it reached, and
@@ -94,13 +98,17 @@ and Recovery Kit of its own day, for as long as it exists.
 
 1. **Stop the old server** if it still runs, so no device writes to it. Leave devices as they
    are: a device that is ahead of the backup is never erased by itself and can export its data.
-2. **Prepare the host:** install the same or a newer Ruvee; create a **new, empty** database and a
-   database role that owns only it, is **not** a superuser, and has `CREATEROLE` (a restored dump
-   runs as SQL; see backup-restore.md §3.2b). The restore keeps its own state in a schema,
-   `ruvee_control`, owned by this role, and runs `pg_restore` as a **loader role** it creates for
+2. **Prepare the host:** install the same or a newer Ruvee; create the three database roles if
+   the cluster does not have them, and a **new, empty** database owned by the operator role, with
+   `public` owned by the schema owner ([database-roles.md](database-roles.md) §5). The operator
+   is **not** a superuser and has `CREATEROLE` (a restored dump runs as SQL; see
+   backup-restore.md §3.2b); the restore refuses a superuser. It keeps its own state in a schema,
+   `ruvee_control`, owned by the operator, and runs `pg_restore` as a **loader role** it creates for
    this one restore (`ruvee_loader_<16 hex>`): it may only connect and create objects in `public`,
    so SQL in the dump cannot reach the restore state. The loader role is dropped when loading ends.
-   `RESTORE_DATABASE_URL` follows the same rule as `DATABASE_URL` above (no query parameters); put the OPAQUE setup file's offline copy at
+   `RESTORE_DATABASE_URL` (the operator on the new database) follows the same rule as above (no
+   query parameters), and `RUVEE_RUNTIME_ROLE` names the API's role, which the restore gives
+   exactly its list; the API's `DATABASE_URL` is that role's URL. Put the OPAQUE setup file's offline copy at
    `OPAQUE_SERVER_SETUP_FILE`; write `.env` with new host values and the same `PUBLIC_ORIGIN`,
    `SESSION_COOKIE_SECURE` and `EXTENSION_ORIGINS` as before (the restore prints nothing secret;
    these values are in the encrypted metadata and in your old configuration).
@@ -109,7 +117,7 @@ and Recovery Kit of its own day, for as long as it exists.
 4. **Restore:**
 
    ```bash
-   RESTORE_DATABASE_URL=… pnpm --filter @ruvee/api admin restore \
+   RESTORE_DATABASE_URL=… RUVEE_RUNTIME_ROLE=… pnpm --filter @ruvee/api admin restore \
      --manifest /backups/ruvee-<time>.manifest.json \
      --identity /path/to/ruvee-backup-identity.txt \
      --trusted-digest <the digest you wrote down>
