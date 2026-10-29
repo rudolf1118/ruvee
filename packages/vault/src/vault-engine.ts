@@ -2542,6 +2542,20 @@ export class VaultEngine {
           local.deviceId === started.deviceId &&
           same(local.enrolled.akId, accountKeyId) &&
           local.enrolled.vaultId === vault.vaultId;
+        // Follow-up review S-5: the account id and AK's id are authenticated by the unwrap above
+        // and the vault id by the keyset; only the device id is the server's word. The same
+        // account, key and vault under another device id is the server contradicting itself, not
+        // another account, so nothing here is offered for erasure, confirmed or not.
+        if (
+          !reopening &&
+          sameName &&
+          local.enrolled !== undefined &&
+          local.accountId === started.accountId &&
+          same(local.enrolled.akId, accountKeyId) &&
+          local.enrolled.vaultId === vault.vaultId &&
+          local.deviceId !== started.deviceId
+        )
+          refuse('integrity');
         if (local?.enrolled && sameName && !keepLocal && params.replaceLocalData !== true)
           refuse('local_data_other_account');
         // R20: the keyset version this browser verified is a floor, as on every unlock (INV-09).
