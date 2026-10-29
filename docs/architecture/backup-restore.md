@@ -210,6 +210,12 @@ What the restore tool itself enforces (predeployment-review R8, 2026-10-26):
   foreign servers, publications, large objects, row security and unknown or missing tables fail
   LOAD. Then the objects are handed to the admin role and the loader role is dropped. The guard
   stays `restoring` on every failure, and each later step checks it under a lock.
+- **The application role is the admin role today** (follow-up review F-25). The API connects
+  with `DATABASE_URL` as the role that owns `ruvee_control` and has `CREATEROLE`. It needs read
+  access to the guard and the installation row (the gate), and write access to the reopening
+  codes and the guard (reopening). A separate, less privileged application role is not built.
+  Building one is an open decision; until then, "the application role" in this section means
+  that same admin role.
 - The input `pg_restore` reads is the private staged copy of the verified ciphertext, checked
   again while it is decrypted (R9; §3.3).
 

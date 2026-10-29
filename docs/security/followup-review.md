@@ -225,6 +225,8 @@ deploy`, whose connect timeout defaults to 5 s.
 - In A1 the server logged 1,241 connections: p50 17 ms from arrival to authentication, but 7 took
   over 5 s (worst 43 s), and **all 7 fell inside forced checkpoints**. Peak client connections were
   58 of 100, so the limit was not reached.
+- Two more instrumented runs (§16.5) also had no `P1001`, and connection set-up never exceeded
+  0.27 s. Still not reproduced.
 - No `P1001` occurred in the four instrumented runs, so the link is strongly suggested, not
   observed. Open.
 
@@ -419,7 +421,8 @@ rewritten; review the batch as a whole.
 - **S-1, confirmed and fixed (`401d7b0`).**
   - **Reproduction:** a TCP relay dropped traffic silently while the server ended the lock's backend. The lock was free and another connection took it, yet the process went on serving with no limit (`s1-instance-lock.int-spec.ts`).
   - **Fix:** the holder now checks every 10 s, on its own connection, that the lock is granted, bounded by `READINESS_DB_TIMEOUT_MS` and with TCP keep-alive.
-  - **Residual:** two processes can overlap for about one interval plus that timeout.
+  - **Residual:** two processes can overlap for about one interval plus that timeout. What that
+    overlap does and does not affect is in §16.6; it is not accepted.
 - **S-2, confirmed and fixed (`8b18090`).**
   - **Reproduction:** five backups restored successfully even though one of their allowed tables had a dropped CHECK constraint, a dropped unique index, a changed default, an extra column or a changed type.
   - **Fix:** APPLY POLICY now compares a fingerprint of the migrated public schema with `EXPECTED_SCHEMA`. `schema-fingerprint.int-spec.ts` keeps that constant equal to a freshly migrated database.
@@ -433,9 +436,11 @@ rewritten; review the batch as a whole.
 
 ### 11.3 Still open
 
-- **F-16** (a conflict draft is replaced when the same item conflicts again). Not specified: sync-protocol §6 describes one conflict per item. It needs a decision: keep the older draft, the newer one, or both as items.
+- **F-16:** fixed with the owner-approved behaviour (§16.1).
 - **F-19, the rest:** fixed in §13 (`51432e2`), with the limits of zeroing in JavaScript stated there.
-- **F-20 to F-25** (Info), **S-5**, §5.2 (connection failure), and the coverage gaps in §7 not named above.
+- **F-20 to F-25, S-5, §5.2 and the S-1 residual:** dispositions in §16. Still open: F-22 and
+  F-23 (informational), F-25 (a role-separation decision), §5.2 (not reproduced), and the S-1
+  overlap (a design decision). Also the coverage gaps in §7 not named above.
 - **F-4, server side:** implemented in §12, with the residual stated there.
 - **No expected failures remain:** every reproduction in `followup-repro.*` is an ordinary passing test.
 
@@ -832,3 +837,144 @@ transaction.
 **What it does not cover.** A request refused **before** its proof is checked does not touch the
 nonce. Examples are op 5's and op 6's early stale-version check, malformed bodies and step-up.
 That is unchanged. Such a request changes nothing, and the same check refuses it again.
+
+## 16. F-16, F-20 to F-25, S-5, the connection failure and the instance lock
+
+Owner request of 2026-10-28. Synthetic data and task-owned resources only. Still not D-19; the
+real-data restrictions stand. Outside this batch, unchanged and open:
+
+- the F-4 residual (a malicious active device), not accepted;
+- the branding visual approval and its proposed hover colour;
+- the mobile branch.
+
+### 16.1 F-16: repeated conflicts (confirmed defect, fixed)
+
+- **Defect.** The engine kept one draft per item (a `Map` keyed by item). A second conflict on an
+  item that was already in conflict overwrote the first draft. A resolution also had no
+  precondition. "Keep mine" was written on top of whatever server version had arrived since the
+  panel opened, and on top of a newer unsynced edit of the same item.
+- **Behaviour now** (sync-protocol §6, owner-approved): drafts accumulate per item and are
+  deduplicated. A resolution names its draft and the server revision it was decided against, and
+  is refused with `conflict_changed` or `conflict_pending_edit` if either no longer holds. A server
+  change after the choice was queued is a conflict again, with the choice kept as a draft. The
+  bounds are 10 drafts per item, 100 in all, and 512 KiB of records. At a bound the mutation stays
+  queued, nothing is pushed, and the status is `conflicts_full`. Nothing is evicted.
+- **Mechanisms used:** the existing revision precondition (`baseRevision`, `409`) and the
+  existing local records. The protocol was not extended, and the server is unchanged.
+- **Engine API change (shared with mobile):**
+  - `resolveConflict` takes `draftId` and `remoteRevision`;
+  - `ConflictView` adds `draftId`, `remoteRevision` and `drafts`;
+  - new error codes `conflict_changed` and `conflict_pending_edit`;
+  - a new `SyncState`, `conflicts_full`.
+- **Stored conflicts** written before this change have no `draftId`; one is assigned when they are
+  read.
+- **Web:** the conflict panel passes both values, shows how many versions are kept, and shows the
+  refusal and the new state instead of dropping the error. The sync panel explains
+  `conflicts_full`. The extension never edits items, so it holds no conflicts.
+- **Evidence:**
+  - `packages/vault/src/review/f16-conflicts.test.ts` has 6 tests; 5 fail on the previous engine.
+    The sixth, a server change after the choice was queued, already held through the revision
+    check and is kept as a guard.
+  - `sync-logic.test.ts` adds 3 tests for the bounds, deduplication and the kind.
+  - The F-3 regression was reworked: "mine" with an unsynced edit is now refused, and after that
+    edit syncs, "mine" still produces one mutation per commit.
+
+### 16.2 F-20 to F-25
+
+| ID   | Disposition                | What was done                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| ---- | -------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| F-20 | Confirmed defect, fixed    | A save that finished after the user opened another editor ran the old editor's `onSaved`, which closed the new editor and discarded what was typed there. The editor now reports only while it is the one shown; the save itself still completes. `apps/web/src/components/app/item-editor.test.tsx`: the replaced-editor case fails on the old editor; a normal save still reports.                                                                            |
+| F-21 | Confirmed, fixed           | The extension's pages could ask the service worker for `detail` (an item's notes and username), `items` and `acknowledgeRecoveryNotice`, which they never call. The allow-list is now exactly the eight methods they call. `apps/extension/src/messages.test.ts` reads the pages' sources and checks that the list equals what they use, and that the three are refused. Both tests fail on the old list.                                                       |
+| F-22 | Informational, unchanged   | Bodies are parsed before authentication and the gate, as stated: up to 64 KiB on every route and 4 MiB on `POST /sync/commits`. Caddy sets no body limit. Parsing after authentication would need the guards to run before body parsing, which Nest does not do. No code change; the bound is the size limits.                                                                                                                                                  |
+| F-23 | Informational, unchanged   | Op 3 (registration) does not sign `saltPw`, `keysetVersion`, `vault.vkId` or `username`. Only a holder of the single-use setup token on the request path could change them, and that holder could register the account with its own keys anyway. Signing them would change op 3's signed bytes, a protocol change, so it is left as a decision, not made here.                                                                                                  |
+| F-24 | Confirmed defect, fixed    | `proof_nonces` rows were never deleted. Issuing a nonce now deletes this session's consumed rows and every row that expired more than 10 minutes ago. The margin covers another instance's clock; an expired or consumed nonce never verifies, so deleting its row changes no result. The S-4 spec adds one test, which fails on the old code with 5 rows left.                                                                                                 |
+| F-25 | Confirmed by reading, open | The API runs as the role that owns `ruvee_control` and has `CREATEROLE`. It reads the guard and installation rows and writes reopening codes and the guard. backup-restore.md now says so instead of implying a separate application role. Separating the roles (an application role with only the grants above) is a privilege-design decision for the owner and is not built. Until then, an SQL injection in the API would act with the admin role's rights. |
+
+### 16.3 S-5: a server that changes the device id (confirmed, fixed)
+
+- **Which fields a recovery's answer can lie about.** The account id and `AK`'s id are bound into
+  the recovery wrap, so a wrong one fails to unwrap. The vault id comes from the keyset, under
+  `AK`. Only the device id is the server's word.
+- **Defect.** A server that returned another device id for the same account, key and vault made
+  the browser call its own vault "another account's". The UI then offered to erase it, unsynced
+  edits and R20 floors included, with one checkbox.
+- **Fix.** That combination is now `integrity`, with or without the confirmation, and nothing is
+  erased. A genuinely different account (another account id or key) still takes the
+  confirmation path, unchanged.
+- **Evidence.** `packages/vault/src/review/s5-recovery-identity.test.ts`: the lying server is
+  refused and the vault stays enrolled (fails on the old engine with `local_data_other_account`).
+  An honest server still keeps the local vault and its pending edit.
+- **Residual.** A server that substitutes another real account's material needs a recovery wrap
+  that opens with this Recovery Key. None exists for another account.
+
+### 16.4 §5.2: the transient database connection failure (not reproduced; open)
+
+- **Ownership and lifecycle reviewed:**
+  - every `pg.Client` in the test helpers is closed in a `finally`;
+  - `migrate` is a separate process;
+  - a harness closes its app before dropping its database;
+  - the app's pool (`PrismaService`) and the lock connection both use `READINESS_DB_TIMEOUT_MS`
+    (2 s) as their connect timeout.
+
+  No leak or ownership defect was found.
+
+- **Two new instrumented runs** at the default worker count (§16.5) had no `P1001`.
+  - Connection set-up, from arrival to authorization: p50 5 ms and max 0.27 s in run 1, max
+    0.10 s in run 2. This was with forced checkpoints of up to 9.3 s and a 1-minute load average
+    of about 20.
+  - So high load did not slow connections here. The earlier link (7 slow connections, all inside
+    checkpoints, in run A1) stays the only evidence.
+- **Disposition:** not reproduced, open, and not attributed to load. If it recurs, the evidence
+  layout below captures it. No timeout, retry or skip was added.
+
+### 16.5 The test-run evidence
+
+- **Location:** on the review machine, outside the repository (in the review worktree's untracked
+  `.evidence/` folder): `f16-int-20261028T173353-1/` and `…T173511-2/`, with the runner
+  and the log-analysis script. Each folder holds the vitest
+  JSON, the console output, the 1-minute load every 2 s, and the PostgreSQL log for exactly that
+  window (connections, disconnections, checkpoints, statements over 2 s).
+- **Run 1:** all 32 files and 278 tests passed in 78 s.
+- **Run 2:** two 10-second hook timeouts, in `f4-password-keyset` (`afterEach`) and
+  `r7-r8-backup` (`afterAll`). Both are the database drop of their teardown. Six
+  `DROP DATABASE … WITH (FORCE)` statements took 6–14 s between 13:35:28 and 13:35:33. Every
+  checkpoint in the run was `immediate force wait`, the worst 9.3 s with 7.2 s of fsync.
+- **Disposition:** this is the §5.1 mechanism (a drop forces a checkpoint, and concurrent drops
+  queue), observed again. It is a test-infrastructure limit, not a product defect. Its measured
+  mitigations remain in the README.
+
+### 16.6 The instance lock after S-1 (open; owner decision)
+
+- **What depends on one process, by reading the code:**
+  - **In each process's memory:**
+    - the per-address authentication window (20 per minute);
+    - the per-session request limit (300 per minute);
+    - per-address wrong reopening-code guesses;
+    - pending login states.
+  - **In the database, atomically:** the per-account login, bootstrap and recovery limits; the
+    reopening code's failed attempts; every session, nonce, key and sync write.
+- **What an overlap does.**
+  - Two processes serving at once split the in-memory limits: a client can use each process's
+    window, so up to twice the per-address and per-session budget.
+  - A login started on one process cannot finish on the other, which fails safely.
+  - It does not weaken any database-enforced limit or any write.
+  - `s1-instance-lock.int-spec.ts` adds a test with two throttle services on separate clients.
+    Twelve parallel password checks for one username, alternating between them, evaluate exactly
+    five in all. Each service still has its own 20-attempt address window.
+- **What the periodic check gives.** After a silent connection loss, an overlap of at most one
+  check interval plus `READINESS_DB_TIMEOUT_MS` (10 s + 2 s by default). Only a process paused
+  for longer (stopped or suspended) can exceed that, and it re-checks only when it runs again.
+  This is not strict single-instance enforcement.
+- **Closing it would need one of these:**
+  1. **A lease.** The holder serves only within a fixed time of its last successful check, and a
+     process that takes the lock waits that long before serving. Simple, but every start is
+     delayed by about 12 s, test harnesses included.
+  2. **A heartbeat row.** Kept in `ruvee_control` (not backed up), so a new holder waits only
+     the remaining lease of a holder that did not release cleanly. A new control table, which
+     `admin init` and the restore must handle.
+  3. **Moving the in-memory limits and login states into the database**, so that one process
+     stops mattering.
+- **Disposition.** None was built: each is a design trade-off for the owner. Until one is
+  chosen, the deployment rule "exactly one API process per database" stays an operator
+  requirement. The lock only detects a second process; it does not prevent it. This is a
+  blocker before any multi-process or real-data deployment, not an accepted risk.
