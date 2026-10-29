@@ -978,3 +978,35 @@ real-data restrictions stand. Outside this batch, unchanged and open:
   chosen, the deployment rule "exactly one API process per database" stays an operator
   requirement. The lock only detects a second process; it does not prevent it. This is a
   blocker before any multi-process or real-data deployment, not an accepted risk.
+
+### 16.7 A pairing race found by CI (confirmed defect, fixed)
+
+- **Observed.** CI run 40839236462, on `49713a2`, WebKit two-device workflow. Its trace is kept
+  with the other evidence (`.evidence/ci-40839236462-webkit/`).
+  - B's poll of the pairing state started 23 ms after A's approval began. It returned `200` with
+    the approved reply.
+  - B enrolled without proving its new key. Its `complete` and first sync were refused (`403`),
+    and the app showed "Offline" with no items.
+- **Cause.** The access guard decides from the device status it read when it authenticated the
+  request: still `pending`, so no proof is required. The pairing handler then read the pairing
+  row after the approval had committed. Approval activates the device and approves the pairing
+  in one transaction, so the reply went to an active device's unproven session. That skips
+  device-proof.md §8, which says to prove the key before reading the reply.
+- **Impact.** Availability, not confidentiality. The reply is encrypted to B's ephemeral key, and
+  B's later requests were refused. Locking and unlocking proves the session and recovers it.
+- **Fix.** The handler applies the rule itself: a requester's read of an approved pairing needs a
+  proven session (`device_proof_required`). The engine already answers that by proving, then
+  polling again. Unrelated to the F-16 batch; it predates it.
+- **Evidence.**
+  - `pairing.int-spec.ts` adds a test. It authenticates B's poll with the pre-approval snapshot
+    (pending, unproven) after the approval committed; the previous code returned the reply.
+  - The WebKit two-device workflow passed three times locally afterwards (§16.8).
+
+### 16.8 Local checks for the final head
+
+- Unit tests, lint, typecheck and format pass in every package.
+- The API integration suite: 32 files, 280 tests.
+- `test:vault` passed once in each of Chromium, Firefox and WebKit before the §16.7 fix, and
+  three more times in WebKit after it. The extension e2e passed 13 tests.
+- Not repeated after §16.7: the Chromium and Firefox vault runs, and the extension e2e. That fix
+  changes only the API's pairing-state handler; CI runs all of them.

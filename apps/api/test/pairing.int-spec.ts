@@ -8,6 +8,7 @@ import {
 } from '@ruvee/contracts';
 import type request from 'supertest';
 import { ThrottleService } from '../src/auth/throttle.service.js';
+import { SessionService } from '../src/sessions/session.service.js';
 import {
   registerAccount,
   sessionCookie,
@@ -227,6 +228,89 @@ describe('pairing relay (device-enrollment §3, real database)', () => {
     expect(events.map((e) => e.type)).toEqual(
       expect.arrayContaining(['device_pairing_requested', 'device_enrolled']),
     );
+  });
+
+  // A race seen in CI (WebKit): B's poll was authenticated while B was still pending, A's
+  // approval committed, and the handler then returned the approved reply. B never proved its key
+  // and every later request was refused. Approval activates the device in the same transaction,
+  // so an approved pairing always means an active device: the reply needs a proven session.
+  it('an approval that commits between authentication and the read still requires the proof first', async () => {
+    const { crypto } = account;
+    const b = await pendingDevice();
+    const secret = crypto.generatePairingSecret();
+    const pairingId = b64(crypto.pairingId(secret));
+    expect((await h.post('/api/v1/pairings', { pairingId }, cookieA)).status).toBe(201);
+    const keyB = crypto.generateDeviceKey();
+    const req = crypto.createPairingRequest({
+      secret,
+      accountId: uuidToBytes(account.accountId),
+      deviceId: uuidToBytes(b.deviceId),
+      platform: 'web',
+      devicePublicKey: keyB.publicKey,
+    });
+    const join = {
+      epk: b64(req.ephemeralPublicKey),
+      platform: 'web',
+      devicePublicKey: b64(keyB.publicKey),
+      mac: b64(req.mac),
+    };
+    expect((await h.post(`/api/v1/pairings/${pairingId}/request`, join, b.cookie)).status).toBe(
+      204,
+    );
+    const reply = crypto.createPairingResponse({
+      secret,
+      accountId: uuidToBytes(account.accountId),
+      pairingId: unb64(pairingId),
+      deviceId: uuidToBytes(b.deviceId),
+      ephemeralPublicKey: req.ephemeralPublicKey,
+      payload: {
+        accountId: account.accountId,
+        deviceId: b.deviceId,
+        secretKey: account.secretKey,
+        checkpoint: {
+          vaultId: account.vaultId,
+          seq: 0,
+          manifestHash: new Uint8Array(32),
+          keysetVersion: 1,
+        },
+      },
+    });
+    const approval = signOperation(
+      account,
+      'pairing_approve',
+      await proofNonce(h, cookieA, 'pairing_approve'),
+      [
+        unb64(pairingId),
+        uuidToBytes(b.deviceId),
+        keyB.publicKey,
+        reply.ciphertext,
+        reply.mac,
+        null,
+      ],
+    );
+    expect(
+      (
+        await h.post(
+          `/api/v1/pairings/${pairingId}/approve`,
+          { ciphertext: b64(reply.ciphertext), mac: b64(reply.mac), ...approval },
+          cookieA,
+        )
+      ).status,
+    ).toBe(204);
+    // B's next request is authenticated as it was just before the approval committed.
+    const sessions = h.app.get(SessionService);
+    const authenticate = sessions.authenticate.bind(sessions);
+    const stale = vi.spyOn(sessions, 'authenticate').mockImplementationOnce(async (...args) => ({
+      ...(await authenticate(...args)),
+      deviceStatus: 'pending',
+      proven: false,
+    }));
+    try {
+      expectError(await h.get(`/api/v1/pairings/${pairingId}`, b.cookie), 'device_proof_required');
+      expect(stale).toHaveBeenCalledTimes(1);
+    } finally {
+      stale.mockRestore();
+    }
   });
 
   it('fails at device A when the server substitutes its own key, and burns the pairing', async () => {

@@ -100,6 +100,12 @@ export class PairingService {
           : undefined;
     // A pending device that has not requested yet sees nothing; it uses the request endpoint.
     if (!role) throw new ApiException('not_found');
+    // The approval activates the requester in the same transaction, so an approved pairing means
+    // an active device, which proves its key before it reads the reply (device-proof.md §8). The
+    // guard decided on the device status it read before this row; an approval that committed in
+    // between must not hand the reply to the unproven session.
+    if (role === 'requester' && row.state === 'approved' && !session.proven)
+      throw new ApiException('device_proof_required');
     const base = {
       pairingId: toBase64url(row.pairingId),
       state: row.state,
