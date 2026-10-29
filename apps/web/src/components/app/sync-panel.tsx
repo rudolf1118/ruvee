@@ -46,6 +46,12 @@ function describe(status: SyncStatus): {
       return { title: 'Server unavailable', detail: restoreExplanation(status), tone: 'warn' };
     case 'reopening':
       return { title: 'Waiting to be reopened', detail: restoreExplanation(status), tone: 'warn' };
+    case 'conflicts_full':
+      return {
+        title: 'Sync paused',
+        detail: `Too many unresolved conflicts are kept on this device. Resolve some to continue syncing; nothing was deleted. ${waiting}.`,
+        tone: 'warn',
+      };
   }
 }
 

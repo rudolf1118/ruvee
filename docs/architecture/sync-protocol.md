@@ -205,6 +205,26 @@ phone pulls, verifies, and sees X at revision 5 by the laptop. Its pending edit 
 conflict draft. Its other non-conflicting pending changes are rebased and committed. The user
 resolves X on the phone, which commits X `5 → 6`.
 
+**Repeated conflicts and resolution (owner decision 2026-10-28, follow-up review F-16).**
+
+- **Drafts accumulate.** An item can hold several drafts, oldest first. A new conflict on an item
+  already in conflict adds a draft; it never replaces one. An identical version (the same record,
+  or a second deletion) is kept once.
+- **A resolution names its draft and the server revision it was decided against.**
+  - If the server's version has moved since then, the resolution is refused (`conflict_changed`)
+    and nothing changes. The draft stays and the panel shows the newer version.
+  - If the item has a newer unsynced edit on this device, "keep this device's version" is refused
+    (`conflict_pending_edit`) rather than replacing that edit. "Keep the other" and "keep both"
+    remain available.
+- **No last-write-wins.** The chosen result is a mutation on the revision the user saw. If the
+  server changes again before it commits, the `409` path above applies: the server keeps its
+  version, and the choice becomes a draft again.
+- **Bounds.** The drafts are one `LOCAL_RECORD`, at most 10 per item and 100 in all, with at most
+  512 KiB of records.
+  - A conflict that does not fit stays in the pending queue unchanged, and nothing is pushed. The
+    sync status becomes `conflicts_full`: "resolve some to continue; nothing was deleted".
+  - Nothing is evicted. Each sync tries again, so a resolution that frees room lets sync resume.
+
 ## 7. Offline writes
 
 - Edits are applied to the local view immediately and appended to the **pending queue**. The

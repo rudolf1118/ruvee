@@ -149,6 +149,8 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
   });
 
   // F-3 (fixed): an offline edit of an item in "deleted here, edited elsewhere" conflict, then "mine".
+  // Since F-16, "mine" is refused while that edit is unsynced (it would replace it); once the edit
+  // has synced, "mine" (delete again) is decided against the new version.
   it('resolving a conflict never queues two mutations of one item', async () => {
     const { server, a } = await account();
     const x = await a.engine.save({ draft: note('X') });
@@ -166,10 +168,20 @@ describe('FOLLOW-UP reproductions (client engine)', () => {
     expect(conflict).toBe('edited_after_delete');
     server.offline = true;
     await a.engine.save({ draft: { ...note('X edited on A during the conflict'), id: x.id } });
-    await a.engine.resolveConflict({ id: x.id, choice: 'mine' });
+    const shown = a.engine.conflict({ id: x.id });
+    const decide = (view: typeof shown) =>
+      a.engine.resolveConflict({
+        id: x.id,
+        draftId: view.draftId,
+        remoteRevision: view.remoteRevision,
+        choice: 'mine',
+      });
+    expect(await code(decide(shown))).toBe('conflict_pending_edit');
     await a.engine.idle();
     server.offline = false;
     const before = server.received.length;
+    await a.engine.sync();
+    await decide(a.engine.conflict({ id: x.id }));
     await a.engine.sync();
     const commits = server.received
       .slice(before)

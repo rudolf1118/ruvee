@@ -245,6 +245,62 @@ export interface Conflict {
   readonly detectedAtMs: number;
 }
 
+/** A kept local version of a conflicted item, with its own id (follow-up review F-16). */
+export interface ConflictDraft extends Conflict {
+  readonly draftId: string;
+}
+
+/**
+ * Bounds on what conflict drafts may hold (F-16): drafts per item, drafts in all, and the bytes
+ * of their records. The drafts are one local record, whose plaintext may not exceed 1 MiB; a
+ * record is at most 64 KiB, and base64 adds a third.
+ */
+export interface ConflictLimits {
+  readonly perItem: number;
+  readonly total: number;
+  readonly recordBytes: number;
+}
+export const CONFLICT_LIMITS: ConflictLimits = { perItem: 10, total: 100, recordBytes: 512 * 1024 };
+
+/** The conflict kind for a local version against the server's current one. */
+export function conflictKind(localDeleted: boolean, remoteDeleted: boolean): ConflictKind {
+  return localDeleted
+    ? 'edited_after_delete'
+    : remoteDeleted
+      ? 'deleted_elsewhere'
+      : 'edited_on_both';
+}
+
+/**
+ * Whether `draft` may join the drafts of its item: `duplicate` if the item already holds this
+ * exact version (the same record, or a second deletion), `full` if a bound would be exceeded.
+ * Nothing is ever evicted to make room.
+ */
+export function placeDraft(
+  drafts: ReadonlyMap<string, readonly ConflictDraft[]>,
+  draft: Conflict,
+  limits: ConflictLimits = CONFLICT_LIMITS,
+): 'add' | 'duplicate' | 'full' {
+  const same = (a: Uint8Array | null, b: Uint8Array | null) =>
+    a === null || b === null ? a === b : a.length === b.length && a.every((v, i) => v === b[i]);
+  const own = drafts.get(draft.itemId) ?? [];
+  if (own.some((d) => same(d.localRecord, draft.localRecord))) return 'duplicate';
+  let count = 0;
+  let bytes = 0;
+  for (const list of drafts.values())
+    for (const d of list) {
+      count++;
+      bytes += d.localRecord?.length ?? 0;
+    }
+  if (
+    own.length >= limits.perItem ||
+    count >= limits.total ||
+    bytes + (draft.localRecord?.length ?? 0) > limits.recordBytes
+  )
+    return 'full';
+  return 'add';
+}
+
 /**
  * Rebases pending mutations on a newly verified state (sync-protocol §6). Timestamps never
  * decide: a mutation whose base is no longer current becomes an explicit conflict for the user.
@@ -267,12 +323,7 @@ export function rebase(
     if (m.record === null && remoteDeleted) continue; // Deleted on both: nothing to do.
     conflicts.push({
       itemId: m.itemId,
-      kind:
-        m.record === null
-          ? 'edited_after_delete'
-          : remoteDeleted
-            ? 'deleted_elsewhere'
-            : 'edited_on_both',
+      kind: conflictKind(m.record === null, remoteDeleted),
       localRecord: m.record,
       localRevision: m.baseRevision + 1,
       remoteRevision: currentRevision,

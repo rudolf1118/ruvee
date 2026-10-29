@@ -58,13 +58,15 @@ import { VaultError } from './vault-error.js';
 export { VaultError } from './vault-error.js';
 import {
   buildCommit,
+  conflictKind,
+  placeDraft,
   rebase,
   sameBytes,
   verifyPages,
   ZERO_HASH,
   type Anchor,
   type Checkpoint,
-  type Conflict,
+  type ConflictDraft,
   type PendingMutation,
   type SyncedItem,
   type VaultKeys,
@@ -128,6 +130,8 @@ const pendingSchema = z.strictObject({
 });
 const conflictsSchema = z.array(
   z.strictObject({
+    /** Absent in records stored before F-16; one is assigned when they are read. */
+    draftId: z.string().optional(),
     itemId: z.string(),
     kind: z.enum(['edited_on_both', 'deleted_elsewhere', 'edited_after_delete']),
     localRecord: z.string().nullable(),
@@ -168,7 +172,10 @@ interface Session {
   pending: PendingMutation[];
   inflight: Inflight | null;
   sent: SentRecord[];
-  conflicts: Map<string, Conflict>;
+  /** Each conflicted item's drafts, oldest first and never empty (sync-protocol §6, F-16). */
+  conflicts: Map<string, ConflictDraft[]>;
+  /** A conflict could not be kept within CONFLICT_LIMITS: nothing is pushed until resolved. */
+  conflictsFull: boolean;
   bodies: Map<string, { revision: number; body: ItemBody | null }>;
   lastSyncedAtMs: number | null;
   lastChange: SyncStatus['lastChange'];
@@ -228,9 +235,29 @@ interface PendingSetup {
   verified: boolean;
 }
 
+/** Every kept draft: what "conflicts" counts wherever the user is told what is not synced. */
+function conflictCount(session: { conflicts: ReadonlyMap<string, readonly unknown[]> }): number {
+  let n = 0;
+  for (const list of session.conflicts.values()) n += list.length;
+  return n;
+}
+
+/** The item's conflict as the list shows it: its oldest draft's kind. */
+function conflictKindOf(
+  session: { conflicts: ReadonlyMap<string, readonly ConflictDraft[]> },
+  id: string,
+): ConflictDraft['kind'] | null {
+  return session.conflicts.get(id)?.[0]?.kind ?? null;
+}
+
 /** Re-reads the state after a call that may have changed it (TypeScript keeps the old narrowing). */
 function readOnly(session: { state: SyncStatus['state'] }): boolean {
   return session.state === 'integrity_error';
+}
+
+/** Re-reads whether conflicts are held at their bound, after a call that may have changed it. */
+function conflictsHeld(session: { conflictsFull: boolean }): boolean {
+  return session.conflictsFull;
 }
 
 function same(a: Uint8Array, b: Uint8Array): boolean {
@@ -1316,6 +1343,7 @@ export class VaultEngine {
       inflight: null,
       sent: [],
       conflicts: new Map(),
+      conflictsFull: false,
       bodies: new Map(),
       lastSyncedAtMs: null,
       lastChange: null,
@@ -1594,11 +1622,15 @@ export class VaultEngine {
     }
     const conflicts = open('conflicts', await store.local('conflicts'));
     if (conflicts !== undefined)
-      for (const c of conflictsSchema.parse(conflicts))
-        session.conflicts.set(c.itemId, {
+      for (const { draftId, ...c } of conflictsSchema.parse(conflicts)) {
+        const list = session.conflicts.get(c.itemId) ?? [];
+        list.push({
           ...c,
+          draftId: draftId ?? this.deps.crypto.generateUuid(),
           localRecord: c.localRecord === null ? null : fromB64(c.localRecord),
         });
+        session.conflicts.set(c.itemId, list);
+      }
   }
 
   private async persistLocal(parts: {
@@ -1637,7 +1669,7 @@ export class VaultEngine {
       local.conflicts = this.sealLocal(
         session,
         'conflicts',
-        [...session.conflicts.values()].map((c) => ({
+        [...session.conflicts.values()].flat().map((c) => ({
           ...c,
           localRecord: c.localRecord === null ? null : toB64(c.localRecord),
         })),
@@ -1717,7 +1749,7 @@ export class VaultEngine {
     for (const [id, item] of this.effective(session)) {
       if (item.record === null) continue;
       const body = this.body(session, id, item.revision, item.record);
-      out.push(summaryOf(id, body, item.pending, session.conflicts.get(id)?.kind ?? null));
+      out.push(summaryOf(id, body, item.pending, conflictKindOf(session, id)));
     }
     return out;
   }
@@ -1741,7 +1773,7 @@ export class VaultEngine {
     const session = this.requireSession();
     const { body } = this.current(session, params.id);
     const pending = this.effective(session).get(params.id)?.pending ?? false;
-    return detailOf(params.id, body, pending, session.conflicts.get(params.id)?.kind ?? null);
+    return detailOf(params.id, body, pending, conflictKindOf(session, params.id));
   }
 
   /** The stored password, on an explicit reveal, copy or edit by the user. */
@@ -1861,7 +1893,7 @@ export class VaultEngine {
     await this.persistLocal({ pending: true });
     this.emitItems();
     void this.backgroundSync();
-    return summaryOf(id, body, true, session.conflicts.get(id)?.kind ?? null);
+    return summaryOf(id, body, true, conflictKindOf(session, id));
   }
 
   private sealBody(
@@ -1887,8 +1919,9 @@ export class VaultEngine {
 
   conflict(params: { id: string }): ConflictView {
     const session = this.requireSession();
-    const c = session.conflicts.get(params.id);
-    if (!c) throw new VaultError('not_found');
+    const drafts = session.conflicts.get(params.id);
+    const c = drafts?.[0];
+    if (!drafts || !c) throw new VaultError('not_found');
     const local = c.localRecord
       ? this.openBody(session, c.itemId, c.localRevision, c.localRecord)
       : null;
@@ -1898,6 +1931,9 @@ export class VaultEngine {
       : null;
     return {
       itemId: c.itemId,
+      draftId: c.draftId,
+      remoteRevision: remote?.revision ?? 0,
+      drafts: drafts.length,
       kind: c.kind,
       local: local ? detailOf(c.itemId, local, false, c.kind) : null,
       remote: remoteBody ? detailOf(c.itemId, remoteBody, false, c.kind) : null,
@@ -1905,21 +1941,44 @@ export class VaultEngine {
     };
   }
 
-  resolveConflict(params: { id: string; choice: 'mine' | 'theirs' | 'both' }): Promise<true> {
+  /**
+   * F-16: resolves one draft, decided against the server version the user saw. Refused, with
+   * nothing changed, if that version is no longer the current one (`conflict_changed`), or if
+   * "mine" would replace a newer unsynced edit of the item (`conflict_pending_edit`). The chosen
+   * result is a mutation on that revision, so a server change before it commits is a conflict
+   * again (§6), never last-write-wins.
+   */
+  resolveConflict(params: {
+    id: string;
+    draftId: string;
+    remoteRevision: number;
+    choice: 'mine' | 'theirs' | 'both';
+  }): Promise<true> {
     return this.exclusive(async () => {
       const session = this.writable();
-      const c = session.conflicts.get(params.id);
+      const drafts = session.conflicts.get(params.id) ?? [];
+      const c = drafts.find((d) => d.draftId === params.draftId);
       if (!c) throw new VaultError('not_found');
+      const remote = session.synced.get(c.itemId);
+      if ((remote?.revision ?? 0) !== params.remoteRevision) {
+        this.refreshConflicts(session, c.itemId);
+        await this.persistLocal({ conflicts: true });
+        this.emitItems();
+        throw new VaultError('conflict_changed');
+      }
+      const queued =
+        session.pending.some((m) => m.itemId === c.itemId) ||
+        (session.inflight?.mutations.some((m) => m.itemId === c.itemId) ?? false);
+      if (params.choice === 'mine' && queued) throw new VaultError('conflict_pending_edit');
       const local = c.localRecord
         ? this.openBody(session, c.itemId, c.localRevision, c.localRecord)
         : null;
-      const remote = session.synced.get(c.itemId);
-      session.conflicts.delete(c.itemId);
+      const rest = drafts.filter((d) => d !== c);
+      if (rest.length > 0) session.conflicts.set(c.itemId, rest);
+      else session.conflicts.delete(c.itemId);
       if (params.choice === 'mine') {
         if (local === null) {
-          // "Delete it again", based on the new remote revision. It replaces any edit queued
-          // during the conflict: a commit may name an item only once (sync.service checkCommit).
-          session.pending = session.pending.filter((m) => m.itemId !== c.itemId);
+          // "Delete it again", based on the revision the user saw.
           if (remote?.record)
             session.pending.push({ itemId: c.itemId, baseRevision: remote.revision, record: null });
         } else if (remote?.record) {
@@ -1943,6 +2002,25 @@ export class VaultEngine {
       void this.backgroundSync();
       return true as const;
     });
+  }
+
+  /**
+   * After the server's version of a conflicted item moved: each draft is compared with the new
+   * version (its kind can change), and a deletion that the server now shares is dropped.
+   */
+  private refreshConflicts(session: Session, itemId: string): void {
+    const remote = session.synced.get(itemId);
+    const remoteRevision = remote?.revision ?? 0;
+    const remoteDeleted = remote === undefined || remote.record === null;
+    const kept = (session.conflicts.get(itemId) ?? [])
+      .filter((d) => !(d.localRecord === null && remoteDeleted))
+      .map((d) => ({
+        ...d,
+        remoteRevision,
+        kind: conflictKind(d.localRecord === null, remoteDeleted),
+      }));
+    if (kept.length > 0) session.conflicts.set(itemId, kept);
+    else session.conflicts.delete(itemId);
   }
 
   // ---- Pairing (device-enrollment.md §3, D-21) ----
@@ -2895,7 +2973,7 @@ export class VaultEngine {
     // What this browser kept, before the first sync uploads or rebases any of it.
     const keptLocal = {
       pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
-      conflicts: session.conflicts.size,
+      conflicts: conflictCount(session),
     };
     await this.syncNow();
     const view = this.unlockedView();
@@ -3456,7 +3534,7 @@ export class VaultEngine {
         session.state !== 'synced' ||
         session.pending.length > 0 ||
         session.inflight ||
-        session.conflicts.size > 0
+        conflictCount(session) > 0
       )
         throw new VaultError('unsynced_changes');
       const manifest = await this.deps.store.manifest();
@@ -3518,7 +3596,7 @@ export class VaultEngine {
         m.record ? toB64(m.record.subarray(0, 24)) : null,
       ]),
       session.inflight?.mutations.length ?? 0,
-      [...session.conflicts.keys()],
+      [...session.conflicts.values()].flat().map((c) => c.draftId),
     ]);
   }
 
@@ -3536,7 +3614,7 @@ export class VaultEngine {
         items: [...session.synced.values()].filter((i) => i.record !== null).length,
       },
       pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
-      conflicts: session.conflicts.size,
+      conflicts: conflictCount(session),
       exported: session.localExportMark === this.localMark(session),
     };
   }
@@ -3569,7 +3647,7 @@ export class VaultEngine {
               ? ('created' as const)
               : ('edited' as const),
       }));
-      const conflicts = [...session.conflicts.values()].map((c) => ({
+      const conflicts = [...session.conflicts.values()].flat().map((c) => ({
         id: c.itemId,
         title: title(c.itemId, c.localRevision, c.localRecord),
         kind: c.kind,
@@ -3628,7 +3706,7 @@ export class VaultEngine {
       }
       const notIncluded = {
         pending: session.pending.length + (session.inflight?.mutations.length ?? 0),
-        conflicts: session.conflicts.size,
+        conflicts: conflictCount(session),
       };
       if ((notIncluded.pending > 0 || notIncluded.conflicts > 0) && !params.acknowledgeNotIncluded)
         throw new VaultError('unsynced_changes');
@@ -3684,7 +3762,7 @@ export class VaultEngine {
       // Checked at run time too: parameters arrive from the UI as a message.
       if ((params.confirm as string) !== 'erase-this-device') throw new VaultError('internal');
       const pending = session.pending.length + (session.inflight?.mutations.length ?? 0);
-      if (params.pendingSeen !== pending || params.conflictsSeen !== session.conflicts.size)
+      if (params.pendingSeen !== pending || params.conflictsSeen !== conflictCount(session))
         throw new VaultError('unsynced_changes');
       if (!params.withoutExport && session.localExportMark !== this.localMark(session))
         throw new VaultError('export_first');
@@ -3715,7 +3793,7 @@ export class VaultEngine {
         session.synced.size > 0 ||
         session.pending.length > 0 ||
         session.inflight ||
-        session.conflicts.size > 0
+        conflictCount(session) > 0
       )
         throw new VaultError('vault_not_empty');
       const { crypto } = this.deps;
@@ -3852,7 +3930,11 @@ export class VaultEngine {
       }
       await this.checkRecoveryNotice(session);
       if (!readOnly(session)) {
-        session.state = session.pending.length > 0 || session.inflight ? 'pending' : 'synced';
+        session.state = session.conflictsFull
+          ? 'conflicts_full'
+          : session.pending.length > 0 || session.inflight
+            ? 'pending'
+            : 'synced';
         session.lastSyncedAtMs = this.deps.now();
       }
     } catch (error) {
@@ -3995,15 +4077,39 @@ export class VaultEngine {
       encoded.fill(0);
     }
     const { keep, conflicts } = rebase(kept, session.synced, now);
+    // F-16: each conflict joins its item's drafts. One that cannot be kept within the bounds
+    // stays queued as it was, and sync pauses until drafts are resolved; nothing is evicted.
+    session.conflictsFull = false;
+    for (const c of conflicts) {
+      const place = placeDraft(session.conflicts, c);
+      if (place === 'full') {
+        session.conflictsFull = true;
+        keep.push({ itemId: c.itemId, baseRevision: c.localRevision - 1, record: c.localRecord });
+      } else if (place === 'add')
+        session.conflicts.set(c.itemId, [
+          ...(session.conflicts.get(c.itemId) ?? []),
+          { ...c, draftId: this.deps.crypto.generateUuid() },
+        ]);
+    }
+    for (const itemId of session.conflicts.keys()) this.refreshConflicts(session, itemId);
     session.pending = keep;
-    for (const c of conflicts) session.conflicts.set(c.itemId, c);
     session.sent = session.sent.filter(
       (s) => (session.synced.get(s.itemId)?.revision ?? 0) < s.revision,
     );
-    await this.persistLocal({ pending: true, conflicts: conflicts.length > 0 });
+    await this.persistLocal({
+      pending: true,
+      conflicts: session.conflicts.size > 0 || conflicts.length > 0,
+    });
   }
 
   private async push(session: Session): Promise<void> {
+    // F-16: a held conflict would only be refused again. A resolution may have made room since
+    // the last pull, so the held mutations are placed again first; if they still do not fit,
+    // everything waits and the status says so.
+    if (session.conflictsFull) {
+      await this.rebasePending(session);
+      if (conflictsHeld(session)) return;
+    }
     for (let round = 0; round < MAX_PUSH_ROUNDS; round++) {
       if (!session.inflight) {
         if (session.pending.length === 0) await this.feedImport(session);

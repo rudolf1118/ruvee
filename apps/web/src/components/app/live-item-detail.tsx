@@ -78,12 +78,27 @@ function ConflictBanner({
   onResolved: () => void;
 }) {
   const [view, setView] = useState<ConflictView | null>(null);
+  const [failure, setFailure] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
   useEffect(() => {
     void client.call('conflict', { id: itemId }).then(setView, () => undefined);
-  }, [client, itemId]);
+  }, [client, itemId, reload]);
   if (!view) return null;
+  // The choice is decided against this draft and the version shown (follow-up review F-16). If
+  // either changed, nothing happens: the message says why and the panel shows the new state.
   const resolve = (choice: 'mine' | 'theirs' | 'both') => {
-    void client.call('resolveConflict', { id: itemId, choice }).then(onResolved, () => undefined);
+    setFailure(null);
+    client
+      .call('resolveConflict', {
+        id: itemId,
+        draftId: view.draftId,
+        remoteRevision: view.remoteRevision,
+        choice,
+      })
+      .then(onResolved, (e: unknown) => {
+        setFailure(e instanceof VaultClientError ? messageFor(e.code) : messageFor('internal'));
+        setReload((n) => n + 1);
+      });
   };
   const text =
     view.kind === 'edited_on_both'
@@ -96,8 +111,12 @@ function ConflictBanner({
       role="alert"
       className="flex flex-col gap-3 rounded-menu border border-caution-line bg-caution-wash px-4 py-3 text-caution-strong"
     >
-      <div className="font-semibold">Changed on two devices</div>
+      <div className="font-semibold">
+        Changed on two devices
+        {view.drafts > 1 ? ` · 1 of ${String(view.drafts)} versions kept on this device` : ''}
+      </div>
       <p className="text-body">{text}</p>
+      {failure ? <p className="text-small font-semibold">{failure}</p> : null}
       {view.local ? (
         <p className="text-small">
           This device&apos;s version: <strong>{view.local.title}</strong>

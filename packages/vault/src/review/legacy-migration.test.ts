@@ -205,7 +205,13 @@ describe('moving a legacy vault to a fresh D-31 account', () => {
     const d = await device(server, a.factory);
     await d.engine.unlock({ password: PASSWORD });
     const [conflict] = (await d.engine.migrationReport()).conflicts;
-    await d.engine.resolveConflict({ id: conflict?.id ?? '', choice: 'mine' });
+    const shown = d.engine.conflict({ id: conflict?.id ?? '' });
+    await d.engine.resolveConflict({
+      id: shown.itemId,
+      draftId: shown.draftId,
+      remoteRevision: shown.remoteRevision,
+      choice: 'mine',
+    });
     const report = await d.engine.migrationReport();
     expect(report.conflicts).toEqual([]);
     expect(report.changes.map((c) => [c.title, c.change]).sort()).toEqual([

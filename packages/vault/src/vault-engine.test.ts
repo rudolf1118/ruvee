@@ -234,7 +234,12 @@ describe('vault engine', () => {
     expect(view.local?.title).toBe('Shared (B)');
     expect(view.remote?.title).toBe('Shared (A)');
 
-    await b.engine.resolveConflict({ id: item.id, choice: 'both' });
+    await b.engine.resolveConflict({
+      id: item.id,
+      draftId: view.draftId,
+      remoteRevision: view.remoteRevision,
+      choice: 'both',
+    });
     await b.engine.sync();
     await a.engine.sync();
     expect(
@@ -261,8 +266,14 @@ describe('vault engine', () => {
     await b.engine.idle();
     server.offline = false;
     await b.engine.sync();
-    expect(b.engine.conflict({ id: item.id }).kind).toBe('deleted_elsewhere');
-    await b.engine.resolveConflict({ id: item.id, choice: 'mine' });
+    const deleted = b.engine.conflict({ id: item.id });
+    expect(deleted.kind).toBe('deleted_elsewhere');
+    await b.engine.resolveConflict({
+      id: item.id,
+      draftId: deleted.draftId,
+      remoteRevision: deleted.remoteRevision,
+      choice: 'mine',
+    });
     await b.engine.sync();
     await a.engine.sync();
     // Restored as a new item: tombstoned ids are never reused.

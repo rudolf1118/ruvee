@@ -46,9 +46,18 @@ export interface ItemDraft {
   readonly favorite: boolean;
 }
 
-/** For the conflict panel: the other version, without its password. */
+/**
+ * For the conflict panel: the item's oldest draft and the server's current version, without
+ * passwords. A resolution names `draftId` and the `remoteRevision` it was decided against
+ * (follow-up review F-16).
+ */
 export interface ConflictView {
   readonly itemId: string;
+  readonly draftId: string;
+  /** The server revision shown as the other version; 0 if the item is gone there. */
+  readonly remoteRevision: number;
+  /** How many drafts this item holds, this one included. */
+  readonly drafts: number;
   readonly kind: ConflictKind;
   readonly local: ItemDetail | null;
   readonly remote: ItemDetail | null;
@@ -65,7 +74,12 @@ export type SyncState =
   /** The server is being restored by its owner (backup-restore.md §3.5): local copy, read-only. */
   | 'maintenance'
   /** The restored server waits for its owner to reopen it (§3.13): local copy, read-only. */
-  | 'reopening';
+  | 'reopening'
+  /**
+   * Conflict drafts reached their bound (F-16): nothing is sent until some are resolved. Edits
+   * stay queued; nothing was deleted.
+   */
+  | 'conflicts_full';
 
 export interface SyncStatus {
   readonly state: SyncState;
@@ -176,6 +190,10 @@ export type VaultErrorCode =
   | 'recovery_failed'
   | 'cannot_revoke_current'
   | 'changed_elsewhere'
+  /** The server's version changed since the conflict was shown; review it again (F-16). */
+  | 'conflict_changed'
+  /** The item has a newer unsynced edit, which "keep this device's version" would replace. */
+  | 'conflict_pending_edit'
   /** Another tab or engine took over this device's vault; this one locked (F-2). */
   | 'open_elsewhere'
   /** The server refused one signed request; nothing changed, and it can be tried again (F-17). */
@@ -343,7 +361,12 @@ export interface VaultMethods {
   restore(params: { id: string }): ItemSummary;
   purge(params: { id: string }): true;
   conflict(params: { id: string }): ConflictView;
-  resolveConflict(params: { id: string; choice: 'mine' | 'theirs' | 'both' }): true;
+  resolveConflict(params: {
+    id: string;
+    draftId: string;
+    remoteRevision: number;
+    choice: 'mine' | 'theirs' | 'both';
+  }): true;
   sync(): SyncStatus;
   pairingStart(): PairingCode;
   pairingStatus(params: { pairingId: string }): PairingHostStatus;

@@ -3,6 +3,10 @@ import { initRuveeCrypto, uuidToBytes, type RuveeCrypto } from '@ruvee/crypto';
 import type { SyncChangesResponse } from '@ruvee/contracts';
 import { toB64 } from './bytes.js';
 import {
+  CONFLICT_LIMITS,
+  conflictKind,
+  placeDraft,
+  type ConflictDraft,
   buildCommit,
   rebase,
   verifyPages,
@@ -206,5 +210,47 @@ describe('rebase (sync-protocol §6)', () => {
       expect(result).toEqual({ keep: [{ itemId: id, ...mutation }], conflicts: [] });
     else if (outcome === 'dropped') expect(result).toEqual({ keep: [], conflicts: [] });
     else expect(result.conflicts.map((c) => c.kind)).toEqual([outcome]);
+  });
+});
+
+describe('placeDraft (F-16 bounds)', () => {
+  const draft = (itemId: string, bytes: number | null, fill = 1): ConflictDraft => ({
+    draftId: `${itemId}-${String(fill)}`,
+    itemId,
+    kind: bytes === null ? 'edited_after_delete' : 'edited_on_both',
+    localRecord: bytes === null ? null : new Uint8Array(bytes).fill(fill),
+    localRevision: 2,
+    remoteRevision: 2,
+    detectedAtMs: 0,
+  });
+  const limits = { perItem: 3, total: 4, recordBytes: 100 } as const;
+
+  it('adds, recognises an identical version, and never evicts', () => {
+    const drafts = new Map([['x', [draft('x', 10, 1), draft('x', null)]]]);
+    expect(placeDraft(drafts, draft('x', 10, 2), limits)).toBe('add');
+    expect(placeDraft(drafts, draft('x', 10, 1), limits)).toBe('duplicate');
+    expect(placeDraft(drafts, draft('x', null), limits)).toBe('duplicate');
+    expect(drafts.get('x')).toHaveLength(2);
+  });
+
+  it('is full at each bound: per item, in all, and in bytes', () => {
+    const perItem = new Map([['x', [draft('x', 1, 1), draft('x', 1, 2), draft('x', 1, 3)]]]);
+    expect(placeDraft(perItem, draft('x', 1, 4), limits)).toBe('full');
+    expect(placeDraft(perItem, draft('y', 1, 4), limits)).toBe('add');
+    const total = new Map([
+      ['x', [draft('x', 1, 1), draft('x', 1, 2)]],
+      ['y', [draft('y', 1, 1), draft('y', 1, 2)]],
+    ]);
+    expect(placeDraft(total, draft('z', 1), limits)).toBe('full');
+    const bytes = new Map([['x', [draft('x', 60)]]]);
+    expect(placeDraft(bytes, draft('y', 40), limits)).toBe('add');
+    expect(placeDraft(bytes, draft('y', 41), limits)).toBe('full');
+    expect(CONFLICT_LIMITS.recordBytes * (4 / 3)).toBeLessThan(1_048_576);
+  });
+
+  it('names the kind from both sides', () => {
+    expect(conflictKind(true, false)).toBe('edited_after_delete');
+    expect(conflictKind(false, true)).toBe('deleted_elsewhere');
+    expect(conflictKind(false, false)).toBe('edited_on_both');
   });
 });

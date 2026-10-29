@@ -53,6 +53,10 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return "You can't remove the device you are using. Log out on it instead.";
     case 'open_elsewhere':
       return 'Ruvee was opened elsewhere in this browser, so this copy locked. Unlock to continue here.';
+    case 'conflict_changed':
+      return 'The other version changed while you were deciding. Nothing was changed; review the new version and choose again.';
+    case 'conflict_pending_edit':
+      return "This item has a newer change on this device that hasn't synced yet. Sync first, or keep both versions.";
     case 'changed_elsewhere':
       return 'Your account changed on another device in the meantime. Nothing was changed here. Try again.';
     case 'previous_password_required':
