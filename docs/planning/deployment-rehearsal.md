@@ -208,6 +208,27 @@ build. It did not approve the seal for real data, and the passing tests (22 in t
 package, the shared-limits and two-process suites) are not an approval. It is recorded as D-32
 in [open-decisions.md](../architecture/open-decisions.md), and D-19's scope now names it.
 
+### 6.3 Host measurements from CI (a runner, not the VPS)
+
+From the "Deployment rehearsal host" job on `b0fb7b0` (run 41039551179; GitHub-hosted
+ubuntu-24.04, 4 vCPU, 16 GB, Node.js v24.22.1, Caddy v2.11.7, systemd 255, `age` 1.1.1). An
+installation without an account; these are starting points for A-19 and A-20, not results:
+
+| Measure                                                   | Value                              |
+| --------------------------------------------------------- | ---------------------------------- |
+| Host checks                                               | 82 passed, 0 failed                |
+| Release build from `git archive` in `/opt/ruvee/releases` | identical to CI's build, 332 files |
+| `ruvee-api` memory (current = peak), CPU time, tasks      | 149 MB, 1.30 s, 11                 |
+| `ruvee-caddy` memory (peak), CPU time                     | 15 MB, 0.24 s                      |
+| PostgreSQL memory (peak)                                  | 85 MB                              |
+| Database size, restored size                              | 8.6 MB, 8.8 MB                     |
+| Migrations as the owner                                   | 1.0 s                              |
+| Backup, restore with the trusted digest                   | 0.40 s, 1.45 s                     |
+| Ready again after `SIGKILL` (5 s `RestartSec` included)   | 6.2 s                              |
+| Ready again after a PostgreSQL restart                    | 5.4 s                              |
+| `systemd-analyze security` exposure                       | API 1.3, Caddy 3.2 (both "OK")     |
+| Release directory (with development dependencies)         | 1.1 GB                             |
+
 ## 7. Decisions that block the rehearsal
 
 1. **Authorization** to provision and change the VPS (§8).

@@ -100,7 +100,7 @@ sudo ln -sf "$(command -v node)" /usr/local/bin/node
   echo "commit $commit"
   echo "node $(node --version)"
   echo "pnpm $(pnpm --version)"
-  echo "postgres $(sudo -u postgres psql -XAtq -p "$pg_port" -c 'SHOW server_version')"
+  echo "postgres $(/usr/lib/postgresql/18/bin/postgres --version)"
   echo "caddy $(/usr/bin/caddy version)"
   echo "age $(age --version)"
   echo "systemd $(systemctl --version | head -1)"
