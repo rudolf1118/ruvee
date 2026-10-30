@@ -21,6 +21,10 @@ import {
 } from './primitives.js';
 import { resolveKdfProfile } from './profiles.js';
 import { buildDeviceProofOperations, type DeviceProofOperations } from './device-proof.js';
+import {
+  buildLoginStateSealOperations,
+  type LoginStateSealOperations,
+} from './login-state-seal.js';
 import { buildPairingOperations, type PairingOperations } from './pairing-operations.js';
 import { buildVaultOperations, type VaultOperations } from './vault-operations.js';
 
@@ -86,7 +90,8 @@ export interface OpenKeysetInput extends KeysetContext {
  * material when done. Intermediate secrets (password bytes, `PwK`, the `AUK` input, `K_keyset`,
  * keyset plaintext bytes) are wiped before returning, on success and on failure.
  */
-export interface RuveeCrypto extends VaultOperations, PairingOperations, DeviceProofOperations {
+export interface RuveeCrypto
+  extends VaultOperations, PairingOperations, DeviceProofOperations, LoginStateSealOperations {
   /** A new 32-byte key from the CSPRNG: `SK`, `AK` or `VK`. */
   generateKey(): Uint8Array;
   /** A new 16-byte key id from the CSPRNG: `ak_id` or `vk_id`. */
@@ -140,6 +145,7 @@ export function buildRuveeCrypto(p: Primitives, nextNonce: NonceSource): RuveeCr
     ...buildVaultOperations(p, nextNonce),
     ...buildPairingOperations(p),
     ...buildDeviceProofOperations(p),
+    ...buildLoginStateSealOperations(p),
     generateKey: () => p.randomBytes(KEY_BYTES),
     generateKeyId: () => p.randomBytes(KEY_ID_BYTES),
     generatePasswordSalt: () => p.randomBytes(SALT_BYTES),

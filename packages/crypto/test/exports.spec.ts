@@ -28,6 +28,8 @@ describe('public surface (INV-02)', () => {
       'KEYSET_ENVELOPE_MAX_BYTES',
       'KEYSET_FORMAT_VERSION',
       'LOCAL_RECORD_ENVELOPE_MAX_BYTES',
+      'LOGIN_STATE_SEAL_MAX_BYTES',
+      'LOGIN_STATE_SEAL_MIN_BYTES',
       'MANIFEST_ENVELOPE_BYTES',
       'PADDED_MAX_BYTES',
       'PADDING_BLOCK_BYTES',
@@ -58,6 +60,8 @@ describe('public surface (INV-02)', () => {
     expect(publicApi.ACCOUNT_KEY_WRAP_BYTES).toBe(93);
     expect(publicApi.KEYSET_ENVELOPE_MAX_BYTES).toBe(16_445);
     expect(publicApi.KEYSET_FORMAT_VERSION).toBe(1);
+    expect(publicApi.LOGIN_STATE_SEAL_MIN_BYTES).toBe(74);
+    expect(publicApi.LOGIN_STATE_SEAL_MAX_BYTES).toBe(585);
   });
 
   it('ships only the main entry point; the fixed-nonce module is neither exported nor built', async () => {

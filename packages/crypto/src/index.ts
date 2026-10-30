@@ -27,6 +27,13 @@ export {
   LOCAL_RECORD_ENVELOPE_MAX_BYTES,
   MANIFEST_ENVELOPE_BYTES,
 } from './envelope.js';
+export {
+  LOGIN_STATE_SEAL_MAX_BYTES,
+  LOGIN_STATE_SEAL_MIN_BYTES,
+  type LoginStateContext,
+  type LoginStatePurpose,
+  type OpenedLoginState,
+} from './login-state-seal.js';
 export { uuidFromBytes, uuidToBytes, UUID_BYTES } from './ids.js';
 export {
   ITEM_RECORD_MAX_BYTES,
