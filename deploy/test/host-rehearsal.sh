@@ -136,7 +136,7 @@ for user in ruvee-api ruvee-ops caddy; do
     sudo useradd --system --home-dir /nonexistent --no-create-home --shell /usr/sbin/nologin "$user"
 done
 sudo install -d -m 0755 /etc/ruvee
-sudo install -d -m 0700 /etc/ruvee/secrets
+sudo install -d -m 0700 -o ruvee-api -g ruvee-api /etc/ruvee/api
 sudo install -d -m 0700 -o ruvee-ops -g ruvee-ops /var/backups/ruvee
 sudo install -m 0644 "$current/deploy/postgresql/50-ruvee.conf" /etc/postgresql/18/main/conf.d/50-ruvee.conf
 sudo systemctl restart postgresql@18-main
@@ -204,10 +204,11 @@ sudo -u ruvee-ops "$admin" bootstrap-token >"$RUNNER_TEMP/token.txt" 2>&1 &&
   grep -q 'Setup token' "$RUNNER_TEMP/token.txt" && ok 'ruvee-admin bootstrap-token (operator)' ||
   fail 'ruvee-admin bootstrap-token'
 rm -f "$RUNNER_TEMP/token.txt"
-sudo /usr/local/bin/node "$current/apps/api/dist/admin/cli.js" opaque-setup \
-  --out /etc/ruvee/secrets/opaque-server-setup >/dev/null
-[[ $(sudo stat -c %a /etc/ruvee/secrets/opaque-server-setup) == 600 ]] &&
-  ok 'the OPAQUE setup file is mode 0600, in a root-only directory' || fail 'setup file mode'
+sudo -u ruvee-api /usr/local/bin/node "$current/apps/api/dist/admin/cli.js" opaque-setup \
+  --out /etc/ruvee/api/opaque-server-setup >/dev/null
+[[ $(sudo stat -c '%a %U' /etc/ruvee/api/opaque-server-setup) == '600 ruvee-api' ]] &&
+  ok 'the OPAQUE setup file is 0600, owned by ruvee-api' || fail 'setup file mode'
+refused 'the operator user cannot read the OPAQUE setup file' sudo -u ruvee-ops cat /etc/ruvee/api/opaque-server-setup
 
 # ---------------------------------------------------------------------------------------------
 step 'systemd units'
@@ -268,7 +269,7 @@ redirect=$(curl -sS -o /dev/null -w '%{http_code} %{redirect_url}' http://localh
 
 # ---------------------------------------------------------------------------------------------
 step 'secrets and least privilege'
-for file in /etc/ruvee/api.env /etc/ruvee/operator.env /etc/ruvee/secrets/opaque-server-setup; do
+for file in /etc/ruvee/api.env /etc/ruvee/operator.env; do
   refused "the API user cannot read $file" sudo -u ruvee-api cat "$file"
 done
 runtime_env=$RUNNER_TEMP/runtime-as-operator.env

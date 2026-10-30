@@ -1,10 +1,12 @@
 # The Ruvee API: one process per database (README, "Deployment topology").
 # Guide: docs/guides/private-rehearsal.md. Install as /etc/systemd/system/ruvee-api.service.
 #
-# Configuration: /etc/ruvee/api.env (deploy/env/api.env.example), root-only. The OPAQUE setup
-# file stays root-only in /etc/ruvee/secrets; systemd hands this service a private copy, so the
-# service user never reads /etc/ruvee directly. Do not set OPAQUE_SERVER_SETUP_FILE in api.env:
-# an EnvironmentFile value would replace the one below.
+# Configuration: /etc/ruvee/api.env (deploy/env/api.env.example), root-only; systemd reads it
+# before dropping privileges. The OPAQUE setup file is the only file of /etc/ruvee the service
+# user can read: /etc/ruvee/api/opaque-server-setup, owner ruvee-api, mode 0600, in a directory
+# only ruvee-api can enter. (Not LoadCredential: systemd's copy is group-readable, which the API
+# refuses in production.) Do not set OPAQUE_SERVER_SETUP_FILE in api.env: an EnvironmentFile
+# value would replace the one below.
 
 [Unit]
 Description=Ruvee API
@@ -20,8 +22,7 @@ Type=simple
 User=ruvee-api
 Group=ruvee-api
 EnvironmentFile=/etc/ruvee/api.env
-LoadCredential=opaque-server-setup:/etc/ruvee/secrets/opaque-server-setup
-Environment=OPAQUE_SERVER_SETUP_FILE=%d/opaque-server-setup
+Environment=OPAQUE_SERVER_SETUP_FILE=/etc/ruvee/api/opaque-server-setup
 WorkingDirectory=/opt/ruvee/current/apps/api
 ExecStart=/usr/local/bin/node dist/main.js
 # The API ends its work on SIGTERM (enableShutdownHooks). Any exit, clean or not, restarts it:
