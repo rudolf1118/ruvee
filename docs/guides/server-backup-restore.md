@@ -232,7 +232,7 @@ empty or weakened CSP or for the diagnostic export.
 - Every response except `/_next/static/*` is `no-store`, including errors and the API; unknown
   paths are real `404`s. Only the exact lower-case `/api/` reaches the API: other spellings
   (`/API/…`, `/%61pi/…`) get `404` at the proxy, and the API itself also routes exact paths only.
-- For public HTTPS add HSTS (the value is in the Caddyfile).
+- HSTS is sent on HTTPS requests only, by the generated snippet (`HSTS_PUBLIC`); nothing to add.
 - Check a build with real Caddy: `pnpm --filter @ruvee/api test:caddy` (README).
 
 ## 8. Rehearsal (do this before you need it)

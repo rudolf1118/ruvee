@@ -184,6 +184,11 @@ backup` still refuses real databases: D-19 is open and nothing is deployed.
 **M1 is implemented for synthetic data and not accepted for real data.** Backup, restore and
 reopening are done
 ([backup-restore.md §3.11](../architecture/backup-restore.md#311-status-of-the-m1-implementation-2026-10-26)).
-Next: the independent review (D-19, including `age-encryption`, the backup code and the
-reopening), then a private deployment rehearsal with scheduled off-host backups, a non-superuser
-restore role and a timed restore.
+Next: the independent review (D-19, including `age-encryption`, the backup code, the reopening
+and the login-state seal, D-32).
+
+**Private deployment rehearsal (synthetic data): prepared, not run.** Plan, acceptance criteria
+and open items: [deployment-rehearsal.md](deployment-rehearsal.md); operator steps:
+[private-rehearsal.md](../guides/private-rehearsal.md). The host side is checked in CI on a
+disposable Ubuntu 24.04 runner. It waits on the owner's deployment authorization, the access
+method and the backup storage.

@@ -171,6 +171,10 @@ The API reads `.env` from `apps/api` or the repository root.
 
 ### Deployment topology: one API process per database
 
+A rehearsal installation on one Ubuntu 24.04 host (systemd units, environment templates,
+PostgreSQL and journal settings in `deploy/`), synthetic data only:
+[docs/guides/private-rehearsal.md](docs/guides/private-rehearsal.md).
+
 V1 supports exactly **one API process per database**, and enforces it. This is an operational
 rule, not a security mechanism: login states, request windows and every limit live in the
 database (authentication.md §7), so a second process that serves by accident, for example while

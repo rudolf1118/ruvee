@@ -230,6 +230,9 @@ Synthetic data only.
     fallback.
   - **Residual:** HSTS must still be added by hand for public HTTPS; `out/` and `out-caddy/`
     must be deployed from the same build (documented).
+  - **Update (2026-10-30):** the generated snippet now sends HSTS on HTTPS requests only (no hand
+    edit), and the export is reproducible, so a host can check that `out/` and `out-caddy/` are
+    the CI build of its commit ([private-rehearsal.md §3](../guides/private-rehearsal.md#3-the-release-one-commit-built-reproducibly)).
 
 ### R7. `?dbname=` bypasses the synthetic-only backup check (Medium)
 
