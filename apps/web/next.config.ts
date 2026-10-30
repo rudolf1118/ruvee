@@ -1,3 +1,5 @@
+import { execFileSync } from 'node:child_process';
+
 import type { NextConfig } from 'next';
 
 /**
@@ -27,8 +29,25 @@ const pageExtensions = [
  */
 const devApiOrigin = process.env.RUVEE_DEV_API_ORIGIN ?? 'http://127.0.0.1:4000';
 
+/**
+ * The build id names `/_next/static/<id>/` and appears in every exported page, so a random one
+ * (Next.js's default) makes two builds of one commit differ, and with them the CSP hashes in
+ * `out-caddy/`. It is the commit instead: the same for every build of a commit, so an operator
+ * can compare a build with the published manifest, and new for every release, so a browser
+ * never keeps an earlier release's manifests from the immutable `/_next/static/` cache.
+ * `RUVEE_BUILD_ID` overrides it for a build outside a git checkout.
+ */
+function buildId(): string {
+  const id =
+    process.env.RUVEE_BUILD_ID ??
+    execFileSync('git', ['rev-parse', 'HEAD'], { encoding: 'utf8' }).trim();
+  if (!/^[0-9a-f]{40}$/.test(id)) throw new Error('RUVEE_BUILD_ID must be a full commit id');
+  return id;
+}
+
 const nextConfig: NextConfig = {
   reactStrictMode: true,
+  generateBuildId: () => Promise.resolve(buildId()),
   // D-16: static export so production CSP can list build-time script hashes. `headers()`
   // is ignored for the export; Caddy / scripts/serve-export.mjs apply the production set.
   output: 'export',

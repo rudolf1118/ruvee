@@ -205,6 +205,7 @@ try {
     for (const [name, value] of Object.entries(STATIC_SECURITY_HEADERS))
       check(res.headers.get(name) === value, `${path}: ${name}`);
     check(res.headers.get('server') === null, `${path}: no Server header`);
+    check(res.headers.get('strict-transport-security') === null, `${path}: no HSTS over HTTP`);
   }
   const notFound = await (await get('/no-such-page')).text();
   check(notFound.includes('<html'), 'the 404 response is the export 404 page');

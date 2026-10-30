@@ -10,6 +10,7 @@ import {
   CACHE_HASHED_STATIC,
   CACHE_HTML,
   cspProblems,
+  HSTS_PUBLIC,
   STATIC_SECURITY_HEADERS,
 } from '../security-headers.ts';
 import { exportDir, productionCsp } from './csp-from-export.mjs';
@@ -47,6 +48,9 @@ const lines = [
   `header @hashed_{args[0]} >Cache-Control ${quoted(CACHE_HASHED_STATIC)}`,
   '@unhashed_{args[0]} not path /_next/static/*',
   `header @unhashed_{args[0]} >Cache-Control ${quoted(CACHE_HTML)}`,
+  '# HSTS on HTTPS requests only, so a site served over local HTTP never pins HTTPS for its host.',
+  '@https_{args[0]} protocol https',
+  `header @https_{args[0]} Strict-Transport-Security ${quoted(HSTS_PUBLIC)}`,
   '',
 ];
 

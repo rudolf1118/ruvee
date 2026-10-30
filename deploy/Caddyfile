@@ -10,8 +10,8 @@
 # Environment (optional; defaults shown): RUVEE_SITE_ADDRESS (http://127.0.0.1:3101),
 # RUVEE_WEB_ROOT (apps/web), RUVEE_API_UPSTREAM (127.0.0.1:4000).
 #
-# HSTS is omitted here (local HTTP). Public HTTPS must add:
-#   header Strict-Transport-Security "max-age=31536000; includeSubDomains"
+# HSTS comes from the same snippet and is sent on HTTPS requests only: an https:// site address
+# needs no edit here, and local HTTP never pins HTTPS for its host.
 #
 # The API is served from the same origin under /api/ (api-design.md §Conventions).
 
