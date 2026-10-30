@@ -49,6 +49,14 @@ refused() {
   if "$@" >/dev/null 2>&1; then fail "$label"; else ok "$label"; fi
 }
 step() { printf '\n== %s\n' "$*"; }
+# Whatever happens, the services' journals and states are kept with the job's artifacts.
+keep_journal() {
+  journalctl -u ruvee-api.service -u ruvee-caddy.service -u ruvee-diskcheck.service --no-pager \
+    >"$out/journal.txt" 2>&1 || true
+  systemctl status ruvee-api.service ruvee-caddy.service --no-pager >"$out/status.txt" 2>&1 || true
+}
+trap keep_journal EXIT
+api_journal() { journalctl -u ruvee-api.service -n 60 --no-pager -o cat 2>&1 | sed 's/^/      /'; }
 now() { date +%s.%N; }
 elapsed() { awk -v a="$1" -v b="$2" 'BEGIN { printf "%.2f", b - a }'; }
 as_postgres() { sudo -u postgres psql -X -q -v ON_ERROR_STOP=1 -p "$pg_port" "$@"; }
@@ -215,7 +223,10 @@ for unit in ruvee-api.service ruvee-caddy.service ruvee-diskcheck.service ruvee-
 done
 sudo systemctl daemon-reload
 sudo systemctl enable --now ruvee-api.service ruvee-caddy.service ruvee-diskcheck.timer >/dev/null 2>&1
-wait_for 60 api_ready && ok 'the API is ready on loopback' || fail 'the API is ready on loopback'
+if wait_for 60 api_ready; then ok 'the API is ready on loopback'; else
+  fail 'the API is ready on loopback'
+  api_journal
+fi
 sudo systemd-analyze security ruvee-api.service --no-pager >"$out/security-ruvee-api.txt" 2>&1 || true
 sudo systemd-analyze security ruvee-caddy.service --no-pager >"$out/security-ruvee-caddy.txt" 2>&1 || true
 echo "exposure: api $(tail -1 "$out/security-ruvee-api.txt"); caddy $(tail -1 "$out/security-ruvee-caddy.txt")"
@@ -287,15 +298,22 @@ for sql in \
   'DELETE FROM ruvee_control.installation' \
   'CREATE TABLE ruvee_control.rehearsal_probe (id int)' \
   'CREATE ROLE rehearsal_probe' \
-  'CREATE SCHEMA rehearsal_probe' \
-  'GRANT ALL ON public.accounts TO PUBLIC'; do
+  'CREATE SCHEMA rehearsal_probe'; do
   refused "the runtime role cannot: $sql" psql -X -q -v ON_ERROR_STOP=1 "$runtime_url" -c "$sql"
 done
 
 # ---------------------------------------------------------------------------------------------
+# A GRANT by a role without the grant option "succeeds" with a warning and grants nothing, so the
+# result is checked instead of the exit status.
+psql -X -q "$runtime_url" -c 'GRANT ALL ON public.accounts TO PUBLIC' >/dev/null 2>&1 || true
+granted=$(sudo -u postgres psql -XAtq -p "$pg_port" -d "$db" -c \
+  "SELECT count(*) FROM information_schema.role_table_grants WHERE grantee = 'PUBLIC' AND table_schema = 'public'")
+[[ $granted == 0 ]] && ok 'the runtime role cannot grant anything to PUBLIC' || fail "PUBLIC holds $granted grants"
+
 step 'restarts'
 pid_before=$(systemctl show -p MainPID --value ruvee-api.service)
-sudo systemctl restart ruvee-api.service
+sudo systemctl reset-failed ruvee-api.service || true
+sudo systemctl restart ruvee-api.service || true
 wait_for 60 api_ready && ok 'the API is ready after systemctl restart' || fail 'restart'
 [[ $(systemctl show -p MainPID --value ruvee-api.service) != "$pid_before" ]] && ok 'a new process serves' ||
   fail 'a new process serves'
@@ -400,7 +418,6 @@ step 'resources'
   echo "restore_seconds ${restore_seconds:-n/a}"
   echo "host cpus $(nproc) memory $(free -m | awk '/^Mem:/ { print $2 }') MiB"
 } | tee "$out/resources.txt"
-journalctl -u ruvee-api.service -u ruvee-caddy.service --no-pager >"$out/journal.txt" 2>&1 || true
 sudo systemctl stop ruvee-caddy.service ruvee-api.service ruvee-diskcheck.timer
 rm -rf "$identity_dir" "$storage"
 
