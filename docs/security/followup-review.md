@@ -1185,19 +1185,19 @@ leaves every limit and every login state intact. It is **not** multi-process sup
 The summary in §17.2 named four items. Re-reading every class field, module variable and timer in
 `apps/api/src` found these, and what each now means for an overlap:
 
-| State                                                                                                | Where                                         | Overlap of two processes, after this change                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Per-address window (20/min), wrong-code window (10/15 min), per-session window (300/min)             | `ThrottleService`                             | **Moved** to `rate_windows`: one budget, atomic, in database time                                                                                                                                                                                                                                                             |
-| Pending logins, step-ups and reopenings (OPAQUE server state, challenge, binding)                    | `LoginStateStore`                             | **Moved** to `login_states`: finishable on any process, consumed once                                                                                                                                                                                                                                                         |
-| OPAQUE server setup                                                                                  | `OpaqueServerService`, read from a file       | Per process. Every process must load the **same** file (it already had to, or logins and registrations would not verify across them). A mismatch fails closed: OPAQUE fails, and the sealed state does not open.                                                                                                              |
-| Configuration (`PUBLIC_ORIGIN`, `EXTENSION_ORIGINS`, `TRUSTED_PROXY_ADDRESS`, …)                     | each process's environment                    | Per process. Two processes with different `TRUSTED_PROXY_ADDRESS` would key addresses differently (one would see the proxy's address for everyone). Same configuration is an operational requirement.                                                                                                                         |
-| "Open" cache of the maintenance gate                                                                 | `MaintenanceService.open`                     | One-way: a database never goes from `open` back to closed, and a restore always targets a new database. Each process reads it itself.                                                                                                                                                                                         |
-| Privilege self-check result (F-25)                                                                   | `MaintenanceService.excess`                   | Per process, about that process's own role; read once.                                                                                                                                                                                                                                                                        |
-| Instance lock state and its timers                                                                   | `InstanceLockService`                         | Operational only (§18.4).                                                                                                                                                                                                                                                                                                     |
-| Lazily loaded crypto library                                                                         | `ProofService.crypto`                         | Stateless.                                                                                                                                                                                                                                                                                                                    |
-| Log-once flags                                                                                       | `AccessGuard`, `MaintenanceService`, the lock | Logging only.                                                                                                                                                                                                                                                                                                                 |
-| Process clock (`new Date()`, 45 call sites: session, token, nonce and pairing expiries, event times) | throughout                                    | Not shared. Two processes on one host read the same clock. On different hosts, an expiry can be judged differently by the clock skew. No budget depends on it: the new windows and login states use database time. Different hosts are not a supported deployment.                                                            |
-| In-flight requests                                                                                   | —                                             | A request admitted by a process that has since lost the lock runs to completion. Every decision it can make is now an atomic database statement (conditional updates, row locks, single-use deletes), so it is the same as a concurrent request on one process. There is no fencing token, and none is needed for the limits. |
+| State                                                                                                | Where                                         | Overlap of two processes, after this change                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Per-address window (20/min), wrong-code window (10/15 min), per-session window (300/min)             | `ThrottleService`                             | **Moved** to `rate_windows`: one budget, atomic, in database time                                                                                                                                                                                                                                                                                                             |
+| Pending logins, step-ups and reopenings (OPAQUE server state, challenge, binding)                    | `LoginStateStore`                             | **Moved** to `login_states`: finishable on any process, consumed once                                                                                                                                                                                                                                                                                                         |
+| OPAQUE server setup                                                                                  | `OpaqueServerService`, read from a file       | Per process. Every process must load the **same** file (it already had to, or logins and registrations would not verify across them). A mismatch fails closed: OPAQUE fails, and the sealed state does not open.                                                                                                                                                              |
+| Configuration (`PUBLIC_ORIGIN`, `EXTENSION_ORIGINS`, `TRUSTED_PROXY_ADDRESS`, …)                     | each process's environment                    | Per process. Two processes with different `TRUSTED_PROXY_ADDRESS` would key addresses differently (one would see the proxy's address for everyone). Same configuration is an operational requirement.                                                                                                                                                                         |
+| "Open" cache of the maintenance gate                                                                 | `MaintenanceService.open` (removed)           | **Finding, fixed (2026-10-30, §18.7).** Every guard transition is conditional and one-way, so a database never leaves `open`. But the process names its database by URL: a database dropped and recreated under the same name as a restore target is a new database, and a process that had cached `open` served it (`200` in review). The gate is now read on every request. |
+| Privilege self-check result (F-25)                                                                   | `MaintenanceService.excess`                   | Per process, about that process's own role; read once.                                                                                                                                                                                                                                                                                                                        |
+| Instance lock state and its timers                                                                   | `InstanceLockService`                         | Operational only (§18.4).                                                                                                                                                                                                                                                                                                                                                     |
+| Lazily loaded crypto library                                                                         | `ProofService.crypto`                         | Stateless.                                                                                                                                                                                                                                                                                                                                                                    |
+| Log-once flags                                                                                       | `AccessGuard`, `MaintenanceService`, the lock | Logging only.                                                                                                                                                                                                                                                                                                                                                                 |
+| Process clock (`new Date()`, 45 call sites: session, token, nonce and pairing expiries, event times) | throughout                                    | Not shared. Two processes on one host read the same clock. On different hosts, an expiry can be judged differently by the clock skew. No budget depends on it: the new windows and login states use database time. Different hosts are not a supported deployment.                                                                                                            |
+| In-flight requests                                                                                   | —                                             | A request admitted by a process that has since lost the lock runs to completion. Every decision it can make is now an atomic database statement (conditional updates, row locks, single-use deletes), so it is the same as a concurrent request on one process. There is no fencing token, and none is needed for the limits.                                                 |
 
 Every other limit was already atomic in PostgreSQL before this change: the per-account login
 delay, recovery and bootstrap budgets (`auth_throttle`), the reopening code's failure count,
@@ -1211,10 +1211,15 @@ registration under an advisory transaction lock.
   ended. A new key is one `INSERT … ON CONFLICT` statement that also removes up to 500 expired
   windows of its scope. Database time throughout.
   - Address normalization and the trusted-proxy rules are unchanged (`addressKey`, R17, F-7).
-  - **Capacity:** at most 10,000 live windows per scope. Beyond that, new keys share one overflow
+  - **Capacity:** about 10,000 live windows per scope. Beyond that, new keys share one overflow
     window under the same limit. A live window is never removed to make room (F-8 holds: an
-    address being refused stays refused through a flood). Statements that run at the same moment
-    can each see room, so the bound may be passed by at most their number.
+    address being refused stays refused through a flood). The bound is **approximate**: each
+    statement checks it in its own snapshot, so statements running at the same moment can each
+    see room. One process runs at most `DATABASE_POOL_MAX` = 10 statements at once (its pool,
+    now set explicitly), so the bound can be passed by at most 9 with one process, and by
+    `10 × processes − 1` in an overlap. The overflow window itself is one row and exact.
+  - **Pruning** deletes only windows whose end has passed, re-checked on the row it deletes: a
+    window renewed while a prune waits on it is kept (deterministic test, §18.5).
   - **Wrong reopening codes:** a guess is **reserved** before the lookup (so parallel guesses
     across processes share the address's ten) and released if the code is the usable one. A
     wrong code never touches the real code's failure count (R11, unchanged). An exhausted
@@ -1223,18 +1228,23 @@ registration under an advisory transaction lock.
     back to admitting it.
 - **`login_states`** (`SHA-256(loginId)`, purpose, `SHA-256` of the normalized username, account,
   device, platform, session or reopening code, sealed state, created and expiry times).
-  - **Sealing:** the OPAQUE server login state and the 32-byte device challenge are encrypted with
-    AES-256-GCM under `HKDF-SHA-256(setup, "ruvee/login-state-seal/v1")`. The associated data
-    is every other column, the expiry and the OPAQUE configuration id. A state moved to another
-    row, or a row with a changed binding, does not open.
+  - **Sealing** (authentication.md §4.1, owner decision 2026-10-30): XChaCha20-Poly1305 under a
+    per-state key, keyed BLAKE2b of the client's `loginId` under a key of the setup file, all
+    through `@ruvee/crypto` (ADR-0002 primitives only). The associated data is every other
+    column and the expiry, length-prefixed. A state moved to another row, or a row with a changed
+    binding, does not open; opening needs the setup file and the `loginId`, which is not stored.
+    The first version's AES-256-GCM under HKDF of the setup was outside ADR-0002 and was replaced
+    before integration (§18.7).
   - **Consumption:** one `DELETE … RETURNING`, before OPAQUE runs (INV-23). Concurrent finishes
     on any number of processes get it once. No transaction is open while OPAQUE or the device
     proof is checked.
   - **D-31:** the challenge, the login binding (`loginId`) and the device's platform and id come
     back exactly as stored, so proven and pre-proof sessions behave as on one process.
-  - **Capacity:** at most 10,000 live states (the same bound as before). At the bound a new start
-    is refused with `429`; before, the oldest live state was dropped. A live state is never
-    removed. Expired states go 500 at a time with each new one.
+  - **Capacity:** about 10,000 live states (the same bound as before), approximate in the same
+    way and by the same amount as the windows. At the bound a new start is refused with `429`;
+    before, the oldest live state was dropped. A live state is never removed; a state never
+    becomes live again, so a prune cannot race a renewal. Expired states go 500 at a time with
+    each new one.
 - **Instance lock:** kept, reworded. Its message and documentation no longer say that limits live
   in memory; no guarantee depends on its 10 s check (§18.4).
 - **Privileges:** the runtime list gains `SELECT, INSERT, UPDATE, DELETE` on `rate_windows` and
@@ -1251,14 +1261,14 @@ registration under an advisory transaction lock.
 | `SHA-256(loginId)`                                         | the `loginId`                                                              |
 | `SHA-256("login" ‖ 0 ‖ username)`, as `auth_throttle`      | the typed username (an unknown one included)                               |
 | account, device, platform, session, reopening-code ids     | passwords, OPAQUE export keys, session keys in the clear, vault keys, `AK` |
-| sealed OPAQUE server login state and device challenge      | the sealing key, or the OPAQUE setup it comes from                         |
+| sealed OPAQUE server login state and device challenge      | the per-state key, the `loginId` or the OPAQUE setup it comes from         |
 | `SHA-256` of client addresses and session ids, with counts | addresses or session ids in the clear                                      |
 
 - **A backup** holds no row of either table.
 - **A live copy of the database** shows, for at most 60 s per login, which account and device is
-  logging in. The sealed states do not open without the setup file. With the setup file too, they
-  reveal the server side of those exchanges, but a finish needs the `loginId`, which is not
-  stored. That copy alone therefore cannot finish a pending login.
+  logging in. The sealed states open only with the setup file **and** that login's `loginId`,
+  which is not stored; with both, an attacker could finish that one pending login. The copy
+  alone, or with the setup file alone, cannot.
 - **Write access** as the runtime role adds: lifting request limits by rewriting windows, and
   making logins fail by deleting states (database-roles.md §5). It could already insert sessions.
 - Client addresses are hashed without a key. IPv4 has 2³² values, so a hash can be reversed by
@@ -1276,7 +1286,11 @@ processes serving (the lock's failure modes in §17.2), the tests show:
 - a login started on one process finishing on the other;
 - concurrent finishes creating one session.
 
-The heartbeat interval bounds nothing a guarantee rests on.
+- the maintenance and reopening gate enforced by both (§18.7).
+
+The heartbeat interval bounds nothing a guarantee rests on. Its bypass for tests,
+`RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK=1`, is refused by the configuration unless `NODE_ENV=test`,
+and the service checks `NODE_ENV` again.
 
 ### 18.5 Evidence
 
@@ -1315,18 +1329,8 @@ The heartbeat interval bounds nothing a guarantee rests on.
     as §17.2 predicted: a split made a login fail, never succeed twice.
   - With the restore's deletion removed, the forged backup's rows survive (1 state, 2 windows),
     and the pre-backup login **finishes with `200`** after the reopening.
-- **Overhead, local only** (one process, supertest, PostgreSQL 18 in Docker on the same machine;
-  three runs of each build, median of the per-round p50; not a capacity statement):
-
-  | Request                     | `c74f922` | this change |
-  | --------------------------- | --------- | ----------- |
-  | Authenticated `GET`         | 1.4 ms    | 1.9 ms      |
-  | `login/start` (new address) | 2.8 ms    | 6.5 ms      |
-  | `login/finish` (proven)     | 9.5 ms    | 10.8 ms     |
-
-  A first version that used interactive transactions with advisory locks measured 10.5 ms for
-  `login/start`; it was replaced by single statements, which is why the capacity bounds are not
-  exact (§18.2).
+- **Overhead:** see §18.7 for the final code. The figures first given here (1.9, 6.5 and 10.8
+  ms) were for the first version, before the seal and the gate changed, and are superseded.
 
 ### 18.6 Residuals
 
@@ -1338,6 +1342,82 @@ The heartbeat interval bounds nothing a guarantee rests on.
 - **Login-state bound.** At 10,000 live states, starts are refused for up to 60 s. That needs
   about 170 starts a second from 500 or more addresses. Before, the oldest pending logins were
   dropped instead.
-- **Soft bounds.** Both bounds can be passed by the number of statements running at once.
-- **One more write per authenticated request**, and a few per login.
+- **Soft bounds.** Both 10,000 bounds are approximate: passed by at most 9 rows with one process
+  and `10 × processes − 1` in an overlap (§18.2); measured at most 2 × 10 with two pools.
+- **One more write and two more reads per authenticated request** (the window, and the gate now
+  read every time), and a few per login.
 - **Database time vs process time** (§18.1).
+
+### 18.7 Integration review (2026-10-30)
+
+The PR head was still `c74f922`, so integration is a fast-forward; nothing newer had to be kept.
+Before integrating, the work was reviewed against the remaining requirements, with these results.
+
+**The seal was outside the approved architecture.** ADR-0002 allows only libsodium primitives and
+says there is no AES-GCM and no HKDF. The first version used both (`node:crypto`), with one key for
+the setup's lifetime, so its random 96-bit nonces would have made 2³² seals a usage limit within
+months of sustained starts at the bound. This was reported to the owner before adoption, and the
+owner chose the ADR-0002 construction now specified in authentication.md §4.1 (per-state key from
+the client's `loginId`; XChaCha20-Poly1305; canonical length-prefixed AAD; envelope `0x02`, 74 to
+585 bytes). `packages/crypto/test/login-state-seal.spec.ts` (22 tests) checks it against `@noble/*`
+rebuilt from the specification, each bound field, another `loginId` and another setup, nonce
+freshness over 2,000 seals, malformed seals (never throws), and that `H(setup)`, `K_state` and every
+plaintext buffer are wiped.
+
+**The maintenance cache.** The claim in §18.1 that a cached `open` is harmless was checked against
+the lifecycle (backup-restore.md §3.5, §3.13):
+
+- Every transition is a conditional update from its predecessor (`restoring` → `review` →
+  `reopening` → `open`); `init` refuses a database with a control schema; a restore refuses a
+  non-empty target. For one database, `open` is final.
+- In-flight requests: a request that passed the gate before the reopening completed can only do
+  what the reopening revokes in the same transaction (codes, reopen sessions), and a request
+  admitted under `open` stays valid because `open` is final.
+- But the cache belonged to the process, not the database. A database dropped (`WITH (FORCE)`)
+  and recreated under the same name as a restore target is reached by the same URL, and the
+  process served it: with the old code, both processes answered `200` to `login/start` on a
+  restored database in `review`. The documented procedure uses a new name and a restart, so it
+  does not arise there, but an overlooked old process is exactly the overlap this work is about.
+  The cache is removed; the gate is read on every request.
+
+**Two independent OS processes.** The earlier "processes" were Prisma clients or Nest apps in one
+Node.js process. `test/review/two-processes.int-spec.ts` launches `node dist/main.js` twice (own
+pids and ports) on one temporary database, as the runtime role, with the test-only lock bypass:
+
+| Test                                                               | Result                                                         |
+| ------------------------------------------------------------------ | -------------------------------------------------------------- |
+| 30 concurrent starts from one address across both                  | 20 admitted, 10 refused                                        |
+| 320 authenticated `GET`s on one session across both                | 300 admitted, 20 refused                                       |
+| a proven login started on A, finished on B; replay on both         | `200`, then `401` on each                                      |
+| 8 concurrent finishes of one login across both (3 rounds)          | one `200`, one session per round                               |
+| 20 starts, then A is restarted (new pid)                           | `429` on A and on B                                            |
+| `rate_windows` grants revoked                                      | `500` on both for a session `GET` and a start; no state stored |
+| guard `open` → `review`, after both served `open`                  | `503 maintenance` on both                                      |
+| guard `reopening`                                                  | `503 reopening` elsewhere; reopening routes reach validation   |
+| guard back to `open`                                               | both serve                                                     |
+| database dropped and recreated under its name, restored, in review | `503 maintenance` on both                                      |
+
+Negative control: with the old cached gate, the last three rows fail, the last with `200` on
+both processes.
+
+**Limits.** `shared-limits.int-spec.ts` (now 22 tests) adds: 80 concurrent new addresses at one
+below the bound across two pools (own windows between 1 and 2 × 10, the rest in the overflow
+window, which admits exactly 20); window and pruning boundaries to the millisecond; a race of 800
+renewals of ended windows against 120 pruning inserts (every renewed address refused at 21; every
+other ended window pruned); a deterministic version that holds a renewal's row lock while a prune
+waits on it (the window is kept; a mutation without the expiry re-check fails it, 3 of 3); 60
+concurrent starts at one below the login-state bound (between 1 and 20 admitted, the rest `429`);
+and the login-state expiry boundary for consume and prune.
+
+**Overhead of the final code, local only.** One process, supertest, PostgreSQL 18 in Docker on
+the same laptop; `c74f922` and the final code in alternation, three runs each, three rounds per
+run, 260 `GET`s and 30 logins per round; the median of the nine per-round p50 values. These are
+observations on one machine, not a capacity statement.
+
+| Request                     | `c74f922` | final   |
+| --------------------------- | --------- | ------- |
+| Authenticated `GET`         | 1.34 ms   | 2.37 ms |
+| `login/start` (new address) | 2.26 ms   | 5.07 ms |
+| `login/finish` (proven)     | 5.39 ms   | 7.15 ms |
+
+The `GET` difference is the window write plus the gate's two reads, now made on every request.

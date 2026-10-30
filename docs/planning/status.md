@@ -159,8 +159,8 @@ backup` still refuses real databases: D-19 is open and nothing is deployed.
   identities, SSE push, re-seeding, full key rotation, mobile.
 - **One API process per database** stays an operational rule, enforced by the instance lock.
   Since 2026-10-29 (follow-up review §18) no limit or login state depends on it: request
-  windows and pending logins are shared in PostgreSQL, so an accidental overlap keeps one budget.
-  This is not multi-process or high-availability support (process clocks, configuration and the
+  windows and pending logins are shared in PostgreSQL, so an accidental overlap keeps one budget
+  (checked with two independently launched API processes, §18.7). This is not multi-process or high-availability support (process clocks, configuration and the
   OPAQUE setup file are per process).
 - **A raw database copy** (not through `ruvee-admin restore`) still brings back devices removed
   after it, with their sessions (`apps/api/test/backup-restore.int-spec.ts`); only the restore

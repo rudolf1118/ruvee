@@ -152,11 +152,85 @@ The same single-use rule applies to `reauth`.
 As built (2026-10-29, follow-up review §18): login states are rows of `login_states`, so a login
 started on one API process can be finished on another. A row holds `SHA-256(loginId)`, its
 purpose (login, step-up or reopening), `SHA-256` of the normalized username, the account,
-device, platform, session or reopening code it is bound to, and its expiry in database time. The
-OPAQUE server login state and the device challenge are sealed in it with AES-256-GCM under a key
-derived (HKDF-SHA-256) from the OPAQUE server setup, which is never in the database; the sealed
-data is bound to every other column. Step 4 is one `DELETE … RETURNING`. At most 10,000 live
-states exist; beyond that a start is refused with `429`, and no live state is removed.
+device, platform, session or reopening code it is bound to, its expiry in database time, and the
+sealed state of §4.1. Step 4 is one `DELETE … RETURNING`, then the expiry check against database
+time, then the seal is opened. At most 10,000 live states exist (approximately: §4.1); beyond
+that a start is refused with `429`, and no live state is removed.
+
+Error responses never distinguish "unknown user" from "wrong password", and contain no OPAQUE
+internals ([api-design.md](../architecture/api-design.md#errors)).
+
+### 4.1 The login-state seal (owner decision 2026-10-30, ADR-0002 primitives)
+
+**What it is, and what it is not.** Server state only. It keeps the OPAQUE server login state
+(from which the expected client MAC and the session key follow) and the 32-byte device challenge
+confidential and bound to their row while they wait, for at most 60 seconds, in the database. It
+is not a vault format: it uses no vault key, no client ever opens it, and the vault's guarantee
+that the server holds no key to vault data (cryptographic-design.md §9) is unchanged. It uses
+only ADR-0002's primitives through `@ruvee/crypto` (`login-state-seal.ts`), whose guarded
+interface checks every length; no primitive is written by Ruvee. The first construction (AES-256-GCM
+under HKDF-SHA-256 of the setup, never pushed) was replaced because ADR-0002 excludes both and its
+one long-lived key made the 96-bit random nonce a usage limit.
+
+**Keys.** `H` is BLAKE2b-256, `MAC(k, m)` keyed BLAKE2b-256 (cryptographic-design §2).
+
+```
+K_seal  = MAC(H(setup), "ruvee/v1/login-state-seal")    setup: the serialized OPAQUE setup (128 bytes)
+K_state = MAC(K_seal, login_id)                          login_id: 16 random bytes, the client's loginId
+```
+
+`"ruvee/v1/login-state-seal"` separates this key from every other use of the setup (the OPAQUE
+library's own derivations take the setup as structured key material, never through BLAKE2b with
+this label). `K_seal` is derived once per process, on first use, and held in memory like the
+setup itself; it is wiped when the module stops. `K_state` exists only during one seal or open.
+The database stores `SHA-256(login_id)`, never `login_id`, so **opening a row needs both the
+setup file and the client's `loginId`**.
+
+**Envelope (version `0x02`).**
+
+```
+sealed = 0x02 ‖ nonce(24) ‖ XChaCha20-Poly1305(K_state, nonce, challenge(32) ‖ state, AAD)
+AAD    = "ruvee/v1/login-state" ‖ LP(id_hash) ‖ LP(purpose) ‖ LP(subject) ‖ LP(account)
+         ‖ LP(device) ‖ LP(platform) ‖ LP(session) ‖ LP(code) ‖ u64(expires_ms)
+```
+
+`LP(x) = u32(len(x)) ‖ x`. `purpose` and `platform` are their ASCII names; account, device,
+session and code are 16-byte UUIDs, or empty for none, so a null and a value never encode alike;
+`id_hash` and `subject` are 32 bytes; `expires_ms` is the stored expiry in milliseconds since the
+epoch. A row whose purpose, binding, expiry or key was changed, or a seal moved to another row,
+does not open.
+
+**Nonces.** 24 bytes from libsodium's CSPRNG for every seal. Every state has its own key
+(`login_id` is fresh), so each key seals exactly one message and nonce reuse under one key cannot
+happen through the server; the random nonce is the format's usual one, not the only separation.
+
+**Sizes and malformed input.** The state is 1 to 512 bytes (`@serenity-kit/opaque` writes 171);
+`sealed` is therefore 74 to 585 bytes, which the table's CHECK constraint also enforces. Opening
+returns nothing, and never throws, for a wrong version byte, any length outside that range, a
+non-byte value, or a failed tag; the row is already deleted, so the login simply fails
+(`login_failed`). A malformed key, id or binding is a programming error and throws.
+
+**Setup replacement.** A different setup gives a different `K_seal`: states sealed under the old
+one do not open and their logins fail, which they would anyway, because the OPAQUE state belongs
+to the old setup. Every API process must load the same setup file; a process with another one
+cannot finish logins the others started (and is wrong for every account anyway).
+
+**Buffers.** `@ruvee/crypto` wipes `H(setup)`, `K_state`, the plaintext it built and the library's
+plaintext output on success and failure; inputs are never modified and outputs are new buffers.
+The store wipes its copy of the setup bytes, the `login_id` bytes and the opened state buffer.
+Best effort only (cryptographic-design §10, buffer ownership): the OPAQUE library takes and returns the state as a
+JavaScript string, which cannot be wiped, and copies inside libsodium's WebAssembly memory are out
+of reach.
+
+**Theft and backups.** A copy of the table, a database dump or a stolen backup gives hashes of
+login ids and usernames, bindings and expiry times, and seals that open only with the setup file
+**and** the client's `loginId`; it cannot finish anyone's login. An attacker with the setup file
+and the database can already guess passwords offline (V-01), and with a live `loginId` (from the
+client or the TLS path) could finish that one pending login within its 60 seconds; neither is
+new. Backups hold no rows of this table, and a restore empties it (backup-restore.md §3.2c).
+
+**Review status.** Development only. Specified here and tested against `@noble/*` in
+`packages/crypto/test/login-state-seal.spec.ts`; not independently reviewed (D-19).
 
 Error responses never distinguish "unknown user" from "wrong password", and contain no OPAQUE
 internals ([api-design.md](../architecture/api-design.md#errors)).

@@ -69,3 +69,12 @@ them on web through a guarded interface that checks every length itself, which c
 and the V-12 discrepancies for its callers without fixing them upstream
 ([cryptographic-design.md §10](../security/cryptographic-design.md#10-implementation-status-packagescrypto-p2-03)).
 `react-native-libsodium` remains untested, and the decision is unchanged.
+
+## Changes after the shared login states (2026-10-30)
+
+The API's pending-login seal (authentication.md §4.1) is a server-only format built from this
+list: BLAKE2b and keyed BLAKE2b for its keys, XChaCha20-Poly1305 with random 24-byte nonces, and
+`randombytes_buf`, through `packages/crypto`. A first version used AES-256-GCM and HKDF from
+`node:crypto`; it conflicted with this decision, was reported to the owner before adoption, and
+was replaced (owner decision 2026-10-30, follow-up review §18.7). The decision itself is
+unchanged.

@@ -248,17 +248,16 @@ server that no restored server may reuse:
   not to the server process. **Reset:** every request window; the restored server serves nothing
   until it is reopened, every session is revoked, and the reopening codes are new, so no window
   of the old server protects anything there.
-- **Why the deletion matters:** a login state is sealed under a key derived from the OPAQUE setup,
-  and the restored server uses the same setup file. A state that came back with a restore would
-  open. The regression shows it: with the deletion removed, a login pending at snapshot time,
+- **Why the deletion matters:** a login state is sealed under a key of the OPAQUE setup and the
+  client's `loginId`, and the restored server uses the same setup file. A state that came back
+  with a restore would open for the client that still holds its `loginId`. The regression shows it: with the deletion removed, a login pending at snapshot time,
   finished after the reopening with the snapshot-time password, succeeds (`200`), within its
   60 s. Expiry alone does not cover a quick restore; the empty dump and the deletion do.
 - **Database theft and backups:** a backup holds no row of either table. A live copy of the
   database holds, for at most 60 s per login, which accounts and devices are logging in and when,
-  and the sealed states. Without the OPAQUE setup file the sealed states do not open. With it, they
-  reveal the server's side of those OPAQUE exchanges; but the `loginId` is stored only as its
-  SHA-256, and a finish names the `loginId`, so a read-only copy still cannot finish a pending
-  login through the API. Someone who can write to the database can insert sessions directly
+  and the sealed states. They open only with the OPAQUE setup file **and** the login's `loginId`,
+  which is stored only as its SHA-256 (authentication.md §4.1), so a read-only copy, even with
+  the setup file, cannot finish a pending login. Someone who can write to the database can insert sessions directly
   (database-roles.md §5) and gains nothing more here.
 
 ### 3.3 Consistent snapshot and integrity
@@ -338,10 +337,12 @@ explicit answer (predeployment-review R14, 2026-10-26):
 - a guard: its state; a guard table without its row, an unknown state, or a control schema with
   neither table (an interrupted PREPARE) means maintenance.
 
-Until it has seen `open`, the API reads this on every request and caches nothing, so each
-transition, including a database becoming a restore target, takes effect without a restart. While `reopening`, only the
-reopening routes answer (`503 reopening` elsewhere). Once it has seen `open` it stops asking: the
-guard can never go from `open` back to maintenance for the same database.
+The API reads this on every request and caches nothing, so each transition, including a
+database becoming a restore target, takes effect without a restart. While `reopening`, only the
+reopening routes answer (`503 reopening` elsewhere). The guard never goes from `open` back to
+maintenance for the same database, but `open` is not cached either: a process reaches its
+database by name, and a database dropped and recreated under that name as a restore target is a
+new one (follow-up review §18.7, checked with two API processes).
 
 ### 3.6 Revised V1 restore policy (D-28, revised 2026-10-26)
 

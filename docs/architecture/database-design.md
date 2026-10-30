@@ -180,22 +180,22 @@ running at the same moment). The runtime role may select, insert, update and del
 
 **Implemented** in `20261029090000_shared_limits`. Transient, like `rate_windows`.
 
-| Column           | Type                         | Class | Purpose                                                                                                           |
-| ---------------- | ---------------------------- | ----- | ----------------------------------------------------------------------------------------------------------------- |
-| `id_hash`        | bytea (32), primary key      | V     | `SHA-256(loginId)`; the 128-bit `loginId` itself is never stored                                                  |
-| `purpose`        | enum `login, reauth, reopen` | S     | Checked against `session_id` and `reopen_code_id`                                                                 |
-| `login_subject`  | bytea (32)                   | S     | `SHA-256("login" ‖ 0x00 ‖ normalized username)`, as in `auth_throttle`; the typed name is never stored            |
-| `account_id`     | uuid, nullable, FK           | M     | Null for an unknown username (such a login never succeeds); required for step-up and reopening                    |
-| `device_id`      | uuid, nullable               | M     | The device the client named                                                                                       |
-| `platform`       | enum `device_platform`       | M     |                                                                                                                   |
-| `session_id`     | uuid, nullable, FK           | M     | Step-up only: the session it may finish on                                                                        |
-| `reopen_code_id` | uuid, nullable               | S     | Reopening only: the code it was started with                                                                      |
-| `sealed`         | bytea, 64 to 1024 bytes      | O     | AES-256-GCM of the device challenge and the OPAQUE server login state, bound to every column above and the expiry |
-| `created_at`     | timestamptz                  | S     | Database time                                                                                                     |
-| `expires_at`     | timestamptz                  | S     | 60 s after `created_at` (a CHECK allows at most 5 minutes)                                                        |
+| Column           | Type                         | Class | Purpose                                                                                                                                |
+| ---------------- | ---------------------------- | ----- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `id_hash`        | bytea (32), primary key      | V     | `SHA-256(loginId)`; the 128-bit `loginId` itself is never stored                                                                       |
+| `purpose`        | enum `login, reauth, reopen` | S     | Checked against `session_id` and `reopen_code_id`                                                                                      |
+| `login_subject`  | bytea (32)                   | S     | `SHA-256("login" ‖ 0x00 ‖ normalized username)`, as in `auth_throttle`; the typed name is never stored                                 |
+| `account_id`     | uuid, nullable, FK           | M     | Null for an unknown username (such a login never succeeds); required for step-up and reopening                                         |
+| `device_id`      | uuid, nullable               | M     | The device the client named                                                                                                            |
+| `platform`       | enum `device_platform`       | M     |                                                                                                                                        |
+| `session_id`     | uuid, nullable, FK           | M     | Step-up only: the session it may finish on                                                                                             |
+| `reopen_code_id` | uuid, nullable               | S     | Reopening only: the code it was started with                                                                                           |
+| `sealed`         | bytea, 74 to 585 bytes       | O     | XChaCha20-Poly1305 seal (`0x02`) of the device challenge and the OPAQUE server login state, bound to every column above and the expiry |
+| `created_at`     | timestamptz                  | S     | Database time                                                                                                                          |
+| `expires_at`     | timestamptz                  | S     | 60 s after `created_at` (a CHECK allows at most 5 minutes)                                                                             |
 
-The sealing key is HKDF-SHA-256 of the OPAQUE server setup (label `ruvee/login-state-seal/v1`)
-and is never in the database. The runtime role may select, insert and delete rows, never update
+Each state's key is keyed BLAKE2b of the client's `loginId` under a key of the OPAQUE server setup
+(authentication.md §4.1); neither is in the database. The runtime role may select, insert and delete rows, never update
 them. At most 10,000 live states.
 
 ### `bootstrap_tokens`

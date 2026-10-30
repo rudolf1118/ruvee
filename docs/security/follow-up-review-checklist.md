@@ -32,7 +32,10 @@ review. It does not complete D-19, and nothing in it is approved by being listed
       never accepted there, and the reverse.
 - [ ] Rate limits: per-username reservations are atomic (R3); per-address, wrong-code and
       per-session windows and pending logins are shared in PostgreSQL (§17.2 option B,
-      `test/review/shared-limits.int-spec.ts`), so no limit depends on the instance lock. The API
+      `test/review/shared-limits.int-spec.ts`, and with two OS processes
+      `test/review/two-processes.int-spec.ts`), so no limit depends on the instance lock. The
+      10,000-row bounds are approximate (§18.2). The login-state seal follows authentication.md
+      §4.1 (ADR-0002 primitives, not yet reviewed). The API
       still refuses to serve from a second process on the same database (`InstanceLockService`,
       `test/review/topology.int-spec.ts`). Check what a transaction-mode pooler would do to the
       advisory lock.
@@ -48,8 +51,9 @@ review. It does not complete D-19, and nothing in it is approved by being listed
       (R7).
 - [ ] The restore target is empty by every object kind, not only tables (R23;
       `assertEmptyDatabase`, `p2-api.int-spec.ts`).
-- [ ] The installation lifecycle: no control schema is closed; only `open` is cached; `init` runs
-      once per new database (R14; `r14-gate-lifecycle.int-spec.ts`).
+- [ ] The installation lifecycle: no control schema is closed; nothing is cached, `open` included
+      (§18.7: a same-named replacement); `init` runs once per new database (R14;
+      `r14-gate-lifecycle.int-spec.ts`, `two-processes.int-spec.ts`).
 - [ ] Reopening: code single-use and bound to the restore; completion re-checks the session and
       the code under the guard row lock (R11, R13); proof nonces and sessions are gone after APPLY
       POLICY.

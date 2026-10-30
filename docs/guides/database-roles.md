@@ -93,7 +93,7 @@ no data to convert: both tables start empty and stay transient. On an existing i
    `SELECT, INSERT, UPDATE, DELETE` on `rate_windows` and `SELECT, INSERT, DELETE` on
    `login_states`, and nothing else.
 4. Start the new API build. Every process that serves the database must use the same OPAQUE setup
-   file (it already had to): the login states are sealed with a key derived from it.
+   file (it already had to): the login states are sealed under a key derived from it.
 
 If step 3 is skipped, the API fails closed: every login and every authenticated request is
 refused with `500 internal_error` (permission denied on the new tables) until `grant-runtime`

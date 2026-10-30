@@ -100,9 +100,10 @@ has every privilege in §3. Concretely:
   and nonces, add or change items and commits (clients verify the manifest chain), and insert false
   security events.
 - **Read pending logins**, for at most 60 s each: which account and device is logging in. The
-  OPAQUE state and challenge in them are sealed under a key derived from the OPAQUE setup file,
-  which is not in the database, so it cannot finish a login from what it reads, nor move a sealed
-  state to another account, device, session or code.
+  OPAQUE state and challenge in them are sealed under a key of the OPAQUE setup file and the
+  client's `loginId` (authentication.md §4.1), neither of which is in the database, so it cannot
+  finish a login from what it reads, nor move a sealed state to another account, device, session
+  or code.
 - **Use a code it has.** A reopening completes for whoever holds a usable code, and the API
   process sees the code in the request body. A compromised API **process** can therefore consume
   the code during a real reopening and complete it with credentials of its choosing. The database

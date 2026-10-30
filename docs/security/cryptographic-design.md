@@ -594,6 +594,19 @@ another revision, item or vault, a manifest at another `seq`, a local record und
 device, and every single-symbol typo in a Recovery Key. They pass in Node and in Playwright
 Chromium, Firefox and WebKit, page and worker.
 
+### Added on 2026-10-30 (server-only: the API's pending-login seal)
+
+Not a vault format: the API seals its own pending OPAQUE login states with it, and no client
+calls it. The construction, sizes and ownership rules are in
+[authentication.md §4.1](authentication.md#41-the-login-state-seal-owner-decision-2026-10-30-adr-0002-primitives).
+It uses no key of §3 and does not change §9: the server still holds no key that opens vault data.
+
+| Export                                                     | Purpose                                                                                                                                              |
+| ---------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `deriveLoginStateSealKey()`                                | `K_seal = MAC(H(setup), "ruvee/v1/login-state-seal")`.                                                                                               |
+| `sealLoginState()`, `openLoginState()`                     | Envelope `0x02`: XChaCha20-Poly1305 under `K_state = MAC(K_seal, login_id)`, AAD over the row. `openLoginState` returns null for any malformed seal. |
+| `LOGIN_STATE_SEAL_MIN_BYTES`, `LOGIN_STATE_SEAL_MAX_BYTES` | 74 and 585.                                                                                                                                          |
+
 ### Not implemented
 
 | Part of this design                                         | Why                                                                                                                                                                                                                      |
