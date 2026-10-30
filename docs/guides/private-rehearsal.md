@@ -52,8 +52,8 @@ reads `api.env` as root, and `operator.env` belongs to `ruvee-ops`.
   far less, see the plan's measurements), 40 GB SSD, a 2 GB swap file. Console access from the
   provider, for when SSH is closed.
 - **Private access:** a tailnet (Tailscale) with the VPS and the rehearsal devices in it, MagicDNS
-  and HTTPS certificates enabled. The VPS's name, `<host>.<tailnet>.ts.net`, is the origin. (The
-  alternative and its costs are in the plan, §2.3.)
+  and HTTPS certificates enabled. The VPS's name, `<host>.<tailnet>.ts.net`, is the origin.
+  Chosen by the owner on 2026-10-30. The steps are in §13; do them before §3.
 - **Separate backup storage:** a location that is not the VPS (another machine you control, or an
   object store), reachable from the VPS for copying. Its credentials stay out of this repository.
 - **An offline machine** for the age identity and the digests (§8).
@@ -119,17 +119,15 @@ install -m 0644 /opt/ruvee/current/deploy/journald/50-ruvee.conf /etc/systemd/jo
 systemctl restart systemd-journald
 ```
 
-- **Firewall (ufw):** `default deny incoming`, `allow in on tailscale0 to any port 443 proto tcp`,
-  `allow in on tailscale0 to any port 22 proto tcp`. Keep the provider's firewall closed to
-  everything except, until the tailnet works, SSH from your own address. Nothing listens
-  publicly: PostgreSQL and the API listen on loopback only (checked in CI), Caddy on 443 behind
+- **Firewall and SSH:** done in §13.5: `ufw` allows only 22 and 443 on `tailscale0`, and the
+  provider's firewall allows nothing inbound. SSH accepts keys only. Nothing listens publicly.
+  PostgreSQL and the API listen on loopback only (checked in CI), and Caddy listens on 443 behind
   the firewall.
-- **SSH:** keys only (`PasswordAuthentication no`, `PermitRootLogin no`).
 - **Time:** `systemd-timesyncd` on. Tokens and login states expire by the clock.
 - **Updates:** `unattended-upgrades` for security updates; reboots by hand during the rehearsal.
-- **Tailscale and Caddy:** `TS_PERMIT_CERT_UID=caddy` in `/etc/default/tailscaled`, so Caddy can
-  obtain the `*.ts.net` certificate from tailscaled. The name then appears in public
-  Certificate Transparency logs.
+- **Tailscale and Caddy:** `TS_PERMIT_CERT_UID=caddy` in `/etc/default/tailscaled` (§13.4),
+  so Caddy can obtain the `*.ts.net` certificate from tailscaled. The name then appears in
+  public Certificate Transparency logs (§13.1).
 
 ## 5. Secrets and configuration (generated on the host)
 
@@ -278,3 +276,168 @@ flows and the extension against that host, a backup containing an account (CI's 
 an initialized installation without one; the browser restore suite covers accounts on
 loopback), copying to separate storage, or real time passing (log rotation, the timer, expiry).
 Those are the rehearsal's acceptance criteria.
+
+## 13. Private access with Tailscale, step by step
+
+The owner chose Tailscale for the rehearsal on 2026-10-30. This section is the access
+procedure. Do it **before** §3, while the provider's firewall still allows SSH from your own
+address. Checked against Tailscale's documentation and package index on 2026-10-30: the stable
+client was 1.104.4, with an Ubuntu 24.04 (`noble`) apt repository; HTTPS certificates need
+MagicDNS; Caddy 2.5 or later fetches `*.ts.net` certificates from tailscaled by itself.
+
+What this gives: Ruvee is reachable only from devices in the tailnet, on 443. PostgreSQL and the
+API stay on loopback. SSH is plain OpenSSH with keys, reachable on `tailscale0` only. **Tailscale
+SSH stays off** (no `--ssh`), so a Tailscale account compromise does not by itself open a shell.
+The provider's console is the way back in if the tailnet or the firewall fails.
+
+### 13.1 Names, and what the certificate discloses
+
+The origin is `https://<machine>.<tailnet>.ts.net`. Its certificate comes from Let's Encrypt,
+and **every public certificate is published in the Certificate Transparency logs**. Anyone can
+search them and read both the machine name and the tailnet DNS name. Only machines that obtain a
+certificate are published: the VPS, not the rehearsal laptops. Disabling HTTPS later does not
+remove or revoke what was published.
+
+- **Choose a neutral machine name** before the first certificate, for example `rehearsal-01`,
+  with no product, person, company or purpose in it. Rename the machine in the admin console
+  before §13.4 if needed. Every name the VPS ever gets a certificate for stays public.
+- **Choose the tailnet DNS name** on the DNS page. It can only be changed by switching to a
+  randomly generated one, so pick the random name if the default reveals who you are.
+- CT publishes the name, not an address. The name is resolved by MagicDNS inside the tailnet.
+  Checking that it does not resolve from a public resolver is part of A-02.
+- Let's Encrypt limits how often a name can be issued (Tailscale's documentation mentions waits
+  of up to 34 hours). Do not wipe `/var/lib/ruvee-caddy` repeatedly. Certificates last 90 days,
+  and Caddy renews them through tailscaled.
+
+### 13.2 In the Tailscale admin console (owner)
+
+1. Use a tailnet for the rehearsal only, if you can. If it is an existing tailnet, the policy
+   below must be **added to** what is there, and no existing rule (such as the default allow-all)
+   may still reach `tag:ruvee-rehearsal`.
+2. **DNS page:** enable MagicDNS, then **Enable HTTPS** under HTTPS Certificates, and accept the
+   notice that names are published (§13.1).
+3. **Access controls:** a tag owned by admins, and a grant from your own login only (grants are
+   Tailscale's recommended syntax):
+
+   ```json
+   {
+     "tagOwners": { "tag:ruvee-rehearsal": ["autogroup:admin"] },
+     "grants": [
+       {
+         "src": ["<your-tailscale-login>"],
+         "dst": ["tag:ruvee-rehearsal"],
+         "ip": ["tcp:443", "tcp:22"]
+       }
+     ]
+   }
+   ```
+
+   Nothing grants the VPS access to any other device: rules are one-way.
+
+4. Tagged devices have key expiry off. Leave expiry on for the laptops.
+
+### 13.3 At the provider (owner)
+
+- The VPS (§2). Its firewall: inbound SSH (22/tcp) **from your current public address only**,
+  nothing else inbound, outbound open. Leave 41641/udp closed: Tailscale works without inbound
+  ports, through relays if needed.
+- **Check that the provider's console works** (log in once, as your administrator user, with
+  a password set for that user for the console only). That is the recovery path for every
+  step below.
+- Your SSH public key in the administrator's `authorized_keys`. The private key stays on your
+  laptop.
+
+### 13.4 On the VPS: Tailscale
+
+Over SSH from your address, as the administrator. Keep this first session open until §13.6 is
+verified.
+
+```bash
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.noarmor.gpg \
+  | sudo tee /usr/share/keyrings/tailscale-archive-keyring.gpg >/dev/null
+curl -fsSL https://pkgs.tailscale.com/stable/ubuntu/noble.tailscale-keyring.list \
+  | sudo tee /etc/apt/sources.list.d/tailscale.list
+sudo apt-get update
+sudo apt-get install -y tailscale
+echo 'TS_PERMIT_CERT_UID=caddy' | sudo tee -a /etc/default/tailscaled
+sudo systemctl restart tailscaled
+```
+
+Then the **owner** runs, in that session or the provider's console:
+
+```bash
+sudo tailscale up --hostname=<machine> --advertise-tags=tag:ruvee-rehearsal
+```
+
+It prints a login URL. Open it in your own browser and approve, without pasting it anywhere
+else. Do not use an auth key: no key needs to exist, and none goes into chat. Then:
+
+```bash
+tailscale status
+tailscale ip -4
+tailscale status --json | grep -A2 CertDomains   # must list <machine>.<tailnet>.ts.net
+```
+
+`TS_PERMIT_CERT_UID=caddy` lets only the `caddy` user, besides root, fetch the certificate. The
+`caddy` user exists once the Caddy package is installed (§3).
+
+### 13.5 Private SSH first, then the firewall
+
+1. From the laptop, in the tailnet, open a **second** session:
+   `ssh <admin>@<machine>.<tailnet>.ts.net`. Check `ss -tnp | grep :22` there: the peer must
+   be a `100.x` address.
+2. Then, in that second session:
+
+   ```bash
+   sudo ufw default deny incoming
+   sudo ufw default allow outgoing
+   sudo ufw allow in on tailscale0 to any port 22 proto tcp
+   sudo ufw allow in on tailscale0 to any port 443 proto tcp
+   sudo ufw allow from <your-public-address> to any port 22 proto tcp   # temporary
+   sudo ufw enable
+   sudo ufw status verbose
+   ```
+
+3. Open a **third** session over the tailnet. Only if it works, run
+   `sudo ufw delete allow from <your-public-address> to any port 22 proto tcp`, and
+   remove the SSH rule from the provider's firewall (inbound: nothing).
+4. `sudoedit /etc/ssh/sshd_config.d/50-ruvee.conf` with `PasswordAuthentication no`,
+   `KbdInteractiveAuthentication no` and `PermitRootLogin no`, then `sudo sshd -t`,
+   `sudo systemctl reload ssh`, and again a new session over the tailnet before closing the others.
+
+**Recovery:** in the provider's console, `sudo ufw disable` or `sudo tailscale up` again.
+The console needs no network rule. If the tailnet is down, the provider's firewall can be opened
+to your address for a while. Close it again afterwards.
+
+### 13.6 Check the exposure (A-02), before any Ruvee service runs
+
+- From **outside** the tailnet (Tailscale off on the laptop, or another network):
+  `nc -vz -w 5 <public-address> 22` and `… 443` time out; `… 5432` and `… 4000` time out.
+- On the VPS: `sudo ss -tlnp` shows 5432 and 4000 on `127.0.0.1` only once they run (§6, §7).
+  Caddy listens on `*:443` and `*:80` behind the firewall. `ufw` drops 80, so its redirect is
+  unreachable, and you use `https://` directly.
+- `dig +short <machine>.<tailnet>.ts.net @1.1.1.1` from outside the tailnet: record the answer.
+  Nothing, or only a `100.x` address (not routable from the internet), is expected. A public
+  address is a finding.
+
+### 13.7 The rehearsal devices
+
+- Install Tailscale from tailscale.com/download or the platform's app store. Sign in to the
+  same tailnet with the login named in the grant. Keep "Use Tailscale DNS settings" on (the
+  default) so MagicDNS resolves the name.
+- Browsers and Chromium for the extension need nothing else: the certificate is publicly
+  trusted. **Never** add an exception, install a root, or start a browser with a flag that
+  skips certificate checks. If the page shows a certificate warning, stop and find out why.
+- Check on each device: `curl -sS -o /dev/null -w '%{http_code} %{ssl_verify_result}\n' https://<machine>.<tailnet>.ts.net/`
+  prints `200 0`, and the browser shows a valid certificate for exactly that name.
+- `PUBLIC_ORIGIN` and `RUVEE_SITE_ADDRESS` (§5) are `https://<machine>.<tailnet>.ts.net`.
+  The extension pairs against that origin. The autofill test site stays on the laptop (§11).
+- Two laptops, or two browser profiles on one laptop, give the two-device criteria. Mobile is
+  not part of this rehearsal.
+
+### 13.8 What is not checked until the VPS exists
+
+CI has no tailnet. The first `ruvee-caddy` start on the VPS is the first time Caddy fetches a
+certificate from tailscaled through its socket, from inside the unit's sandbox
+(`ProtectSystem=strict`, `AF_UNIX` allowed). If it fails, the journal shows it. Then the unit
+needs a change, made in this repository and checked in CI. The host is never patched by hand.

@@ -47,7 +47,8 @@ is kept, never in chat or the repository:
 
 ### 2.3 Network exposure and access
 
-- **Recommended:** a tailnet. The VPS has no public HTTP(S): `ufw` allows 443 and 22 only on
+- **Chosen by the owner on 2026-10-30: Tailscale.** This approves the access approach only: no
+  VPS access, provisioning or real data. The procedure is guide §13. The VPS has no public HTTP(S): `ufw` allows 443 and 22 only on
   `tailscale0`; PostgreSQL and the API listen on loopback (checked in CI). Caddy gets a
   publicly trusted certificate for `<host>.<tailnet>.ts.net` from tailscaled, so browsers, the
   extension and the `__Host-` cookie work without installing a CA. Costs: a third-party
@@ -57,8 +58,8 @@ is kept, never in chat or the repository:
   Caddy's internal CA installed as trusted on every rehearsal device (two browsers and Chromium
   for the extension). No public name, but every device needs SSH and a manually trusted root,
   and the phone-sized browser case becomes awkward.
-- This choice is the owner's (§7). Public DNS and public 80/443 are out of scope for this
-  rehearsal.
+- Public DNS and public 80/443 are out of scope for this rehearsal. Not checked until a VPS
+  exists: Caddy fetching the certificate from tailscaled inside its sandbox (guide §13.8).
 
 ### 2.4 Order of operations
 
@@ -232,13 +233,15 @@ installation without an account; these are starting points for A-19 and A-20, no
 ## 7. Decisions that block the rehearsal
 
 1. **Authorization** to provision and change the VPS (§8).
-2. **The access method:** tailnet (recommended) or SSH tunnels with a trusted internal CA.
+2. ~~The access method~~: **decided 2026-10-30, Tailscale** (§2.3). Still the owner's to do:
+   the tailnet and its policy, the neutral names that will be public in CT logs, and the VPS
+   with a working console (guide §13.1 to §13.3).
 3. **Where the separate backup storage is,** and who holds the offline identity and digests.
 
 Nothing else blocks the synthetic rehearsal. Everything in §4 marked for real data stays open.
 
 ## 8. What needs deployment authorization
 
-The first action that needs it: **logging in to the VPS and starting guide §4** (creating users,
-installing packages, changing the firewall). Everything before it, preparing this repository and
+The first action that needs it: **logging in to the VPS over SSH and starting guide §13.4**
+(installing Tailscale, then §13.5's firewall, §3's build and §4's users and packages). Everything before it, preparing this repository and
 checking it on CI's disposable runners, is done.
