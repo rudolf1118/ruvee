@@ -71,6 +71,20 @@ describe('validateEnv', () => {
     );
   });
 
+  it('allows the test-only instance-lock bypass only when NODE_ENV is test', () => {
+    for (const NODE_ENV of ['production', 'development'])
+      expect(
+        problemsFor({ ...required, NODE_ENV, RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: '1' }),
+      ).toEqual([expect.stringMatching(/^RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: /)]);
+    expect(
+      problemsFor({ ...required, NODE_ENV: 'test', RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: 'true' }),
+    ).toEqual([expect.stringMatching(/^RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: /)]);
+    expect(
+      validateEnv({ ...required, NODE_ENV: 'test', RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: '1' })
+        .RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK,
+    ).toBe('1');
+  });
+
   it('coerces numeric values from strings', () => {
     const env = validateEnv({ ...required, API_PORT: '8080' });
     expect(env.API_PORT).toBe(8080);

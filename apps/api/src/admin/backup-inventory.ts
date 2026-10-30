@@ -42,6 +42,10 @@ export const CONFIG_INVENTORY: Record<keyof Env, { handling: ConfigHandling; why
     handling: 'host',
     why: 'the public key backups are encrypted to; set again on the restoring host. The identity that decrypts is never configuration (D-29)',
   },
+  RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: {
+    handling: 'host',
+    why: 'test only, refused unless NODE_ENV is test; never set on a real host',
+  },
   EXTENSION_ORIGINS: {
     handling: 'sidecar',
     why: 'the extension’s login and refresh calls are accepted only from these origins',

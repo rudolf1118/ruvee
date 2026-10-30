@@ -43,10 +43,17 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
   /** How often the holder confirms it still holds the lock. Tests shorten it before start. */
   checkIntervalMs = 10_000;
 
-  constructor(private readonly config: ConfigService<Env, true>) {}
+  /** env.ts refuses the setting outside NODE_ENV=test; checked here again all the same. */
+  private readonly skipped: boolean;
+
+  constructor(private readonly config: ConfigService<Env, true>) {
+    this.skipped =
+      config.get('NODE_ENV', { infer: true }) === 'test' &&
+      config.get('RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK', { infer: true }) === '1';
+  }
 
   get held(): boolean {
-    return this.client !== undefined;
+    return this.skipped || this.client !== undefined;
   }
 
   /** Read through a method: `closing` changes while an attempt awaits the database. */
@@ -60,6 +67,12 @@ export class InstanceLockService implements OnApplicationBootstrap, OnApplicatio
   }
 
   async onApplicationBootstrap(): Promise<void> {
+    if (this.skipped) {
+      this.logger.warn(
+        'Test only: serving without the instance lock (RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK).',
+      );
+      return;
+    }
     await this.attempt();
     if (!this.held) this.retry();
   }

@@ -47,6 +47,11 @@ export const envSchema = z.object({
     .string()
     .regex(/^age1[02-9ac-hj-np-z]{58}$/, { error: 'Must be an age X25519 recipient (age1…)' })
     .optional(),
+  /**
+   * Test only: serve without the instance lock, so a test can run two API processes on one
+   * database (follow-up review §18.5). Refused unless NODE_ENV is test.
+   */
+  RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK: z.enum(['1']).optional(),
   EXTENSION_ORIGINS: z.preprocess(
     emptyToUndefined,
     z
@@ -80,6 +85,13 @@ export function validateEnv(raw: Record<string, unknown>): Env {
       error: 'Must be true in production',
       path: ['SESSION_COOKIE_SECURE'],
     })
+    .refine(
+      (env) => env.RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK === undefined || env.NODE_ENV === 'test',
+      {
+        error: 'Only allowed when NODE_ENV is test',
+        path: ['RUVEE_TEST_ONLY_SKIP_INSTANCE_LOCK'],
+      },
+    )
     .safeParse(input);
   if (!result.success) {
     const problems = result.error.issues.map(

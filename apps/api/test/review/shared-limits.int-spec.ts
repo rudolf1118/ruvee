@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ConfigService } from '@nestjs/config';
 import * as opaque from '@serenity-kit/opaque';
+import pg from 'pg';
 import { loginStartResponseSchema } from '@ruvee/contracts';
 import type { Env } from '../../src/config/env.js';
 import {
@@ -17,7 +18,7 @@ import {
   ThrottleService,
   WINDOWS_PER_SCOPE,
 } from '../../src/auth/throttle.service.js';
-import { PrismaService } from '../../src/database/prisma.service.js';
+import { DATABASE_POOL_MAX, PrismaService } from '../../src/database/prisma.service.js';
 import { registerAccount, startHarness, type Harness } from '../support/api-harness.js';
 import { signLogin } from '../support/device-proof.js';
 import { finishLogin, startLogin, syntheticAccount } from '../support/synthetic-client.js';
@@ -33,8 +34,9 @@ import {
  * Follow-up review §17.2 option B: the per-address, wrong-code and per-session windows and the
  * pending logins are shared in the database, so two API processes that overlap by accident (the
  * instance lock lost, a stalled event loop) still share one budget and one single-use login
- * state. Each "process" here is its own Prisma client and services, connected as the runtime
- * role exactly as deployed (F-25), never as an administrator. Synthetic data only.
+ * state. Each "process" here is its own Prisma client and services in this Node.js process,
+ * connected as the runtime role exactly as deployed (F-25), never as an administrator; two
+ * separate OS processes are in two-processes.int-spec.ts. Synthetic data only.
  */
 
 const sha256 = (data: string | Uint8Array) => createHash('sha256').update(data).digest();
@@ -66,11 +68,9 @@ async function apiProcess(url: string, setupFile: string): Promise<Process> {
     config({ OPAQUE_SERVER_SETUP_FILE: setupFile, NODE_ENV: 'test' }),
   );
   await server.onModuleInit();
-  return {
-    prisma,
-    throttle: new ThrottleService(prisma),
-    logins: new LoginStateStore(prisma, server),
-  };
+  const logins = new LoginStateStore(prisma, server);
+  await logins.onModuleInit();
+  return { prisma, throttle: new ThrottleService(prisma), logins };
 }
 
 const SETUP_FILE = 'test/fixtures/opaque-server-setup.test-only';
@@ -223,6 +223,174 @@ describe('REVIEW §17.2 option B: limits and login states shared across API proc
       expect(own?.hits).toBe(1);
     });
 
+    const liveWindows = async (at: Date) =>
+      (
+        await query<{ n: number }>(
+          db.url,
+          `SELECT count(*)::int AS n FROM rate_windows
+           WHERE scope = 'address' AND window_start > $1::timestamptz - interval '60 seconds'`,
+          [at],
+        )
+      )[0]?.n ?? 0;
+    const fillWindows = (at: Date, n: number, prefix = 'flood-') =>
+      query(
+        db.url,
+        `INSERT INTO rate_windows (scope, key_hash, window_start, hits)
+         SELECT 'address', sha256(($3 || i)::bytea), $1, 1 FROM generate_series(1, $2::int) AS i`,
+        [at, n, prefix],
+      );
+
+    it('racing new keys pass the bound by less than the statements that can run at once (two pools)', async () => {
+      const at = new Date('2026-10-29T12:00:00.000Z');
+      await fillWindows(at, WINDOWS_PER_SCOPE - 1);
+      const results = await Promise.allSettled(
+        Array.from({ length: 80 }, (_, i) =>
+          (i % 2 === 0 ? a : b).throttle.assertIpAllowed(`203.0.113.${String(i + 1)}`, at),
+        ),
+      );
+      const { admitted } = settledCounts(results);
+      const [own] = await query<{ n: number }>(
+        db.url,
+        `SELECT count(*)::int AS n FROM rate_windows
+         WHERE scope = 'address' AND key_hash = ANY($1::bytea[])`,
+        [Array.from({ length: 80 }, (_, i) => sha256(`address\u0000203.0.113.${String(i + 1)}`))],
+      );
+      const [overflow] = await query<{ hits: number }>(
+        db.url,
+        `SELECT hits FROM rate_windows WHERE scope = 'address' AND key_hash = $1`,
+        [sha256('address\u0000\u0000overflow')],
+      );
+      const ownWindows = own?.n ?? 0;
+      // At least the one free place was taken; at most one per statement running at once in
+      // either process's pool (DATABASE_POOL_MAX each), so the bound moves by less than 2 × 10.
+      expect(ownWindows).toBeGreaterThanOrEqual(1);
+      expect(ownWindows).toBeLessThanOrEqual(2 * DATABASE_POOL_MAX);
+      expect(await liveWindows(at)).toBeLessThanOrEqual(
+        WINDOWS_PER_SCOPE - 1 + 2 * DATABASE_POOL_MAX + 1,
+      );
+      // Every other key went to the overflow window, which admitted at most its 20.
+      expect(overflow?.hits).toBe(21);
+      expect(admitted).toBe(ownWindows + 20);
+    });
+
+    it('expiry boundaries: a window counts until its last millisecond and ends exactly at its length', async () => {
+      const at = new Date('2026-10-29T12:00:00.000Z');
+      for (let i = 0; i < 20; i++) await a.throttle.assertIpAllowed('198.51.100.40', at);
+      const last = new Date(at.getTime() + 60_000 - 1);
+      await expect(b.throttle.assertIpAllowed('198.51.100.40', last)).rejects.toMatchObject({
+        code: 'rate_limited',
+      });
+      const end = new Date(at.getTime() + 60_000);
+      await b.throttle.assertIpAllowed('198.51.100.40', end);
+      const [row] = await query<{ hits: number; window_start: Date }>(
+        db.url,
+        `SELECT hits, window_start FROM rate_windows WHERE scope = 'address' AND key_hash = $1`,
+        [sha256('address\u0000198.51.100.40')],
+      );
+      expect(row).toEqual({ hits: 1, window_start: end });
+      // Pruning uses the same boundary: a window in its last millisecond is live and kept.
+      await query(db.url, `DELETE FROM rate_windows`);
+      await fillWindows(at, 3, 'edge-');
+      await a.throttle.assertIpAllowed('198.51.100.41', last);
+      expect(await liveWindows(last)).toBe(4);
+      await a.throttle.assertIpAllowed('198.51.100.42', end);
+      const [left] = await query<{ n: number }>(
+        db.url,
+        `SELECT count(*)::int AS n FROM rate_windows WHERE scope = 'address'`,
+      );
+      expect(left?.n).toBe(2);
+    });
+
+    it('pruning racing with live use never removes a live window or resets its count', async () => {
+      const at = new Date('2026-10-29T12:00:00.000Z');
+      const later = new Date(at.getTime() + 60_000);
+      // 400 ended windows, keyed as the limiter keys an address (SHA-256 of scope, NUL, key).
+      // Any new key may prune them.
+      await query(
+        db.url,
+        `INSERT INTO rate_windows (scope, key_hash, window_start, hits)
+         SELECT 'address', sha256(convert_to('address', 'UTF8') || '\\x00'::bytea || convert_to('old-' || i, 'UTF8')), $1, 20
+         FROM generate_series(1, 400) AS i`,
+        [at],
+      );
+      // 40 of those addresses come back at once and use up their new window, while 120 new
+      // addresses (each pruning up to 500 ended windows) run at the same time on both processes.
+      const revived = Array.from({ length: 40 }, (_, i) => `old-${String(i + 1)}`);
+      const work: Promise<unknown>[] = [];
+      for (let round = 0; round < 20; round++)
+        for (const [i, address] of revived.entries())
+          work.push((i % 2 === 0 ? a : b).throttle.assertIpAllowed(address, later));
+      for (let i = 0; i < 120; i++)
+        work.push(
+          (i % 2 === 0 ? b : a).throttle.assertIpAllowed(`198.18.0.${String(i + 1)}`, later),
+        );
+      settledCounts(await Promise.allSettled(work));
+      // Each revived address has used exactly its 20: the 21st is refused on either process.
+      for (const [i, address] of revived.entries())
+        await expect(
+          (i % 2 === 0 ? b : a).throttle.assertIpAllowed(address, later),
+        ).rejects.toMatchObject({ code: 'rate_limited' });
+      const rows = await query<{ hits: number }>(
+        db.url,
+        `SELECT hits FROM rate_windows WHERE scope = 'address' AND key_hash = ANY($1::bytea[])`,
+        [revived.map((r) => sha256(`address\u0000${r}`))],
+      );
+      expect(rows).toHaveLength(40);
+      expect(rows.every((r) => r.hits === 21)).toBe(true);
+      // The pruning did run during the race: every ended window that did not come back is gone.
+      const [ended] = await query<{ n: number }>(
+        db.url,
+        `SELECT count(*)::int AS n FROM rate_windows WHERE scope = 'address' AND window_start = $1`,
+        [at],
+      );
+      expect(ended?.n).toBe(0);
+    }, 60_000);
+
+    it('a prune that meets a window renewed under it re-checks the expiry and keeps it (deterministic)', async () => {
+      const at = new Date('2026-10-29T12:00:00.000Z');
+      const later = new Date(at.getTime() + 60_000);
+      const key = sha256('address\u0000198.51.100.50');
+      await query(
+        db.url,
+        `INSERT INTO rate_windows (scope, key_hash, window_start, hits) VALUES ('address', $1, $2, 20)`,
+        [key, at],
+      );
+      // The renewal (what a request for that address does once its window ended) holds the row.
+      const renewal = new pg.Client({ connectionString: db.url });
+      await renewal.connect();
+      try {
+        await renewal.query('BEGIN');
+        await renewal.query(
+          `UPDATE rate_windows SET window_start = $2, hits = 20 WHERE scope = 'address' AND key_hash = $1`,
+          [key, later],
+        );
+        // A new address prunes: its snapshot still sees the old, ended window, so it waits on it.
+        const pruning = a.throttle.assertIpAllowed('198.51.100.51', later);
+        for (let i = 0; i < 100; i++) {
+          const [waiting] = await query<{ n: number }>(
+            db.url,
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock' AND query LIKE '%DELETE FROM rate_windows%'`,
+          );
+          if ((waiting?.n ?? 0) > 0) break;
+          await new Promise((r) => setTimeout(r, 20));
+        }
+        await renewal.query('COMMIT');
+        await pruning;
+      } finally {
+        await renewal.end();
+      }
+      const [row] = await query<{ hits: number; window_start: Date }>(
+        db.url,
+        `SELECT hits, window_start FROM rate_windows WHERE scope = 'address' AND key_hash = $1`,
+        [key],
+      );
+      expect(row).toEqual({ hits: 20, window_start: later });
+      await expect(b.throttle.assertIpAllowed('198.51.100.50', later)).rejects.toMatchObject({
+        code: 'rate_limited',
+      });
+    });
+
     it('fails closed: a database error refuses the request, it never admits it', async () => {
       await query(db.url, `REVOKE UPDATE ON rate_windows FROM "${db.runtime.name}"`);
       try {
@@ -366,7 +534,7 @@ describe('REVIEW §17.2 option B: limits and login states shared across API proc
         db.url,
         `INSERT INTO login_states (id_hash, purpose, login_subject, platform, sealed, created_at, expires_at)
          SELECT sha256(('pending-' || i)::bytea), 'login', sha256('s'::bytea), 'web',
-                sha256(('x' || i)::bytea) || sha256(('y' || i)::bytea), now(), now() + interval '60 seconds'
+                '\\x02'::bytea || sha256(('x' || i)::bytea) || sha256(('y' || i)::bytea) || sha256(('z' || i)::bytea), now(), now() + interval '60 seconds'
          FROM generate_series(1, $1::int) AS i`,
         [MAX_PENDING],
       );
@@ -395,6 +563,53 @@ describe('REVIEW §17.2 option B: limits and login states shared across API proc
       expect(await count()).toBeLessThan(MAX_PENDING);
       for (const put of puts) expect(await b.logins.consume(put.loginId)).toBeDefined();
     }, 60_000);
+
+    it('racing starts at the bound pass it by less than the statements that can run at once', async () => {
+      await query(
+        db.url,
+        `INSERT INTO login_states (id_hash, purpose, login_subject, platform, sealed, created_at, expires_at)
+         SELECT sha256(('race-' || i)::bytea), 'login', sha256('s'::bytea), 'web',
+                '\\x02'::bytea || sha256(('x' || i)::bytea) || sha256(('y' || i)::bytea) || sha256(('z' || i)::bytea),
+                now(), now() + interval '60 seconds'
+         FROM generate_series(1, $1::int) AS i`,
+        [MAX_PENDING - 1],
+      );
+      const results = await Promise.allSettled(
+        Array.from({ length: 60 }, (_, i) =>
+          (i % 2 === 0 ? a : b).logins.put({
+            ...base,
+            serverLoginState: `edge-${String(i)}`,
+            accountId,
+          }),
+        ),
+      );
+      const { admitted, refused } = settledCounts(results);
+      expect(admitted).toBeGreaterThanOrEqual(1);
+      expect(admitted).toBeLessThanOrEqual(2 * DATABASE_POOL_MAX);
+      expect(refused).toBe(60 - admitted);
+      const [n] = await query<{ n: number }>(db.url, 'SELECT count(*)::int AS n FROM login_states');
+      expect(n?.n).toBe(MAX_PENDING - 1 + admitted);
+    }, 60_000);
+
+    it('expiry boundary: a state opens until its last millisecond, never at its expiry', async () => {
+      const at = new Date(Date.now() + 5 * 60_000);
+      const early = await a.logins.put({ ...base, serverLoginState: 'edge-early', accountId }, at);
+      const last = new Date(at.getTime() + LOGIN_STATE_TTL_MS - 1);
+      expect(await b.logins.consume(early.loginId, last)).toMatchObject({
+        serverLoginState: 'edge-early',
+      });
+      const late = await a.logins.put({ ...base, serverLoginState: 'edge-late', accountId }, at);
+      const expiry = new Date(at.getTime() + LOGIN_STATE_TTL_MS);
+      expect(await b.logins.consume(late.loginId, expiry)).toBeUndefined();
+      // A prune at that moment removes exactly the ended state, and keeps one still live.
+      const live = await a.logins.put({ ...base, serverLoginState: 'edge-live', accountId }, last);
+      const gone = await a.logins.put({ ...base, serverLoginState: 'edge-gone', accountId }, at);
+      await b.logins.put({ ...base, serverLoginState: 'edge-pruner', accountId }, expiry);
+      expect(await a.logins.consume(gone.loginId, last)).toBeUndefined();
+      expect(await a.logins.consume(live.loginId, expiry)).toMatchObject({
+        serverLoginState: 'edge-live',
+      });
+    });
 
     it('the runtime role may not update a state, or truncate either table', async () => {
       await a.logins.put({ ...base, serverLoginState: 'priv', accountId });
