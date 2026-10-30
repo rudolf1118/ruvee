@@ -28,3 +28,5 @@ apps/api/src/generated/
 /design/
 
 .DS_Store
+/rehearsal-out/
+/build-manifest.txt

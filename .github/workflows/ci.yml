@@ -174,6 +174,38 @@ jobs:
       - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
       - run: pnpm --filter @ruvee/api test:caddy
 
+  deploy-rehearsal:
+    name: Deployment rehearsal host (Ubuntu 24.04, systemd, PostgreSQL 18, Caddy over HTTPS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUVEE_CADDY_IMAGE: caddy:2.11-alpine
+      NEXT_TELEMETRY_DISABLED: '1'
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      # The commit itself, not the pull request's merge commit: its manifest is the one a
+      # rehearsal host compares its own build with (docs/guides/private-rehearsal.md §3).
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
+      - run: deploy/bin/build-manifest > build-manifest.txt
+      - run: deploy/test/host-rehearsal.sh
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-rehearsal-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            build-manifest.txt
+            rehearsal-out/
+          retention-days: 30
+
   extension-e2e:
     name: Browser extension (Chromium, unpacked test build)
     runs-on: ubuntu-latest

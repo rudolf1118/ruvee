@@ -1,0 +1,25 @@
+#!/bin/sh
+# Runs ruvee-admin from this release with the operator's environment, as the operator user:
+#
+#   sudo -u ruvee-ops /opt/ruvee/current/deploy/bin/ruvee-admin <command> …
+#
+# The environment file (deploy/env/operator.env.example) holds the operator role's URL; the API's
+# DATABASE_URL is never read here. RUVEE_PG_BIN, if set, puts that PostgreSQL version's
+# pg_dump and pg_restore first on PATH.
+set -eu
+
+env_file=${RUVEE_OPERATOR_ENV:-/etc/ruvee/operator.env}
+if [ ! -r "$env_file" ]; then
+  echo "ruvee-admin: cannot read $env_file (run as the operator user)" >&2
+  exit 2
+fi
+set -a
+# shellcheck disable=SC1090
+. "$env_file"
+set +a
+if [ -n "${RUVEE_PG_BIN:-}" ]; then PATH="$RUVEE_PG_BIN:$PATH"; fi
+# No update check or telemetry from the Prisma CLI that a restore runs.
+export CHECKPOINT_DISABLE=1
+
+release=$(cd "$(dirname "$0")/../.." && pwd -P)
+exec node "$release/apps/api/dist/admin/cli.js" "$@"
