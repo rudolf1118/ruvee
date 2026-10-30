@@ -13,7 +13,7 @@ import type pg from 'pg';
  */
 export const EXPECTED_SCHEMA = {
   migration: '20261029090000_shared_limits',
-  fingerprint: '28b5c668ddae44818dcd6bd5b80e37a2081fdf69884993a404ebd8d35a307d6a',
+  fingerprint: '41c670850ac16cd08b3c4fd6c80fd08cfdf55c08e3b35bf9487b456e46327bb3',
 } as const;
 
 /**

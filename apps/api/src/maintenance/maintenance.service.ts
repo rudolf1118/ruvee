@@ -17,9 +17,11 @@ const RESTORE_STATES = new Set<GuardState>(['restoring', 'review', 'reopening', 
  * schema (`uninitialized`), a guard table without its row or with an unknown state (an
  * interrupted restore), a schema with neither table. `reopening` serves only the reopening.
  *
- * Only `open` is cached, because a database never goes from open back to closed. Every other
- * answer is read again on the next request, so a database that becomes a restore target, or
- * moves from `restoring` to `reopening`, is seen at once (review R14).
+ * Every answer is read again on the next request, so a database that becomes a restore target,
+ * or moves from `restoring` to `reopening`, is seen at once (review R14). `open` is not cached
+ * either: a database never leaves `open`, but the process names its database by URL, and a
+ * database dropped and recreated under the same name as a restore target is a new database
+ * (follow-up review §18.4).
  *
  * F-25: the API's role may only read the gate's columns. If it cannot (a grant missing after a
  * restore or a migration), the answer is closed, never an error that some caller might treat as
@@ -31,7 +33,6 @@ const RESTORE_STATES = new Set<GuardState>(['restoring', 'review', 'reopening', 
 @Injectable()
 export class MaintenanceService {
   private readonly logger = new Logger(MaintenanceService.name);
-  private open = false;
   private excess: string[] | undefined;
   private reportedPrivileges = false;
 
@@ -41,10 +42,8 @@ export class MaintenanceService {
   ) {}
 
   async state(): Promise<GuardState> {
-    if (this.open) return 'open';
-    let state: GuardState;
     try {
-      state = await this.read();
+      return await this.read();
     } catch (error) {
       if (!isPrivilegeError(error)) throw error;
       if (!this.reportedPrivileges) {
@@ -55,8 +54,6 @@ export class MaintenanceService {
       }
       return 'restoring';
     }
-    if (state === 'open') this.open = true;
-    return state;
   }
 
   private async read(): Promise<GuardState> {

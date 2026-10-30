@@ -19,8 +19,9 @@ CREATE TABLE "rate_windows" (
 CREATE INDEX "rate_windows_scope_window_start_idx" ON "rate_windows"("scope", "window_start");
 
 -- A started OPAQUE login, step-up or reopening (authentication.md §4). The id is stored as its
--- SHA-256; the OPAQUE server state and the device challenge are sealed with a key derived from
--- the OPAQUE server setup, which is never in the database (login-state.store.ts).
+-- SHA-256; the OPAQUE server state and the device challenge are sealed under a key of the OPAQUE
+-- server setup and the client-held login id, neither of which is in the database
+-- (authentication.md §4.1; 0x02 envelope, 74 to 585 bytes).
 CREATE TYPE "login_purpose" AS ENUM ('login', 'reauth', 'reopen');
 
 CREATE TABLE "login_states" (
@@ -38,7 +39,7 @@ CREATE TABLE "login_states" (
     CONSTRAINT "login_states_pkey" PRIMARY KEY ("id_hash"),
     CONSTRAINT "login_states_id_hash_length" CHECK (octet_length("id_hash") = 32),
     CONSTRAINT "login_states_login_subject_length" CHECK (octet_length("login_subject") = 32),
-    CONSTRAINT "login_states_sealed_length" CHECK (octet_length("sealed") BETWEEN 64 AND 1024),
+    CONSTRAINT "login_states_sealed_length" CHECK (octet_length("sealed") BETWEEN 74 AND 585),
     CONSTRAINT "login_states_lifetime" CHECK ("expires_at" > "created_at" AND "expires_at" <= "created_at" + interval '5 minutes'),
     CONSTRAINT "login_states_reauth_binding" CHECK (("purpose" = 'reauth') = ("session_id" IS NOT NULL)),
     CONSTRAINT "login_states_reopen_binding" CHECK (("purpose" = 'reopen') = ("reopen_code_id" IS NOT NULL)),
