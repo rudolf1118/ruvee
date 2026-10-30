@@ -1,0 +1,52 @@
+# ADR-0010: Server backups for disaster recovery; portable exports as envelope containers
+
+- Status: Proposed. D-13 option A approved by the owner for development (2026-10-26); D-28 revised
+  and specified by the owner (2026-10-26); D-29 option B approved for development (2026-10-26);
+  D-30 option B approved for development (2026-10-26)
+- Date: 2026-10-26
+- Specification: [backup-restore.md](../architecture/backup-restore.md)
+
+## Context
+
+Ruvee has no tested way back from losing its server, and no way for the user to keep a copy of
+the vault outside it. Two different needs are often both called "backup": restoring the service
+after a disk or host failure, and a file the user holds that opens without the service.
+account-recovery.md §7 fixes constraints for both, and D-13 leaves the export format open.
+
+## Decision (proposed)
+
+- **First milestone (M1): operational server backup.** `ruvee-admin backup` streams a consistent
+  `pg_dump` into age encryption to the owner's public recipient, with encrypted metadata and a
+  manifest written last; the OPAQUE setup file is never part of it (INV-21).
+  `ruvee-admin restore` restores into an empty database only, in maintenance mode: every
+  session, token, recovery session, pairing and unused setup token is invalidated, and the API
+  refuses every request until the owner completes a review with local tooling on the host
+  (revised D-28). Restoring needs the owner's offline age identity and the backup digest they
+  recorded, because age does not authenticate who made a file (D-29 B). After the review the
+  installation stays closed until the owner reopens it with a single-use code printed on the
+  host plus the backup-time password or Recovery Kit, and replaces both (D-30 B).
+- **Second milestone (M2): portable export**, if D-13 option A is approved: one JSON container of
+  envelopes Ruvee already defines (the keyset, the newest verified manifest, the item records)
+  plus an `AK_WRAP_RECOVERY` made at export time from the Recovery Key the user types. No new
+  cipher, KDF, MAC or envelope purpose. It is never uploaded. Importing into a fresh installation
+  creates a new account with new keys and re-encrypts every item.
+- Plaintext export, merging into an existing account, and re-seeding are out of scope.
+
+## Consequences
+
+- Server loss becomes recoverable with tested steps; what a restore cannot undo is stated, and
+  revoked devices coming back is handled by a mandatory review before anything reopens.
+- The export's security rests on the constructions the vault already uses (themselves still
+  awaiting independent review, D-19) and on the 128-bit Recovery Key: a stolen export file
+  cannot be guessed offline.
+- Losing the Recovery Kit makes exports made with it unreadable forever.
+- Devices ahead of a restored server stay read-only until re-seeding exists (M3); they can make
+  an offline export of their verified copy, and are never erased without the user's request.
+
+## Alternatives considered
+
+- **Export with its own passphrase (D-13 B).** Convenient, but makes the file guessable offline.
+- **The `age` format (D-13 C).** Established, but a second encryption library over content that
+  is already authenticated encryption, and in passphrase mode the same offline-guessing exposure.
+- **Restoring a server backup as is (D-28 B).** Simplest; brings back removed devices and their
+  sessions, as the characterization tests show.

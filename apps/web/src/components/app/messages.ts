@@ -1,0 +1,102 @@
+import type { VaultErrorCode } from '@ruvee/vault';
+
+/** User-facing text for worker error codes. Never says more than the code does. */
+export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): string {
+  switch (code) {
+    case 'wrong_password':
+      return "That's not the right master password. Check that Caps Lock is off and try again.";
+    case 'login_failed':
+      return 'The username or master password is not correct.';
+    case 'rate_limited':
+      return `Too many attempts. Wait ${retryAfterSeconds ? formatSeconds(retryAfterSeconds) : 'a moment'} and try again.`;
+    case 'bootstrap_failed':
+      return 'This setup token is not valid. It may have expired or been used already. Create a new one with ruvee-admin bootstrap-token.';
+    case 'registration_closed':
+      return 'This server already has an account. Log in instead.';
+    case 'invalid_password':
+      return 'Choose a master password of at least 12 characters.';
+    case 'invalid_username':
+      return 'Use 1 to 64 letters, digits, dots, dashes or underscores.';
+    case 'invalid_recovery_key':
+      return 'That Recovery Key has a typo. Check each group of characters against your kit.';
+    case 'kit_mismatch':
+      return "That Recovery Key doesn't match the one shown for this account.";
+    case 'offline':
+      return "Can't reach the Ruvee server. Check your connection and try again.";
+    case 'session_expired':
+      return 'Your session ended. Unlock again to continue.';
+    case 'device_revoked':
+      return 'This device was removed from your account. Its local copy has been erased.';
+    case 'device_not_enrolled':
+      return 'This device is not set up yet.';
+    case 'read_only':
+      return "Changes are paused because the server's copy didn't pass Ruvee's checks.";
+    case 'invalid_item':
+      return 'Some fields are not valid. Check them and try again.';
+    case 'not_found':
+      return 'That item no longer exists.';
+    case 'locked':
+      return 'The vault is locked.';
+    case 'invalid_pairing_code':
+      return 'That code has a typo. Check it against the code shown on your other device.';
+    case 'pairing_used':
+      return 'This code was already used. Cancel on the other device and start again.';
+    case 'pairing_expired':
+      return 'This pairing has expired or was cancelled. Start again on the other device.';
+    case 'pairing_failed':
+      return 'This request did not come from the device you are pairing. Nothing was shared. Start again.';
+    case 'password_required':
+      return 'Enter your master password to finish adding this device.';
+    case 'recovery_failed':
+      return "That username and Recovery Key don't work together. Check both and try again.";
+    case 'cannot_revoke_current':
+      return "You can't remove the device you are using. Log out on it instead.";
+    case 'open_elsewhere':
+      return 'Ruvee was opened elsewhere in this browser, so this copy locked. Unlock to continue here.';
+    case 'conflict_changed':
+      return 'The other version changed while you were deciding. Nothing was changed; review the new version and choose again.';
+    case 'conflict_pending_edit':
+      return "This item has a newer change on this device that hasn't synced yet. Sync first, or keep both versions.";
+    case 'changed_elsewhere':
+      return 'Your account changed on another device in the meantime. Nothing was changed here. Try again.';
+    case 'previous_password_required':
+      return 'Your master password and Secret Key were both changed on another device. To move this device over, also enter the master password you used here before.';
+    case 'invalid_export':
+      return "That file isn't a Ruvee export, or it is damaged or incomplete.";
+    case 'unsynced_changes':
+      return 'Some changes are still waiting to sync or are in conflict. Resolve them, then try again.';
+    case 'import_in_progress':
+      return 'An import is still uploading. Keep this tab open or unlock again later; you can edit once it is complete.';
+    case 'vault_not_empty':
+      return 'You can import only into a vault that has never held an item, and only once. Nothing was changed.';
+    case 'integrity':
+      return "The server's copy of your keys didn't pass Ruvee's checks. Nothing was changed.";
+    case 'server_maintenance':
+      return 'The server is being restored by its owner and is not available yet. Your local copy is kept, read-only.';
+    case 'server_reopening':
+      return 'The server was restored and waits for its owner to reopen it. Your local copy is kept, read-only.';
+    case 'reopen_failed':
+      return "That reopening code, username or credential doesn't work. Check them; after five failures the code stops working and the server's owner must make a new one.";
+    case 'reopen_needs_kit':
+      return 'This device has a newer Secret Key than the backup, so it cannot reopen with the password. Reopen from a new browser with your Recovery Kit (welcome screen).';
+    case 'local_data_other_account':
+      return 'This browser holds a vault of another account. Recovering here erases that vault from this browser, including any changes it has not uploaded yet; its own server and devices still have what they had. To keep it, export it from that account first or use another browser.';
+    case 'proof_rejected':
+      return "The server didn't accept this request, often because it waited too long or was sent twice at once. Nothing was changed; try again. If it keeps failing, lock this device and choose “Use your Recovery Kit” on the lock screen to enroll it again.";
+    case 'device_key_missing':
+      return "This device can't prove its device key to the server, so it won't sync. Lock it and choose “Use your Recovery Kit” on the lock screen to enroll it again; everything on this device is kept.";
+    case 'migration_required':
+      return "This account was created before device keys and can't be enrolled on a device again, so the Recovery Kit can't be used with it here. Nothing was changed. Move its items to a new account: unlock it on a device that has it and open Security → Move to a new account.";
+    case 'local_data_present':
+      return 'This browser holds a vault. Reopen from it with your master password instead, or use a browser with no Ruvee data for the Recovery Kit.';
+    case 'export_first':
+      return 'Download a verified copy first, or choose to erase without one.';
+    case 'internal':
+      return 'Something went wrong. Try again.';
+  }
+}
+
+function formatSeconds(seconds: number): string {
+  if (seconds < 60) return `${Math.ceil(seconds)} seconds`;
+  return `${Math.ceil(seconds / 60)} minutes`;
+}

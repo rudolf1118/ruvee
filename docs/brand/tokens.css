@@ -1,0 +1,53 @@
+/* Ruvee brand tokens. Light values match apps/web/src/app/globals.css; dark is new. */
+:root {
+  --brand: #6d4aff;
+  --brand-hover: #5a36f0;
+  --brand-strong: #3f22c9;
+  --brand-text: #4a2bd6;
+  --brand-soft: #eee9ff;
+  --brand-tint: #f1edff;
+  --brand-wash: #f6f3ff;
+  --brand-line: #c6b8ff;
+  --canvas: #f8f7f4;
+  --surface: #ffffff;
+  --subtle: #f3f1ec;
+  --hover: #efede7;
+  --line: #e6e3dc;
+  --line-strong: #dcd8cf;
+  --line-input: #d3cfc5;
+  --ink: #20212b;
+  --ink-secondary: #3a3b47;
+  --ink-muted: #5e6070;
+  --ribbon: #2b2240;
+  --danger: #b42318;
+  --danger-wash: #fdecea;
+  --caution-strong: #6b3a00;
+  --caution-wash: #fff4e5;
+  --caution-line: #f5d9ae;
+}
+[data-theme='dark'] {
+  --brand: #7357ff;
+  --brand-hover: #8a72ff;
+  --brand-strong: #d2c8ff;
+  --brand-text: #b3a1ff;
+  --brand-soft: #2b2452;
+  --brand-tint: #251f45;
+  --brand-wash: #1f1b38;
+  --brand-line: #4a3d8f;
+  --canvas: #16151c;
+  --surface: #1e1d26;
+  --subtle: #25242e;
+  --hover: #2a2934;
+  --line: #2f2e39;
+  --line-strong: #3b3a46;
+  --line-input: #44434f;
+  --ink: #eceaf2;
+  --ink-secondary: #cfcdd8;
+  --ink-muted: #9b99a8;
+  --ribbon: #0e0d14;
+  --danger: #f97066;
+  --danger-wash: #3a1714;
+  --caution-strong: #f5c26b;
+  --caution-wash: #33240e;
+  --caution-line: #5c4214;
+}

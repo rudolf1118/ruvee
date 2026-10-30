@@ -1,0 +1,23 @@
+<!doctype html>
+<!--
+  A synthetic sign-in page for the rehearsal's autofill check (docs/guides/private-rehearsal.md).
+  Serve it on the rehearsal laptop, on loopback only:
+    python3 -m http.server 3105 --bind 127.0.0.1 --directory deploy/rehearsal/test-site
+  It sends nothing anywhere: the form has no action and submitting it only shows what was filled.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Synthetic sign-in (Ruvee rehearsal)</title>
+  </head>
+  <body>
+    <h1>Synthetic sign-in</h1>
+    <p>Test page for the Ruvee rehearsal. Use synthetic credentials only.</p>
+    <form id="signin" onsubmit="event.preventDefault(); document.getElementById('filled').textContent = 'Filled: ' + document.getElementById('user').value + ' / ' + document.getElementById('pass').value.length + ' characters';">
+      <label>Email <input id="user" name="email" type="email" autocomplete="username" /></label>
+      <label>Password <input id="pass" name="password" type="password" autocomplete="current-password" /></label>
+      <button type="submit">Sign in</button>
+    </form>
+    <p id="filled"></p>
+  </body>
+</html>

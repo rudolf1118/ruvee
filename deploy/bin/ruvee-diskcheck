@@ -1,0 +1,26 @@
+#!/bin/sh
+# Checks the filesystems Ruvee needs: the root, the database and the local backups. Each line goes
+# to the journal with a priority (<4> warning, <6> info); any filesystem at or above the threshold
+# makes the run fail, so `systemctl --failed` shows it.
+#
+#   RUVEE_DISK_WARN_PERCENT   threshold in percent used (default 80)
+set -eu
+
+threshold=${RUVEE_DISK_WARN_PERCENT:-80}
+case $threshold in
+  '' | *[!0-9]*) echo "<3>ruvee-diskcheck: RUVEE_DISK_WARN_PERCENT must be a number"; exit 2 ;;
+esac
+
+status=0
+for path in / /var/lib/postgresql /var/backups/ruvee; do
+  [ -e "$path" ] || continue
+  used=$(df -P "$path" | awk 'NR == 2 { sub(/%/, "", $5); print $5 }')
+  free=$(df -P -h "$path" | awk 'NR == 2 { print $4 }')
+  if [ "$used" -ge "$threshold" ]; then
+    echo "<4>ruvee-diskcheck: $path is ${used}% full, ${free} free (threshold ${threshold}%)"
+    status=1
+  else
+    echo "<6>ruvee-diskcheck: $path is ${used}% full, ${free} free"
+  fi
+done
+exit "$status"

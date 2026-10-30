@@ -47,11 +47,16 @@ jobs:
       - run: pnpm lint
       - run: pnpm typecheck
       - run: pnpm test
+      # The restore tests need pg_dump and pg_restore of the server's major version (18); the
+      # runner's client is older, so they run inside the service container (pg-tools.ts).
       - run: pnpm test:integration
+        env:
+          RUVEE_PG_TOOLS_PREFIX: '["docker","exec","-i","-e","PGPASSWORD","${{ job.services.postgres.id }}"]'
+          RUVEE_PG_TOOLS_HOST: 127.0.0.1:5432
       - run: pnpm build
 
   e2e:
-    name: Browser tests (desktop and mobile)
+    name: Browser tests (desktop and mobile; headers and CSP in three engines)
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -65,7 +70,10 @@ jobs:
           node-version-file: .nvmrc
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm --filter @ruvee/web exec playwright install --with-deps chromium
+      - run: pnpm --filter @ruvee/web exec playwright install --with-deps chromium firefox webkit
+      # The web build imports the built @ruvee/contracts and @ruvee/crypto, so it goes through turbo.
+      - run: pnpm turbo run build --filter=@ruvee/web
+      - run: pnpm --filter @ruvee/web test:headers
       - run: pnpm --filter @ruvee/web test:e2e
       - if: failure()
         uses: actions/upload-artifact@v7
@@ -73,3 +81,208 @@ jobs:
           name: playwright-report
           path: apps/web/test-results
           retention-days: 7
+
+  vault-e2e:
+    name: Two-device vault workflow (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ruvee
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: ruvee
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ruvee -d ruvee"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      # The stack creates and drops its own ruvee_e2e_* database on this server.
+      RUVEE_E2E_ADMIN_DATABASE_URL: postgresql://ruvee:ci-only-not-a-secret@127.0.0.1:5432/ruvee
+      RUVEE_E2E_BROWSER: ${{ matrix.browser }}
+      NEXT_TELEMETRY_DISABLED: '1'
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ruvee/web exec playwright install --with-deps ${{ matrix.browser }}
+      # Through turbo, so the Prisma client and the workspace packages are built first.
+      - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
+      - run: pnpm --filter @ruvee/web test:vault
+      # Export from one installation, restore into a second, fresh one (two stacks, two databases).
+      - run: pnpm --filter @ruvee/web test:import
+      # An account from before D-31 moves to a new account through a verified export.
+      - run: pnpm --filter @ruvee/web test:migrate
+      # R14: encrypted backup, restore into a new database and review, under the same origin. The
+      # PostgreSQL 18 tools run inside the service container (apps/api/src/admin/pg-tools.ts).
+      - run: pnpm --filter @ruvee/web test:restore
+        env:
+          RUVEE_PG_TOOLS_PREFIX: '["docker","exec","-i","-e","PGPASSWORD","${{ job.services.postgres.id }}"]'
+          RUVEE_PG_TOOLS_HOST: 127.0.0.1:5432
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vault-e2e-${{ matrix.browser }}
+          path: apps/web/test-results
+          retention-days: 7
+
+  caddy:
+    name: Caddy in front of the API (headers, cache rules, error paths)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ruvee
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: ruvee
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ruvee -d ruvee"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      RUVEE_E2E_ADMIN_DATABASE_URL: postgresql://ruvee:ci-only-not-a-secret@127.0.0.1:5432/ruvee
+      RUVEE_CADDY_IMAGE: caddy:2.11-alpine
+      NEXT_TELEMETRY_DISABLED: '1'
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: docker pull "$RUVEE_CADDY_IMAGE"
+      - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
+      - run: pnpm --filter @ruvee/api test:caddy
+
+  deploy-rehearsal:
+    name: Deployment rehearsal host (Ubuntu 24.04, systemd, PostgreSQL 18, Caddy over HTTPS)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    env:
+      RUVEE_CADDY_IMAGE: caddy:2.11-alpine
+      NEXT_TELEMETRY_DISABLED: '1'
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      # The commit itself, not the pull request's merge commit: its manifest is the one a
+      # rehearsal host compares its own build with (docs/guides/private-rehearsal.md §3).
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
+      - run: deploy/bin/build-manifest > build-manifest.txt
+      - run: deploy/test/host-rehearsal.sh
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: deploy-rehearsal-${{ github.event.pull_request.head.sha || github.sha }}
+          path: |
+            build-manifest.txt
+            rehearsal-out/
+          retention-days: 30
+
+  extension-e2e:
+    name: Browser extension (Chromium, unpacked test build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_USER: ruvee
+          POSTGRES_PASSWORD: ci-only-not-a-secret
+          POSTGRES_DB: ruvee
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U ruvee -d ruvee"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    env:
+      RUVEE_E2E_ADMIN_DATABASE_URL: postgresql://ruvee:ci-only-not-a-secret@127.0.0.1:5432/ruvee
+      NEXT_TELEMETRY_DISABLED: '1'
+      TURBO_TELEMETRY_DISABLED: '1'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ruvee/extension exec playwright install --with-deps chromium
+      - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
+      - run: pnpm --filter @ruvee/extension test:extension
+      - if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: extension-e2e
+          path: apps/extension/test-results
+          retention-days: 7
+
+  crypto-package-browsers:
+    name: '@ruvee/crypto checks in browsers (page and worker)'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter @ruvee/crypto exec playwright-core install --with-deps chromium firefox webkit
+      - run: pnpm --filter @ruvee/crypto test:browsers
+
+  crypto-validation:
+    name: Crypto primitive validation (Node and browsers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: tools/crypto-validation
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: tools/crypto-validation/package-lock.json
+      - run: npm ci
+      - run: npm run test:node
+      - run: npm run calibration:selftest
+      - run: npm run install:browsers -- --with-deps
+      - run: npm run test:browsers
+      - if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: crypto-validation-results
+          path: tools/crypto-validation/results
+          retention-days: 14

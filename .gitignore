@@ -1,6 +1,13 @@
 node_modules/
 dist/
 .next/
+# Static export produced by `next build` when `output: 'export'`.
+apps/web/out/
+apps/web/out-diagnostics
+# Caddy header snippet generated from the export by the web build.
+apps/web/out-caddy/
+# The extension's test build (host permission for 127.0.0.1; never distributed).
+apps/extension/dist-test/
 .turbo/
 coverage/
 playwright-report/
@@ -13,9 +20,13 @@ apps/api/src/generated/
 .env
 .env.*
 !.env.example
+# Local server secrets (OPAQUE server setup); never committed.
+/.secrets/
 
 # Design bundles are large self-contained HTML exports kept outside version control.
 /ruvee password manager.html
 /design/
 
 .DS_Store
+/rehearsal-out/
+/build-manifest.txt

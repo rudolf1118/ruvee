@@ -6,17 +6,29 @@
   "type": "module",
   "scripts": {
     "dev": "next dev --hostname 127.0.0.1 --port 3100",
-    "build": "next build && node scripts/assert-preview-excluded.mjs",
+    "build": "next build && node scripts/assert-preview-excluded.mjs && node scripts/write-caddy-headers.mjs",
+    "build:diagnostics": "node scripts/build-diagnostics.mjs",
     "start": "next start --hostname 127.0.0.1 --port 3100",
+    "serve:export": "node scripts/serve-export.mjs",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:headers": "node scripts/build-diagnostics.mjs && playwright test -c playwright.headers.config.ts",
+    "test:vault": "playwright test -c playwright.vault.config.ts",
+    "test:import": "playwright test -c playwright.import.config.ts",
+    "test:migrate": "RUVEE_E2E_SPEC=migrate.spec.ts RUVEE_E2E_IMPORT_PORT=3131 playwright test -c playwright.import.config.ts",
+    "test:restore": "playwright test -c playwright.restore.config.ts"
   },
   "dependencies": {
+    "@ruvee/contracts": "workspace:*",
+    "@ruvee/crypto": "workspace:*",
+    "@ruvee/vault": "workspace:*",
+    "@serenity-kit/opaque": "1.1.0",
     "next": "16.4.2",
     "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react-dom": "19.3.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@axe-core/playwright": "4.14.0",
@@ -30,6 +42,7 @@
     "@types/node": "24.19.2",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
+    "esbuild": "0.28.2",
     "eslint": "10.13.0",
     "jsdom": "30.1.3",
     "postcss": "8.5.31",

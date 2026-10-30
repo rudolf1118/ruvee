@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Ruvee Argon2id calibration (synthetic)</title>
+    <link rel="stylesheet" href="/calibration/style.css" />
+    <script src="/calibration/page.js"></script>
+  </head>
+  <body>
+    <main>
+      <h1>Argon2id calibration</h1>
+      <p>
+        Measures <code>crypto_pwhash</code> (Argon2id, libsodium.js 0.8.4) in a dedicated Web
+        Worker. All inputs are synthetic. Nothing leaves this page except the results, which are
+        sent only to the computer serving it. A run takes about one to five minutes.
+      </p>
+      <p>
+        Before starting: plug the device in, close other tabs and apps, keep the screen on, and
+        leave the page in the foreground until it finishes.
+      </p>
+      <label
+        >Device and browser
+        <input id="device" type="text" maxlength="200" placeholder="e.g. Pixel 6a, Chrome 141, plugged in"
+      /></label>
+      <label
+        >Mode
+        <select id="mode">
+          <option value="standard">Standard: 3 warm-up and 20 measured runs</option>
+          <option value="quick">Quick: 1 warm-up and 5 measured runs</option>
+        </select></label
+      >
+      <fieldset id="configs">
+        <legend>Configurations (the baseline is measured again at the end)</legend>
+      </fieldset>
+      <label><input id="with-cancellation" type="checkbox" checked /> Include the cancellation test</label>
+      <div class="buttons">
+        <button id="start" type="button">Start</button>
+        <button id="cancel" type="button" disabled>Cancel</button>
+      </div>
+      <p id="status" role="status">Ready.</p>
+      <table>
+        <thead>
+          <tr>
+            <th>Configuration</th>
+            <th>Status</th>
+            <th>Median ms</th>
+            <th>p95 ms</th>
+            <th>Min ms</th>
+            <th>Max ms</th>
+            <th>n</th>
+            <th>Failures</th>
+          </tr>
+        </thead>
+        <tbody id="results-body"></tbody>
+      </table>
+      <label>Full results (JSON)<textarea id="json" rows="10" readonly></textarea></label>
+    </main>
+  </body>
+</html>

@@ -1,0 +1,41 @@
+{
+  "name": "@ruvee/crypto",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "description": "Ruvee's client-side cryptographic format over libsodium.js: password input, Argon2id profiles, the account-key password wrap, the keyset envelope and padding. Development milestone P2-03; not reviewed and not for real secrets.",
+  "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:browsers": "node scripts/browser-tests.mjs",
+    "vectors:write": "WRITE_PROVISIONAL_VECTORS=1 vitest run test/protocol-vectors.spec.ts"
+  },
+  "dependencies": {
+    "libsodium-sumo": "0.8.4",
+    "libsodium-wrappers-sumo": "0.8.4"
+  },
+  "devDependencies": {
+    "@noble/ciphers": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "@ruvee/eslint-config": "workspace:*",
+    "@types/node": "24.19.2",
+    "esbuild": "0.28.2",
+    "eslint": "10.13.0",
+    "playwright-core": "1.64.1",
+    "typescript": "6.0.3",
+    "vitest": "5.0.5"
+  }
+}
