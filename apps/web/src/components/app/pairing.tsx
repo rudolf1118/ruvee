@@ -184,17 +184,26 @@ export function JoinWithCode({
   const [password, setPassword] = useState('');
   const [needsPassword, setNeedsPassword] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  // The join was sent and approved, and only the password is missing: never a second join.
+  const [finishing, setFinishing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     void client.call('pairingNeedsPassword').then(setNeedsPassword, () => undefined);
+    // A join this worker already sent is resumed, not offered as a new code form.
+    void client.call('pairingJoinState').then(
+      (join) => {
+        if (join.state === 'joined') setWaiting(true);
+      },
+      () => undefined,
+    );
   }, [client]);
 
   useEffect(() => {
     if (!waiting) return;
     const timer = setInterval(() => {
-      client.call('pairingWait').then(
+      client.call('pairingWait', {}).then(
         (status) => {
           if (status.state === 'enrolled') {
             clearInterval(timer);
@@ -204,8 +213,10 @@ export function JoinWithCode({
         (e: unknown) => {
           clearInterval(timer);
           setWaiting(false);
-          if (e instanceof VaultClientError && e.code === 'password_required')
+          if (e instanceof VaultClientError && e.code === 'password_required') {
             setNeedsPassword(true);
+            setFinishing(true);
+          }
           setError(errorText(e));
         },
       );
@@ -220,11 +231,16 @@ export function JoinWithCode({
     if (busy) return;
     setBusy(true);
     setError(null);
-    client
-      .call('pairingJoin', { code, ...(needsPassword ? { password } : {}) })
+    const sent: Promise<unknown> = finishing
+      ? client.call('pairingWait', { password }).then((status) => {
+          if (status.state === 'enrolled') onEnrolled(status.vault);
+        })
+      : client.call('pairingJoin', { code, ...(needsPassword ? { password } : {}) });
+    sent
       .then(
         () => {
           setPassword('');
+          setFinishing(false);
           setWaiting(true);
         },
         (e: unknown) => {
@@ -249,17 +265,19 @@ export function JoinWithCode({
         <Notice tone="brand">Waiting for approval on your other device…</Notice>
       ) : (
         <form className="flex flex-col gap-4" onSubmit={submit}>
-          <TextField
-            label="Pairing code"
-            value={code}
-            onChange={(e) => {
-              setCode(e.target.value);
-            }}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="PC1-…"
-            inputClassName="font-mono"
-          />
+          {finishing ? null : (
+            <TextField
+              label="Pairing code"
+              value={code}
+              onChange={(e) => {
+                setCode(e.target.value);
+              }}
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="PC1-…"
+              inputClassName="font-mono"
+            />
+          )}
           {needsPassword ? (
             <PasswordField
               label="Master password"
@@ -277,7 +295,7 @@ export function JoinWithCode({
             aria-disabled={busy || undefined}
             className="self-start"
           >
-            {busy ? 'Sending…' : 'Add this device'}
+            {busy ? 'Sending…' : finishing ? 'Finish adding this device' : 'Add this device'}
           </Button>
         </form>
       )}

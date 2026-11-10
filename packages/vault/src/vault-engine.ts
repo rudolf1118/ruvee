@@ -30,6 +30,7 @@ import type {
   DevicePhase,
   PairingCode,
   PairingHostStatus,
+  PairingJoinState,
   PairingJoinStatus,
   ItemDetail,
   ItemDraft,
@@ -362,6 +363,24 @@ interface PendingRecovery {
   };
 }
 
+/** `pairingJoinSnapshot`: a join's secrets as text, for memory-only storage (never the password). */
+const b64Text = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]+$/)
+  .max(256);
+const pairingJoinSnapshotSchema = z.strictObject({
+  v: z.literal(1),
+  deviceId: z.uuid(),
+  pairingId: b64Text,
+  secret: b64Text,
+  ephemeralPublicKey: b64Text,
+  ephemeralPrivateKey: b64Text,
+  devicePublicKey: b64Text,
+  deviceSecretKey: b64Text,
+  expiresAtMs: z.number().int().positive(),
+});
+export type PairingJoinSnapshot = z.infer<typeof pairingJoinSnapshotSchema>;
+
 interface JoinPairing {
   readonly secret: Uint8Array;
   /** Device B's key, in memory only until B holds `AK` to seal it (device-proof.md §8). */
@@ -379,6 +398,8 @@ export class VaultEngine {
   private readonly hosting = new Map<string, HostPairing>();
   /** Device B: the pairing it joined. */
   private joining: JoinPairing | undefined;
+  /** The pending device that made `joining`; a snapshot is restored only for the same one. */
+  private joiningDeviceId: string | undefined;
   /**
    * Device B keeps the password from its login for at most 10 minutes, to unwrap `AK` once the
    * reply arrives (§3.2 step 1); after that it asks again.
@@ -763,6 +784,8 @@ export class VaultEngine {
       throw new VaultError('login_failed');
     }
     const existing = await this.peekDevice();
+    // A join of an earlier login belongs to that device; this login starts over.
+    this.dropJoining();
     let result = await this.opaqueLogin(username, password, existing?.deviceId);
     if (result.device.status === 'active' && existing?.enrolled) {
       return { phase: 'enrolled', username, deviceId: existing.deviceId };
@@ -2204,27 +2227,90 @@ export class VaultEngine {
     return !this.pendingPassword || this.pendingPassword.expiresAtMs <= this.deps.now();
   }
 
+  /** The password for a login or join, kept for at most 10 minutes from when it was typed. */
+  private keepPairingPassword(password: string): void {
+    try {
+      this.pendingPassword = {
+        value: normalizePassword(password),
+        expiresAtMs: this.deps.now() + PAIRING_TTL_MS,
+      };
+    } catch {
+      throw new VaultError('wrong_password');
+    }
+  }
+
+  /** Device B: the join this engine holds, without a request (a reopened UI resumes from it). */
+  pairingJoinState(): PairingJoinState {
+    const join = this.joining;
+    if (!join) return { state: 'none' };
+    if (join.expiresAtMs <= this.deps.now()) {
+      this.dropJoining();
+      return { state: 'none' };
+    }
+    return {
+      state: 'joined',
+      needsPassword: this.pairingNeedsPassword(),
+      expiresAtMs: join.expiresAtMs,
+    };
+  }
+
+  /**
+   * Device B: the join's secrets, for a client whose process may stop while it waits (the
+   * extension's service worker keeps them in `chrome.storage.session`, memory only, next to
+   * `AK`). Never the password: after a restart it is asked for again.
+   */
+  pairingJoinSnapshot(): PairingJoinSnapshot | undefined {
+    const join = this.joining;
+    if (!join || !this.joiningDeviceId) return undefined;
+    return {
+      v: 1,
+      deviceId: this.joiningDeviceId,
+      pairingId: toB64(join.pairingId),
+      secret: toB64(join.secret),
+      ephemeralPublicKey: toB64(join.ephemeralPublicKey),
+      ephemeralPrivateKey: toB64(join.ephemeralPrivateKey),
+      devicePublicKey: toB64(join.deviceKey.publicKey),
+      deviceSecretKey: toB64(join.deviceKey.secretKey),
+      expiresAtMs: join.expiresAtMs,
+    };
+  }
+
+  /**
+   * Takes back a snapshot from `pairingJoinSnapshot`, only for this pending device and before
+   * the join expires; anything else is ignored (false) and the caller discards it.
+   */
+  async pairingJoinRestore(snapshot: unknown): Promise<boolean> {
+    const parsed = pairingJoinSnapshotSchema.safeParse(snapshot);
+    if (!parsed.success || parsed.data.expiresAtMs <= this.deps.now()) return false;
+    const device = await this.peekDevice();
+    if (device?.status !== 'pending' || device.deviceId !== parsed.data.deviceId) return false;
+    const s = parsed.data;
+    this.dropJoining();
+    this.joining = {
+      secret: fromB64(s.secret),
+      deviceKey: { publicKey: fromB64(s.devicePublicKey), secretKey: fromB64(s.deviceSecretKey) },
+      pairingId: fromB64(s.pairingId),
+      ephemeralPublicKey: fromB64(s.ephemeralPublicKey),
+      ephemeralPrivateKey: fromB64(s.ephemeralPrivateKey),
+      expiresAtMs: s.expiresAtMs,
+    };
+    this.joiningDeviceId = s.deviceId;
+    return true;
+  }
+
   private dropJoining(): void {
     this.joining?.secret.fill(0);
     this.joining?.ephemeralPrivateKey.fill(0);
     this.joining?.deviceKey.secretKey.fill(0);
     this.joining = undefined;
+    this.joiningDeviceId = undefined;
   }
 
   /** Device B, steps 4 and 5: checks the code offline, then sends `epk_B` and `req_mac`. */
   async pairingJoin(params: { code: string; password?: string }): Promise<true> {
     const device = await this.peekDevice();
     if (device?.status !== 'pending') throw new VaultError('device_not_enrolled');
-    if (params.password !== undefined) {
-      try {
-        this.pendingPassword = {
-          value: normalizePassword(params.password),
-          expiresAtMs: this.deps.now() + PAIRING_TTL_MS,
-        };
-      } catch {
-        throw new VaultError('wrong_password');
-      }
-    }
+    if (params.password !== undefined) this.keepPairingPassword(params.password);
     if (this.pairingNeedsPassword()) throw new VaultError('password_required');
     const { crypto, api } = this.deps;
     let secret: Uint8Array;
@@ -2259,6 +2345,14 @@ export class VaultEngine {
         throw new VaultError('pairing_used');
       if (error instanceof ApiError && error.code === 'not_found')
         throw new VaultError('pairing_expired');
+      // The server no longer has this device as pending: an earlier join was approved (the
+      // device is active and asked to prove a key) or the device was changed since. The key
+      // that join made is gone, so no code can finish it; a new login starts a new device.
+      if (
+        error instanceof ApiError &&
+        (error.code === 'forbidden' || error.code === 'device_proof_required')
+      )
+        throw new VaultError('pairing_interrupted');
       throw vaultErrorFrom(error);
     }
     this.dropJoining();
@@ -2270,22 +2364,30 @@ export class VaultEngine {
       ephemeralPrivateKey: request.ephemeralPrivateKey,
       expiresAtMs: this.deps.now() + PAIRING_TTL_MS,
     };
+    this.joiningDeviceId = device.deviceId;
     return true;
   }
 
   /**
    * Device B, steps 9 and 10: verifies `resp_mac`, opens the box, unlocks with the password and
    * the received `SK`, checks the keyset against them, and only then stores anything.
+   *
+   * It polls without the password: approval may come after the password from the login has
+   * expired, or after the process restarted. The password is needed only once the reply is
+   * there, and then `password_required` keeps the join, so `pairingWait({ password })` finishes
+   * it (never a second `pairingJoin`, which the server refuses once the device is active).
+   * A call after the join finished here returns the enrolled vault again.
    */
-  pairingWait(): Promise<PairingJoinStatus> {
+  pairingWait(params?: { password?: string }): Promise<PairingJoinStatus> {
     return this.exclusive(async () => {
+      if (params?.password !== undefined) this.keepPairingPassword(params.password);
       const join = this.joining;
+      if (!join && this.session && (await this.peekDevice())?.enrolled)
+        return { state: 'enrolled', vault: this.unlockedView() } as const;
       if (!join || join.expiresAtMs <= this.deps.now()) {
         this.dropJoining();
         throw new VaultError('pairing_expired');
       }
-      const password = this.pendingPassword?.value;
-      if (!password || this.pairingNeedsPassword()) throw new VaultError('password_required');
       const device = await this.peekDevice();
       if (!device) throw new VaultError('device_not_enrolled');
       const { crypto, api } = this.deps;
@@ -2300,7 +2402,8 @@ export class VaultEngine {
           throw new VaultError('pairing_expired');
         }
         // Approved: this device is active now, and its session proves the key it already holds
-        // before it reads anything else (device-proof.md §8).
+        // before it reads anything else (device-proof.md §8). Done at once, password or not:
+        // the server gives an unproven session of an active device ten minutes.
         if (error instanceof ApiError && error.code === 'device_proof_required') {
           try {
             await this.proveSession(ids, join.deviceKey);
@@ -2312,6 +2415,8 @@ export class VaultEngine {
       }
       if (state.state !== 'approved' || !state.response) return { state: 'waiting' } as const;
       const response = state.response;
+      const password = this.pendingPassword?.value;
+      if (!password || this.pairingNeedsPassword()) throw new VaultError('password_required');
 
       const accountId = uuidToBytes(device.accountId);
       // What this device receives and unlocks belongs to this step until the session takes it:

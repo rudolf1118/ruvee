@@ -47,6 +47,8 @@ export function messageFor(code: VaultErrorCode, retryAfterSeconds?: number): st
       return 'This request did not come from the device you are pairing. Nothing was shared. Start again.';
     case 'password_required':
       return 'Enter your master password to finish adding this device.';
+    case 'pairing_interrupted':
+      return 'This device was already approved, but the pairing was interrupted before it could finish, so this code cannot complete it. Log in again on this device to start over; the earlier entry can be removed under Devices.';
     case 'recovery_failed':
       return "That username and Recovery Key don't work together. Check both and try again.";
     case 'cannot_revoke_current':

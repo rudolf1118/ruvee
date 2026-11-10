@@ -813,7 +813,10 @@ export class FakeServer {
       },
       pairingRequest: (pairingId, body) => {
         this.check(body);
-        const id = requireSession();
+        // As the API: the guard first (an active device's unproven session), then only a pending
+        // device may request.
+        const id = requireProvenIfActive();
+        if (this.devices.get(id) !== 'pending') this.fail(403, 'forbidden');
         const p = this.pairings.get(pairingId);
         if (!p) this.fail(404, 'not_found');
         if (p.state !== 'open') this.fail(409, 'pairing_state');

@@ -167,13 +167,25 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   await popup.getByLabel('Pairing code').fill(code);
   await popup.getByRole('button', { name: 'Add this browser' }).click();
   await expect(popup.getByText('Waiting for approval')).toBeVisible();
+  // Rehearsal A-07: the toolbar popup closes as soon as the user turns to the approving device.
+  // The worker owns the join: a reopened popup resumes waiting instead of offering the code form.
+  await popup.close();
+  popup = await context.newPage();
+  await popup.goto(popupUrl());
+  await expect(popup.getByText('Waiting for approval')).toBeVisible({ timeout: 15_000 });
+  await expect(popup.getByLabel('Pairing code')).toHaveCount(0);
+  await popup.close();
   await web.bringToFront();
   await expect(web.getByText(/Approve a new\s+browser extension/)).toBeVisible({ timeout: 15_000 });
   await web.getByRole('button', { name: 'Approve' }).click();
   await expect(web.getByText('The new device was added.')).toBeVisible();
+  // With no popup open, the worker finishes the enrollment and holds the unlocked state.
+  await expect.poll(() => sessionKeys(worker), { timeout: 30_000 }).toContain('ak');
+  expect(await sessionKeys(worker)).not.toContain('pairingJoin');
 
   // Enrolled and unlocked. A popup opened as a page targets itself: not a fillable page.
-  await popup.bringToFront();
+  popup = await context.newPage();
+  await popup.goto(popupUrl());
   await expect(popup.getByText(/fills only HTTPS pages/)).toBeVisible({ timeout: 30_000 });
 
   // ---- Fill on exactly the saved origin ----
@@ -626,6 +638,44 @@ test('a revoked extension loses access when it reconnects, and must be paired ag
   await popup.getByLabel('Master password').fill(NEW_MASTER);
   await popup.getByRole('button', { name: 'Log in' }).click();
   await expect(popup.getByLabel('Pairing code')).toBeVisible({ timeout: 30_000 });
+});
+
+test('A-07: a join survives the popup closing and the worker restarting; then only the password is asked', async () => {
+  // Continues from the pending browser of the previous test (logged in with NEW_MASTER).
+  await web.bringToFront();
+  await web.getByRole('button', { name: 'Devices' }).click();
+  await web.getByRole('button', { name: 'Add a device' }).click();
+  const codeBox = web.getByTestId('pairing-code');
+  await expect(codeBox).toHaveText(/^PC1-/);
+  const code = (await codeBox.innerText()).trim();
+  await popup.bringToFront();
+  await popup.getByLabel('Pairing code').fill(code);
+  await popup.getByRole('button', { name: 'Add this browser' }).click();
+  await expect(popup.getByText('Waiting for approval')).toBeVisible();
+  // The join's secrets wait in memory-only session storage; the password is not among them.
+  expect(await sessionKeys(worker)).toContain('pairingJoin');
+  await stopWorker();
+  await popup.close();
+
+  await web.bringToFront();
+  await expect(web.getByText(/Approve a new\s+browser extension/)).toBeVisible({ timeout: 15_000 });
+  await web.getByRole('button', { name: 'Approve' }).click();
+  await expect(web.getByText('The new device was added.')).toBeVisible();
+
+  // The restarted worker kept the join but not the password: the reopened popup asks for it
+  // alone, with no code form, and that finishes the enrollment.
+  popup = await context.newPage();
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByText('Waiting for approval')).toBeVisible({ timeout: 30_000 });
+  await expect(popup.getByLabel('Pairing code')).toHaveCount(0);
+  await popup.getByLabel('Master password').fill(NEW_MASTER);
+  await popup.getByRole('button', { name: 'Finish adding this browser' }).click();
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible({
+    timeout: 30_000,
+  });
+  const keys = await sessionKeys(worker);
+  expect(keys).toContain('ak');
+  expect(keys).not.toContain('pairingJoin');
 });
 
 test('capture: nothing secret on the wire, in the extension stores, or sent with a cookie', async () => {

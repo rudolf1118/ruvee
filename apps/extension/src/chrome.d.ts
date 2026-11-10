@@ -71,6 +71,8 @@ declare namespace chrome {
       name: string;
     }
     function create(name: string, info: { periodInMinutes: number }): Promise<void>;
+    function get(name: string): Promise<Alarm | undefined>;
+    function clear(name: string): Promise<boolean>;
     const onAlarm: { addListener(callback: (alarm: Alarm) => void): void };
   }
 }

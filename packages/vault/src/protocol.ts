@@ -187,6 +187,11 @@ export type VaultErrorCode =
   | 'pairing_expired'
   | 'pairing_failed'
   | 'password_required'
+  /**
+   * This device was approved (or otherwise left the pending state) but no longer holds the join
+   * it made, so the pairing can never finish here; logging in again starts a new device.
+   */
+  | 'pairing_interrupted'
   | 'recovery_failed'
   | 'cannot_revoke_current'
   | 'changed_elsewhere'
@@ -341,6 +346,19 @@ export interface SessionView {
 export type PairingJoinStatus =
   { readonly state: 'waiting' } | { readonly state: 'enrolled'; readonly vault: UnlockedVault };
 
+/**
+ * Device B's join as this engine holds it, read without a request: a UI that was closed and
+ * opened again resumes from it instead of offering the code form again.
+ */
+export type PairingJoinState =
+  | { readonly state: 'none' }
+  | {
+      readonly state: 'joined';
+      /** The password from the login is gone (expired, or a restart); it is asked for again. */
+      readonly needsPassword: boolean;
+      readonly expiresAtMs: number;
+    };
+
 export interface VaultMethods {
   phase(): DevicePhase;
   setupBegin(params: {
@@ -374,7 +392,8 @@ export interface VaultMethods {
   pairingCancel(params: { pairingId: string }): true;
   pairingNeedsPassword(): boolean;
   pairingJoin(params: { code: string; password?: string }): true;
-  pairingWait(): PairingJoinStatus;
+  pairingJoinState(): PairingJoinState;
+  pairingWait(params?: { password?: string }): PairingJoinStatus;
   recoveryBegin(params: {
     username: string;
     recoveryKey: string;

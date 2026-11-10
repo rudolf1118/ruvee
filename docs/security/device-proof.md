@@ -211,7 +211,9 @@ reason: it costs a re-login, nothing more. `account/password/start`, `reauth/*` 
   and both signatures (op 3, bound to the setup token). The setup token authorizes creating the
   account; the server stores public keys only, never chooses or sees a secret one, and the
   signatures show the client holds both private keys. The first session is proven.
-- **Pairing.** B generates `DSK` at the code step, in memory only. Its request MAC becomes
+- **Pairing.** B generates `DSK` at the code step, in memory only (the extension's worker also
+  keeps it in memory-only `chrome.storage.session` until the join ends, so that a service-worker
+  restart does not lose it; extension-design.md §3). Its request MAC becomes
   `req_mac = MAC(K_pair, "ruvee/v1/pair-req-2" ‖ pairing_id ‖ device_id_B ‖ u8(platform_B) ‖ epk_B ‖ dpk_B)`,
   so A verifies the exact `DPK` it approves. A's approval carries its own `DSK` proof (op 8)
   over that `DPK`; the server sets B's `public_key` from the stored request only if A's signature

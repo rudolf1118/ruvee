@@ -19,6 +19,7 @@ import {
   type ExtensionRequest,
   type ExtensionResponse,
   type FillOutcome,
+  type PairingView,
   type SetServerResult,
   type Status,
 } from './messages';
@@ -38,6 +39,14 @@ const AUTO_LOCK_MS = 15 * 60_000;
 const SESSION_AK = 'ak';
 const SESSION_ACTIVITY = 'lastActivityMs';
 const LOCAL_SERVER = 'serverOrigin';
+/** A join's secrets while this browser waits for approval (`VaultEngine.pairingJoinSnapshot`). */
+const SESSION_JOIN = 'pairingJoin';
+/** The error code that stopped the last join, for a popup opened after it stopped. */
+const SESSION_JOIN_PROBLEM = 'pairingProblem';
+const PAIRING_ALARM = 'pairing';
+const PAIRING_POLL_MS = 2000;
+/** A poll that failed with one of these is tried again; anything else stops the loop. */
+const PAIRING_RETRY = new Set(['offline', 'proof_rejected', 'rate_limited', 'internal']);
 
 const opaqueClient: OpaqueClient = {
   startRegistration: (password) => opaque.client.startRegistration({ password }),
@@ -137,6 +146,10 @@ function getEngine(): Promise<VaultEngine> {
         throw new VaultError('locked');
       }
     }
+    // Back from a restart while waiting for approval: the join resumes (the password does not).
+    const join = (await chrome.storage.session.get(SESSION_JOIN))[SESSION_JOIN];
+    if (join !== undefined && !(await e.pairingJoinRestore(join)))
+      await chrome.storage.session.remove(SESSION_JOIN);
     return e;
   })();
   engine = starting;
@@ -164,7 +177,8 @@ async function rememberUnlocked(e: VaultEngine, generation: number): Promise<voi
 /** INV-15: drop `AK` everywhere it is held; the next message starts a locked engine. */
 async function lock(): Promise<void> {
   lockGeneration++;
-  await chrome.storage.session.remove(SESSION_AK);
+  await chrome.storage.session.remove([SESSION_AK, SESSION_JOIN]);
+  await chrome.alarms.clear(PAIRING_ALARM);
   const current = engine;
   engine = undefined;
   if (current) (await current.catch(() => undefined))?.wipeMemory();
@@ -174,6 +188,7 @@ async function lock(): Promise<void> {
 async function forget(): Promise<void> {
   await lock();
   await clearTokens();
+  await chrome.storage.session.remove(SESSION_JOIN_PROBLEM);
 }
 
 /**
@@ -236,6 +251,97 @@ async function fill(tabId: number, itemId: string): Promise<FillOutcome> {
     : 'not_allowed';
 }
 
+// ---- Pairing (device-enrollment §3, device B): the worker owns the join ----
+
+/**
+ * The popup closes whenever the user switches to the device that approves, so the join cannot
+ * live in it. The worker keeps the join's secrets in `chrome.storage.session` (memory only, like
+ * `AK`) to survive its own restart, and polls by itself until the join ends; a reopened popup
+ * only reads where it stands.
+ */
+async function saveJoin(e: VaultEngine): Promise<void> {
+  const snapshot = e.pairingJoinSnapshot();
+  if (snapshot) {
+    await chrome.storage.session.set({ [SESSION_JOIN]: snapshot });
+    // Wakes a stopped worker to go on polling (Chrome's shortest period is 30 seconds).
+    if (!(await chrome.alarms.get(PAIRING_ALARM)))
+      await chrome.alarms.create(PAIRING_ALARM, { periodInMinutes: 0.5 });
+  } else {
+    await chrome.storage.session.remove(SESSION_JOIN);
+    await chrome.alarms.clear(PAIRING_ALARM);
+  }
+}
+
+async function setPairingProblem(code: string | null): Promise<void> {
+  if (code === null) await chrome.storage.session.remove(SESSION_JOIN_PROBLEM);
+  else await chrome.storage.session.set({ [SESSION_JOIN_PROBLEM]: code });
+}
+
+/** The approval arrived but the password is gone: no poll until the popup sends it. */
+let awaitingPassword = false;
+let pairingLoop: Promise<void> | undefined;
+
+const pause = (ms: number) =>
+  new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+
+/** One loop at a time. Each round's fetch and storage calls keep the worker alive meanwhile. */
+function pollPairing(): void {
+  if (pairingLoop || awaitingPassword) return;
+  pairingLoop = (async () => {
+    for (;;) {
+      const generation = lockGeneration;
+      const e = await getEngine();
+      if (e.pairingJoinState().state !== 'joined') {
+        await saveJoin(e);
+        return;
+      }
+      try {
+        const result = await e.pairingWait();
+        await setPairingProblem(null);
+        if (result.state === 'enrolled') {
+          await rememberUnlocked(e, generation);
+          await saveJoin(e);
+          return;
+        }
+      } catch (error) {
+        const code = errorPayload(error).code;
+        await settleVaultError(code);
+        if (code === 'password_required') awaitingPassword = true;
+        else await setPairingProblem(code);
+        await saveJoin(e);
+        if (!PAIRING_RETRY.has(code)) return;
+      }
+      await pause(PAIRING_POLL_MS);
+    }
+  })()
+    .catch(() => undefined)
+    .finally(() => {
+      pairingLoop = undefined;
+    });
+}
+
+async function resumePairing(): Promise<void> {
+  if ((await chrome.storage.session.get(SESSION_JOIN))[SESSION_JOIN] !== undefined) pollPairing();
+}
+
+async function pairingView(): Promise<PairingView> {
+  const problem = (await chrome.storage.session.get(SESSION_JOIN_PROBLEM))[SESSION_JOIN_PROBLEM];
+  const view = { problem: typeof problem === 'string' ? problem : null };
+  if (await isUnlocked()) return { state: 'enrolled', needsPassword: false, problem: null };
+  const join = (await getEngine()).pairingJoinState();
+  if (join.state !== 'joined') return { ...view, state: 'none', needsPassword: false };
+  pollPairing();
+  return { ...view, state: 'joined', needsPassword: join.needsPassword };
+}
+
+/** Settle a lock or a removal before replying, so the page's next status read sees it. */
+async function settleVaultError(code: string): Promise<void> {
+  if (code === 'device_revoked') await forget();
+  else if (code === 'session_expired') await lock();
+}
+
 async function setServer(text: string): Promise<SetServerResult> {
   const origin = fillableOrigin(text);
   if (!origin || origin !== text.replace(/\/+$/, '')) return 'not_an_origin';
@@ -267,18 +373,29 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return candidates(request.tabId);
     case 'fill':
       return fill(request.tabId, request.itemId);
+    case 'pairing':
+      return pairingView();
     case 'vault': {
       const generation = lockGeneration;
       const e = await getEngine();
+      const pairing = ['login', 'pairingJoin', 'pairingWait'].includes(request.method);
+      if (pairing) awaitingPassword = false;
       let result: unknown;
       try {
         result = await dispatch(e, request.method, request.params);
       } catch (error) {
-        // Settle the lock before replying, so the page's next status read sees it.
         const code = errorPayload(error).code;
-        if (code === 'device_revoked') await forget();
-        else if (code === 'session_expired') await lock();
+        await settleVaultError(code);
+        if (pairing) {
+          if (code === 'password_required') awaitingPassword = request.method === 'pairingWait';
+          await saveJoin(e);
+        }
         throw error;
+      }
+      if (pairing) {
+        if (request.method !== 'pairingWait') await setPairingProblem(null);
+        await saveJoin(e);
+        pollPairing();
       }
       const enrolled =
         request.method === 'unlock' ||
@@ -328,4 +445,7 @@ void chrome.storage.session.setAccessLevel({ accessLevel: 'TRUSTED_CONTEXTS' });
 void chrome.alarms.create('autolock', { periodInMinutes: __RUVEE_TEST__ ? 0.5 : 1 });
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name === 'autolock') void lockIfIdle();
+  if (alarm.name === PAIRING_ALARM) void resumePairing();
 });
+// A worker started again (by the pairing alarm, or any event) goes on with a stored join.
+void resumePairing();

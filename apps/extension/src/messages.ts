@@ -35,12 +35,25 @@ export const requestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('candidates'), tabId }),
   z.strictObject({ kind: z.literal('fill'), tabId, itemId: z.uuid() }),
   z.strictObject({ kind: z.literal('lock') }),
+  z.strictObject({ kind: z.literal('pairing') }),
 ]);
 export type ExtensionRequest = z.infer<typeof requestSchema>;
 
 export interface Status {
   readonly serverOrigin: string | null;
   readonly unlocked: boolean;
+}
+
+/**
+ * The join as the worker holds it (`kind: 'pairing'`). The worker, not the popup, owns a join:
+ * it keeps polling after the popup closes, and a reopened popup resumes from this.
+ */
+export interface PairingView {
+  readonly state: 'none' | 'joined' | 'enrolled';
+  /** A join is waiting but the password from the login is gone; the popup asks for it. */
+  readonly needsPassword: boolean;
+  /** Why the last join stopped or is not progressing, as an error code; null if nothing. */
+  readonly problem: string | null;
 }
 
 export interface Candidate {
