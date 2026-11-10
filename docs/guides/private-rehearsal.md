@@ -79,12 +79,14 @@ test "$(git rev-parse HEAD)" = <commit>
 corepack enable
 pnpm install --frozen-lockfile
 pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
-deploy/bin/build-manifest > ../build-manifest-<commit>.txt
-diff ../build-manifest-<commit>.txt <the CI build-manifest.txt for this commit>
+deploy/bin/build-manifest > ~/build-manifest-<commit>.txt
+diff ~/build-manifest-<commit>.txt <the CI build-manifest.txt for this commit>
 sudo chown -R root:root /opt/ruvee/releases/<commit>
 sudo ln -sfn /opt/ruvee/releases/<commit> /opt/ruvee/current
 ```
 
+- The manifest goes to the administrator's home directory: `/opt/ruvee/releases` is owned by
+  root, so `../` is not writable from the release directory (found in the rehearsal).
 - The web export's build id is the commit, so the same commit builds to the same bytes anywhere
   (`RUVEE_BUILD_ID=<commit>` does the same outside a git checkout). The CI job checks this: it
   builds the commit a second time, from `git archive`, in `/opt/ruvee/releases`, and compares.
@@ -119,10 +121,11 @@ install -m 0644 /opt/ruvee/current/deploy/journald/50-ruvee.conf /etc/systemd/jo
 systemctl restart systemd-journald
 ```
 
-- **Firewall and SSH:** done in §13.5: `ufw` allows only 22 and 443 on `tailscale0`, and the
-  provider's firewall allows nothing inbound. SSH accepts keys only. Nothing listens publicly.
-  PostgreSQL and the API listen on loopback only (checked in CI), and Caddy listens on 443 behind
-  the firewall.
+- **Firewall and SSH:** done in §13.5: `ufw` drops everything inbound from the internet, and the
+  provider's firewall, if it has one, allows nothing inbound. SSH accepts keys only. PostgreSQL and
+  the API listen on loopback only (checked in CI), and Caddy listens on 443 and 80. What reaches
+  them over `tailscale0` is decided by the **tailnet policy**, not by `ufw` (§13.5). Tailscale's
+  own WireGuard port, 41641/udp, may stay reachable from the internet (§13.6).
 - **Time:** `systemd-timesyncd` on. Tokens and login states expire by the clock.
 - **Updates:** `unattended-upgrades` for security updates; reboots by hand during the rehearsal.
 - **Tailscale and Caddy:** `TS_PERMIT_CERT_UID=caddy` in `/etc/default/tailscaled` (§13.4),
@@ -285,7 +288,8 @@ address. Checked against Tailscale's documentation and package index on 2026-10-
 client was 1.104.4, with an Ubuntu 24.04 (`noble`) apt repository; HTTPS certificates need
 MagicDNS; Caddy 2.5 or later fetches `*.ts.net` certificates from tailscaled by itself.
 
-What this gives: Ruvee is reachable only from devices in the tailnet, on 443. PostgreSQL and the
+What this gives: Ruvee is reachable only from the tailnet users and devices that the tailnet
+policy allows, on 443; being in the tailnet is not by itself permission. PostgreSQL and the
 API stay on loopback. SSH is plain OpenSSH with keys, reachable on `tailscale0` only. **Tailscale
 SSH stays off** (no `--ssh`), so a Tailscale account compromise does not by itself open a shell.
 The provider's console is the way back in if the tailnet or the firewall fails.
@@ -339,8 +343,9 @@ remove or revoke what was published.
 ### 13.3 At the provider (owner)
 
 - The VPS (§2). Its firewall: inbound SSH (22/tcp) **from your current public address only**,
-  nothing else inbound, outbound open. Leave 41641/udp closed: Tailscale works without inbound
-  ports, through relays if needed.
+  nothing else inbound, outbound open. Leave 41641/udp closed there if you can: Tailscale works
+  without inbound ports, through relays if needed. Without a provider firewall, 41641/udp stays
+  publicly reachable (§13.5); that is expected and recorded, not a reason to stop.
 - **Check that the provider's console works** (log in once, as your administrator user, with
   a password set for that user for the console only). That is the recovery path for every
   step below.
@@ -405,6 +410,22 @@ tailscale status --json | grep -A2 CertDomains   # must list <machine>.<tailnet>
    `KbdInteractiveAuthentication no` and `PermitRootLogin no`, then `sudo sshd -t`,
    `sudo systemctl reload ssh`, and again a new session over the tailnet before closing the others.
 
+**What `ufw` does and does not do here.** In its default netfilter mode, `tailscaled` inserts its
+own `ts-input` chain ahead of `ufw`, with `-i tailscale0 -j ACCEPT` and an accept rule for its
+WireGuard port, 41641/udp. So:
+
+- On `tailscale0`, `ufw`'s rules above are not reached. **The tailnet policy is the filter that
+  applies**: it must allow only the intended user, and only 443 (and 22 for the administrator), to
+  `tag:ruvee-rehearsal`. Check it in the admin console's access controls and its tests (§13.2),
+  and again after any policy change. Being a member of the tailnet does not authorize access.
+- **41641/udp stays reachable from the internet** whatever `ufw` says. It answers only
+  authenticated WireGuard handshakes and has no service behind it. Closing it needs the
+  provider's firewall, or `tailscale up --netfilter-mode=nodivert` with rules of your own.
+- `ufw` still drops everything else from the internet: 22, 80, 443 and every other port.
+
+Check: `sudo iptables -S ts-input` lists those rules; `sudo ufw status verbose` shows the rules
+above.
+
 **Recovery:** in the provider's console, `sudo ufw disable` or `sudo tailscale up` again.
 The console needs no network rule. If the tailnet is down, the provider's firewall can be opened
 to your address for a while. Close it again afterwards.
@@ -412,10 +433,16 @@ to your address for a while. Close it again afterwards.
 ### 13.6 Check the exposure (A-02), before any Ruvee service runs
 
 - From **outside** the tailnet (Tailscale off on the laptop, or another network):
-  `nc -vz -w 5 <public-address> 22` and `… 443` time out; `… 5432` and `… 4000` time out.
+  `nc -vz -w 5 <public-address> 22` and `… 443` time out; `… 80`, `… 5432` and `… 4000` time
+  out. Do not record this as "every public port is closed": 41641/udp is expected to answer
+  WireGuard (§13.5). Record it as it is.
+- From inside the tailnet, as the allowed user: 443 (and 22 for the administrator) connect; 80,
+  4000 and 5432 do not. From a tailnet device or user the policy does not allow, nothing
+  connects. Keep the admin console's policy tests for this (§13.2).
 - On the VPS: `sudo ss -tlnp` shows 5432 and 4000 on `127.0.0.1` only once they run (§6, §7).
-  Caddy listens on `*:443` and `*:80` behind the firewall. `ufw` drops 80, so its redirect is
-  unreachable, and you use `https://` directly.
+  Caddy listens on `*:443` and `*:80`. `ufw` drops 80 from the internet and the tailnet policy
+  does not allow it over `tailscale0`, so its redirect is unreachable, and you use `https://`
+  directly.
 - `dig +short <machine>.<tailnet>.ts.net @1.1.1.1` from outside the tailnet: record the answer.
   Nothing, or only a `100.x` address (not routable from the internet), is expected. A public
   address is a finding.
