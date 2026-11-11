@@ -5,6 +5,10 @@ Status: **Proposed (2026-10-25).** The Phase 5 gate in the
 it depends on are in [open-decisions.md](../architecture/open-decisions.md): D-27 (option 2 below)
 was approved by the owner for development on 2026-10-25.
 
+The next scope (inline fill trigger, saving and updating logins, generated passwords) is proposed
+in [extension-inline-autofill.md](extension-inline-autofill.md) and waits for D-33. Until then
+this document's limits apply.
+
 Scope of the first extension: **Chromium, Manifest V3**, logins only, **manual** fill. No
 automatic fill on page load, no saving of new logins from forms, no passkeys, no Firefox yet.
 
