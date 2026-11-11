@@ -166,3 +166,18 @@ li > span {
   border-radius: 7px;
   padding: 8px 10px;
 }
+/* Phase B: the offer to save a login the user just submitted. */
+.save-offer {
+  background: var(--brand-wash);
+  border: 1px solid var(--brand-line);
+  border-radius: 9px;
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  word-break: break-all;
+}
+.save-offer p {
+  margin: 0 0 8px;
+}
+.save-offer button + button {
+  margin-left: 8px;
+}

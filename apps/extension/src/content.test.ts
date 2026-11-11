@@ -51,6 +51,24 @@ describe('the inline content script', () => {
     expect(sendMessage).not.toHaveBeenCalled();
   });
 
+  it('captures nothing from a submit the page makes: click(), requestSubmit(), a fake Enter', () => {
+    const form = document.querySelector('form');
+    if (!form) throw new Error('no form');
+    (document.getElementById('user') as HTMLInputElement).value = 'planted@mail.example';
+    (document.getElementById('pw') as HTMLInputElement).value = 'planted-secret';
+    const button = document.createElement('button');
+    form.append(button);
+    form.addEventListener('submit', (e) => {
+      e.preventDefault();
+    });
+    button.click();
+    form.requestSubmit();
+    document
+      .getElementById('pw')
+      ?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(sendMessage).not.toHaveBeenCalled();
+  });
+
   it('puts the icon back after the page removes it, and removes it with the field', async () => {
     hosts()[0]?.remove();
     document.body.append(document.createElement('div'));

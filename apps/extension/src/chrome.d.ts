@@ -56,6 +56,10 @@ declare namespace chrome {
     }
     function get(tabId: number): Promise<Tab>;
     function query(query: { active?: boolean; lastFocusedWindow?: boolean }): Promise<Tab[]>;
+    const onRemoved: { addListener(callback: (tabId: number) => void): void };
+    const onUpdated: {
+      addListener(callback: (tabId: number, change: { status?: string }) => void): void;
+    };
   }
 
   namespace scripting {
@@ -88,6 +92,7 @@ declare namespace chrome {
   namespace action {
     function openPopup(options?: { windowId?: number }): Promise<void>;
     function setBadgeText(details: { tabId?: number; text: string }): Promise<void>;
+    function getBadgeText(details: { tabId?: number }): Promise<string>;
     function setBadgeBackgroundColor(details: { tabId?: number; color: string }): Promise<void>;
   }
 

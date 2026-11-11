@@ -1,7 +1,7 @@
 # Extension inline fill, save and generate: design and threat-model addendum
 
-Status: **D-33 approved by the owner for development (2026-11-12). Phase A implemented for
-development (2026-11-12, §8.1); phases B to D not started. Not independently reviewed.** The
+Status: **D-33 approved by the owner for development (2026-11-12). Phases A and B implemented for
+development (2026-11-12, §8.1, §8.2); phases C and D not started. Not independently reviewed.** The
 owner accepted the recommendation in §9 as a whole: opt-in permission for `https:` sites, the
 installed-extension disclosure in §4, option I1 first, vault writes from the extension with the
 previous password kept on update, and the order A, B, C, D. Phase E (an in-page menu) and
@@ -131,8 +131,10 @@ filled, so a login existed). That is the same as manual fill and is accepted.
 
 ### 5.2 Save a new login (F2)
 
-- On a trusted submit, the content script sends the username and password from the form to the
-  service worker. The page already has these values: the user just typed them into it.
+- On the user's own sign-in gesture, the content script sends the username and password from the
+  form to the service worker. A trusted `submit` event is not enough: Chrome marks the submit
+  event of a page's `form.requestSubmit()` or `button.click()` as trusted (checked 2026-11-12), so
+  the script listens for the user's trusted click on a submit control, or Enter in a field. The page already has these values: the user just typed them into it.
 - The service worker keeps the capture **in memory only**, for at most 5 minutes, keyed by tab and
   origin, and only while the vault is unlocked. It is never written to `chrome.storage` or
   IndexedDB, and lock, auto-lock, logout and service-worker restart drop it. If the vault is locked
@@ -275,6 +277,53 @@ extension.
   service-worker restart drop the pending capture; scans of `chrome.storage`, IndexedDB and the
   network show no plaintext capture; a page cannot learn that a capture is pending; the item syncs
   to the web vault.
+
+### 8.2 Phase B as built (2026-11-12)
+
+- **Capture** (`src/inline/capture.ts`, `src/content.ts`): on the user's trusted click on a submit
+  control (a submit button or input in a form, any button outside one) or trusted Enter in a
+  field, the content script reads the scope's form: one non-empty password, or several equal ones
+  (sign-up), and the nearest text or email field before it. Two different passwords (a change of
+  password) are left to phase C. It sends `{ kind: 'inlineCapture', username, password }`, once
+  per gesture. The schema has no origin, tab or item field.
+- **Worker:** the same sender gate as phase A (top frame, the tab's own fillable origin). It
+  keeps the capture only while unlocked (an expired unlock is locked first), only if inline fill
+  is on, and only if no login for exactly that origin has the same username: the same password is
+  a duplicate, and a different one is phase C. One capture per tab, in a `Map` in worker memory,
+  for 5 minutes, with a `+` badge on that tab. Lock, auto-lock, logout, closing the tab and a
+  worker restart drop it. The reply is always `null`.
+- **Popup:** "Save this login for `origin`?" with the username and never the password (the
+  worker returns only origin and username). **Save login** creates a new login item, titled with
+  the host, for exactly the form's origin, through the vault engine's `save`, which syncs it.
+  **Not now** drops the capture.
+- **Not built:** "Never for this site". It needs an encrypted per-vault setting, and the item
+  schema has none yet. Until it exists, the only answer is "Not now".
+- Unit tests: capture scope (other forms, no form, sign-up, change of password, limits), which
+  clicks count, the schema (no origin, tab or item; size limits), and a page's `click()`,
+  `requestSubmit()` and fake Enter sending nothing.
+- Browser test ("save a new login (phase B)"):
+  - a page's own `click()` and `requestSubmit()` produce no capture and no badge;
+  - signing in while locked keeps nothing for after the unlock;
+  - a real sign-in that posts to another origin gets a badge and an offer for the **form's**
+    origin, not the tab's new one;
+  - while it waits, the capture is not in `chrome.storage`, and the page shows nothing;
+  - the popup never contains the password;
+  - the saved item fills on its origin and is not offered on the other;
+  - known usernames are not offered again;
+  - **Not now**, a lock and a worker restart each drop the capture;
+  - forged captures carrying an origin or tab id, and the popup's save messages sent from a
+    content script, get no reply;
+  - a capture sent from a cross-origin frame gets no reply and leaves nothing;
+  - the final capture check finds the saved password neither in requests to the server nor in
+    the extension's stores.
+- **Not covered by tests:**
+  - the 5-minute expiry;
+  - auto-lock dropping a capture (lock and restart are tested; auto-lock goes through the same
+    `lock()`);
+  - the badge surviving every kind of navigation (re-applied when a page finishes loading);
+  - sign-ins with no form submit and no button (some script-driven pages);
+  - the item appearing in the web app (it syncs through the engine like any edit; not checked
+    here).
 
 **Phase C: update a changed password.**
 

@@ -1,7 +1,14 @@
 import type { DevicePhase, PairingJoinStatus, SyncStatus } from '@ruvee/vault';
 import { type SubmitEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Candidates, FillOutcome, PairingView, Status } from '../messages';
+import type {
+  Candidates,
+  FillOutcome,
+  PairingView,
+  PendingSave,
+  SavePendingResult,
+  Status,
+} from '../messages';
 import { call, CallError, messageFor, PAIRING_RESTART_CODES, pairingMessageFor } from './client';
 
 const PAIRING_POLL_MS = 2000;
@@ -412,6 +419,7 @@ const FILL_TEXT: Record<FillOutcome, string> = {
 function Fill({ onLocked }: { onLocked: () => void }) {
   const [tabId, setTabId] = useState<number | null>(null);
   const [found, setFound] = useState<Candidates | null>(null);
+  const [pending, setPending] = useState<PendingSave | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -420,8 +428,10 @@ function Fill({ onLocked }: { onLocked: () => void }) {
       try {
         const tab = await targetTab();
         setTabId(tab);
-        if (tab !== null) setFound(await call<Candidates>({ kind: 'candidates', tabId: tab }));
-        else setFound({ origin: null, items: [] });
+        if (tab !== null) {
+          setFound(await call<Candidates>({ kind: 'candidates', tabId: tab }));
+          setPending(await call<PendingSave | null>({ kind: 'pendingSave', tabId: tab }));
+        } else setFound({ origin: null, items: [] });
         // A sync on every open: it brings other devices' changes, and it is how a revoked
         // browser or an ended session is noticed (the worker then locks or wipes itself).
         const synced = await call<SyncStatus>({ kind: 'vault', method: 'sync' });
@@ -438,8 +448,58 @@ function Fill({ onLocked }: { onLocked: () => void }) {
     })();
   }, [onLocked]);
 
+  const answerSave = (save: boolean) => {
+    if (tabId === null) return;
+    setNotice(null);
+    setError(null);
+    const request = save
+      ? call<SavePendingResult>({ kind: 'savePending', tabId })
+      : call<true>({ kind: 'dismissPending', tabId }).then(() => 'dismissed' as const);
+    request
+      .then(async (result) => {
+        setPending(null);
+        if (result === 'saved') {
+          setNotice('Saved to your vault.');
+          setFound(await call<Candidates>({ kind: 'candidates', tabId }));
+        } else if (result === 'gone')
+          setNotice('That sign-in is no longer waiting. Nothing was saved.');
+      })
+      .catch((e: unknown) => {
+        setError(messageFor(e));
+      });
+  };
+
   return (
     <section>
+      {pending ? (
+        // extension-inline-autofill.md §5.2: the only place a save is offered (never in the page).
+        <div className="save-offer" role="group" aria-labelledby="save-offer-title">
+          <p id="save-offer-title">
+            Save this login for <strong>{pending.origin}</strong>?
+          </p>
+          <p className="muted">
+            {pending.username === '' ? 'No username' : `Username: ${pending.username}`}. The
+            password stays hidden.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              answerSave(true);
+            }}
+          >
+            Save login
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              answerSave(false);
+            }}
+          >
+            Not now
+          </button>
+        </div>
+      ) : null}
       {found?.origin ? (
         <p className="origin">
           Logins for <strong>{found.origin}</strong>

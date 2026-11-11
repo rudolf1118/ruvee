@@ -1,12 +1,22 @@
 import { z } from 'zod';
 import { fillableOrigin } from '../origin';
+import { CAPTURE_LIMITS } from './capture';
 
 /**
  * The content-script channel (extension-inline-autofill.md §5.1, E-20). It is separate from the
- * extension pages' channel and carries exactly one message: "the user clicked the inline icon".
- * Nothing in it names an origin, a tab or an item; the worker takes all of that from the browser.
+ * extension pages' channel and carries two messages: "the user clicked the inline icon" and
+ * "the user submitted these credentials" (phase B). Nothing in either names an origin, a tab or
+ * an item; the worker takes all of that from the browser.
  */
-export const contentRequestSchema = z.strictObject({ kind: z.literal('inlineOpen') });
+export const contentRequestSchema = z.discriminatedUnion('kind', [
+  z.strictObject({ kind: z.literal('inlineOpen') }),
+  // Phase B: what the user just submitted (§5.2). No origin: the worker takes the sender's.
+  z.strictObject({
+    kind: z.literal('inlineCapture'),
+    username: z.string().max(CAPTURE_LIMITS.username),
+    password: z.string().min(1).max(CAPTURE_LIMITS.password),
+  }),
+]);
 export type ContentRequest = z.infer<typeof contentRequestSchema>;
 
 /** Patterns the content script is registered for, and the host permission it needs. */

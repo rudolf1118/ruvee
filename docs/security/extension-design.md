@@ -8,7 +8,9 @@ was approved by the owner for development on 2026-10-25.
 The next scope (inline fill trigger, saving and updating logins, generated passwords) is proposed
 in [extension-inline-autofill.md](extension-inline-autofill.md), approved for development as D-33
 on 2026-11-12. This document's limits apply until each phase there is implemented. Phase A (the
-inline icon that opens this popup) is built; it changes §1, §2 and E-02 as marked below.
+inline icon that opens this popup) and phase B (offer to save a login after a sign-in, answered
+in this popup) are built; they change §1, §2 and E-02 as marked below, and the extension now
+writes to the vault (one new item per accepted offer).
 
 Scope of the first extension: **Chromium, Manifest V3**, logins only, **manual** fill. No
 automatic fill on page load, no saving of new logins from forms, no passkeys, no Firefox yet.
@@ -29,7 +31,8 @@ extension's own origin, is dropped before parsing. That excludes content scripts
 extensions, whose origin is the page's or their own; `sender.tab` is not used, because an extension
 page opened in a tab (the popup as a page, the options page) has it set too. Messages are validated
 against a schema like API responses are. Since phase A, content scripts of this extension have a
-separate path with one message (`inlineOpen`) that opens the popup and returns nothing; it is
+separate path with two messages (`inlineOpen`, which opens the popup, and `inlineCapture`, a
+sign-in the popup may offer to save), both answered with `null`; it is
 checked against the browser's sender data and never reaches the vault
 ([extension-inline-autofill.md §8.1](extension-inline-autofill.md#81-phase-a-as-built-2026-11-12)).
 

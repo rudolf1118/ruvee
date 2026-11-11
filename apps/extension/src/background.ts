@@ -13,7 +13,13 @@ import {
 } from '@ruvee/vault';
 import * as opaque from '@serenity-kit/opaque';
 import { fillPage, type FillResult } from './fill';
-import { contentRequestSchema, INLINE_ORIGINS, inlineTarget } from './inline/gate';
+import {
+  contentRequestSchema,
+  INLINE_ORIGINS,
+  inlineTarget,
+  type ContentRequest,
+  type InlineTarget,
+} from './inline/gate';
 import {
   requestSchema,
   type Candidates,
@@ -22,6 +28,8 @@ import {
   type FillOutcome,
   type InlineSettings,
   type PairingView,
+  type PendingSave,
+  type SavePendingResult,
   type SetInlineResult,
   type SetServerResult,
   type Status,
@@ -180,6 +188,7 @@ async function rememberUnlocked(e: VaultEngine, generation: number): Promise<voi
 /** INV-15: drop `AK` everywhere it is held; the next message starts a locked engine. */
 async function lock(): Promise<void> {
   lockGeneration++;
+  await dropAllCaptures();
   await chrome.storage.session.remove([SESSION_AK, SESSION_JOIN]);
   await chrome.alarms.clear(PAIRING_ALARM);
   const current = engine;
@@ -436,6 +445,113 @@ async function inlineOpen(tabId: number, windowId: number | undefined, origin: s
   }
 }
 
+// ---- Save a new login (extension-inline-autofill.md §5.2, phase B) ----
+
+/** How long a capture waits for the user to open the popup. */
+const CAPTURE_TTL_MS = 5 * 60_000;
+
+interface Pending {
+  readonly origin: string;
+  readonly username: string;
+  readonly password: string;
+  readonly atMs: number;
+}
+
+/**
+ * What the user submitted, per tab: **in memory only** (E-19). Never written to
+ * `chrome.storage` or IndexedDB; lock, auto-lock, logout and a worker restart drop it. One per tab:
+ * a new capture replaces the old one.
+ */
+const captures = new Map<number, Pending>();
+
+async function showBadge(tabId: number): Promise<void> {
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: '#6d4aff' });
+  await chrome.action.setBadgeText({ tabId, text: '+' });
+}
+
+async function dropCapture(tabId: number): Promise<void> {
+  captures.delete(tabId);
+  await chrome.action.setBadgeText({ tabId, text: '' }).catch(() => undefined);
+}
+
+async function dropAllCaptures(): Promise<void> {
+  const tabs = [...captures.keys()];
+  captures.clear();
+  await Promise.all(
+    tabs.map((tabId) => chrome.action.setBadgeText({ tabId, text: '' }).catch(() => undefined)),
+  );
+}
+
+/** The live capture for a tab; an expired one is dropped on the way. */
+async function liveCapture(tabId: number): Promise<Pending | undefined> {
+  const pending = captures.get(tabId);
+  if (pending && Date.now() - pending.atMs >= CAPTURE_TTL_MS) {
+    await dropCapture(tabId);
+    return undefined;
+  }
+  return pending;
+}
+
+/**
+ * The user submitted a form on `target.origin`. Kept only while the vault is unlocked, and only
+ * when no login for that exact origin already has this username (the same password is a
+ * duplicate; a different one is an update, phase C). The origin is the sender's, as Chrome
+ * reports it, never anything the page sent (E-17).
+ */
+async function inlineCapture(target: InlineTarget, username: string, password: string) {
+  // An unlock that has expired is ended here, not resumed (the message is not activity).
+  await lockIfIdle();
+  if (!(await inlineEnabled()) || !(await isUnlocked())) return;
+  const generation = lockGeneration;
+  const e = await getEngine();
+  const known = e
+    .items()
+    .some(
+      (i) =>
+        i.type === 'login' &&
+        !i.trashed &&
+        i.urls.some((u) => originMatches(u, target.origin)) &&
+        e.detail({ id: i.id }).username === username,
+    );
+  if (known || generation !== lockGeneration) return;
+  captures.set(target.tabId, { origin: target.origin, username, password, atMs: Date.now() });
+  await showBadge(target.tabId);
+}
+
+async function pendingSave(tabId: number): Promise<PendingSave | null> {
+  if (!(await isUnlocked())) return null;
+  const pending = await liveCapture(tabId);
+  // The popup shows the origin and the username; the password never leaves the worker.
+  return pending ? { origin: pending.origin, username: pending.username } : null;
+}
+
+async function savePending(tabId: number): Promise<SavePendingResult> {
+  const pending = await liveCapture(tabId);
+  if (!pending) return 'gone';
+  const e = await getEngine();
+  await e.save({
+    draft: {
+      type: 'login',
+      title: new URL(pending.origin).host,
+      username: pending.username,
+      password: pending.password,
+      // Always a new item for exactly the form's origin (E-18).
+      urls: [pending.origin],
+      notes: '',
+      noteText: '',
+      tags: [],
+      favorite: false,
+    },
+  });
+  await dropCapture(tabId);
+  return 'saved';
+}
+
+async function handleContent(request: ContentRequest, target: InlineTarget): Promise<void> {
+  if (request.kind === 'inlineOpen') await inlineOpen(target.tabId, target.windowId, target.origin);
+  else await inlineCapture(target, request.username, request.password);
+}
+
 async function handle(request: ExtensionRequest): Promise<unknown> {
   switch (request.kind) {
     case 'status': {
@@ -459,6 +575,13 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     }
     case 'setInline':
       return setInline(request.enabled);
+    case 'pendingSave':
+      return pendingSave(request.tabId);
+    case 'savePending':
+      return savePending(request.tabId);
+    case 'dismissPending':
+      await dropCapture(request.tabId);
+      return true;
     case 'vault': {
       const generation = lockGeneration;
       const e = await getEngine();
@@ -507,8 +630,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (!trusted(sender)) {
     // The separate content-script channel: one message kind, an empty reply, no vault access.
     const target = inlineTarget(sender, chrome.runtime.id, self.location.origin);
-    if (!target || !contentRequestSchema.safeParse(message).success) return undefined;
-    inlineOpen(target.tabId, target.windowId, target.origin)
+    const parsed = contentRequestSchema.safeParse(message);
+    if (!target || !parsed.success) return undefined;
+    // The same empty reply whatever happened: locked, a duplicate, saved for later (§4).
+    handleContent(parsed.data, target)
       .catch(() => undefined)
       .finally(() => {
         sendResponse(null);
@@ -544,6 +669,14 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 // A worker started again (by the pairing alarm, or any event) goes on with a stored join.
 void resumePairing();
 void reconcileInline().catch(() => undefined);
+chrome.tabs.onRemoved.addListener((tabId) => {
+  captures.delete(tabId);
+});
+// A tab's badge does not always survive its navigation; the sign-in usually navigates.
+chrome.tabs.onUpdated.addListener((tabId, change) => {
+  if (change.status === 'complete' && captures.has(tabId))
+    void liveCapture(tabId).then((p) => (p ? showBadge(tabId) : undefined));
+});
 chrome.permissions.onRemoved.addListener(() => {
   void reconcileInline().catch(() => undefined);
 });
