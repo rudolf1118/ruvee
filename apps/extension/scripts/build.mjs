@@ -27,6 +27,14 @@ await build({
   outfile: new URL('background.js', out).pathname,
   format: 'esm',
 });
+// The inline content script (extension-inline-autofill.md §5.1): registered at run time, only
+// after the user turns inline fill on, so the manifest lists no content scripts.
+await build({
+  ...common,
+  entryPoints: [new URL('src/content.ts', root).pathname],
+  outfile: new URL('content.js', out).pathname,
+  format: 'iife',
+});
 for (const page of ['popup', 'options'])
   await build({
     ...common,

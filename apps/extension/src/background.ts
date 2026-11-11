@@ -13,13 +13,16 @@ import {
 } from '@ruvee/vault';
 import * as opaque from '@serenity-kit/opaque';
 import { fillPage, type FillResult } from './fill';
+import { contentRequestSchema, INLINE_ORIGINS, inlineTarget } from './inline/gate';
 import {
   requestSchema,
   type Candidates,
   type ExtensionRequest,
   type ExtensionResponse,
   type FillOutcome,
+  type InlineSettings,
   type PairingView,
+  type SetInlineResult,
   type SetServerResult,
   type Status,
 } from './messages';
@@ -214,6 +217,8 @@ async function tabOrigin(tabId: number): Promise<string | null> {
 }
 
 async function candidates(tabId: number): Promise<Candidates> {
+  // The popup is open for this tab: a fallback badge from an inline click has done its job.
+  await chrome.action.setBadgeText({ tabId, text: '' }).catch(() => undefined);
   const origin = await tabOrigin(tabId);
   if (!origin) return { origin: null, items: [] };
   const e = await getEngine();
@@ -358,6 +363,79 @@ async function setServer(text: string): Promise<SetServerResult> {
   return 'saved';
 }
 
+// ---- Inline icon (extension-inline-autofill.md, phase A: option I1) ----
+
+const LOCAL_INLINE = 'inlineEnabled';
+const INLINE_SCRIPT = 'ruvee-inline';
+
+async function inlineEnabled(): Promise<boolean> {
+  return (await chrome.storage.local.get(LOCAL_INLINE))[LOCAL_INLINE] === true;
+}
+
+/**
+ * Makes the registered content script match the setting and the permission: registered only while
+ * inline fill is on **and** the browser still grants the host permission. A permission withdrawn
+ * from the browser's own settings turns inline fill off.
+ */
+async function reconcileInline(): Promise<void> {
+  const granted = await chrome.permissions.contains({ origins: [...INLINE_ORIGINS] });
+  const wanted = (await inlineEnabled()) && granted;
+  if (!granted) await chrome.storage.local.remove(LOCAL_INLINE);
+  const registered =
+    (await chrome.scripting.getRegisteredContentScripts({ ids: [INLINE_SCRIPT] })).length > 0;
+  if (wanted && !registered)
+    await chrome.scripting.registerContentScripts([
+      {
+        id: INLINE_SCRIPT,
+        js: ['content.js'],
+        matches: [...INLINE_ORIGINS],
+        allFrames: false,
+        runAt: 'document_idle',
+        world: 'ISOLATED',
+        persistAcrossSessions: true,
+      },
+    ]);
+  if (!wanted && registered)
+    await chrome.scripting.unregisterContentScripts({ ids: [INLINE_SCRIPT] });
+}
+
+async function setInline(enabled: boolean): Promise<SetInlineResult> {
+  // The options page asked for the permission in the user's click; the worker only checks it.
+  if (enabled && !(await chrome.permissions.contains({ origins: [...INLINE_ORIGINS] })))
+    return 'no_permission';
+  if (enabled) await chrome.storage.local.set({ [LOCAL_INLINE]: true });
+  else await chrome.storage.local.remove(LOCAL_INLINE);
+  await reconcileInline();
+  return 'saved';
+}
+
+let lastInlineOpen = 0;
+const INLINE_OPEN_INTERVAL_MS = 1000;
+
+/**
+ * The user clicked the inline icon. Opens the toolbar popup, where the choice is made (§2, I1).
+ * Nothing about the vault is read or returned: the reply is the same whatever the vault holds, so
+ * the page learns nothing from it (§4). A content-script message never counts as activity for
+ * auto-lock and never reaches the vault channel.
+ */
+async function inlineOpen(tabId: number, windowId: number | undefined, origin: string) {
+  if (!(await inlineEnabled())) return;
+  // The browser's view of the tab, read again: the page may have navigated since it sent this.
+  const tab = await chrome.tabs.get(tabId).catch(() => undefined);
+  if (!tab?.active || fillableOrigin(tab.url) !== origin) return;
+  const now = Date.now();
+  if (now - lastInlineOpen < INLINE_OPEN_INTERVAL_MS) return;
+  lastInlineOpen = now;
+  try {
+    await chrome.action.openPopup(windowId === undefined ? undefined : { windowId });
+  } catch {
+    // No popup could be opened (an unfocused window, a browser without the API): mark the
+    // toolbar button for this tab instead. The user opens it, as with manual fill.
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: '#6d4aff' });
+    await chrome.action.setBadgeText({ tabId, text: '•' });
+  }
+}
+
 async function handle(request: ExtensionRequest): Promise<unknown> {
   switch (request.kind) {
     case 'status': {
@@ -375,6 +453,12 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
       return fill(request.tabId, request.itemId);
     case 'pairing':
       return pairingView();
+    case 'inlineSettings': {
+      const settings: InlineSettings = { enabled: await inlineEnabled() };
+      return settings;
+    }
+    case 'setInline':
+      return setInline(request.enabled);
     case 'vault': {
       const generation = lockGeneration;
       const e = await getEngine();
@@ -420,7 +504,17 @@ function trusted(sender: chrome.runtime.MessageSender): boolean {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
-  if (!trusted(sender)) return undefined;
+  if (!trusted(sender)) {
+    // The separate content-script channel: one message kind, an empty reply, no vault access.
+    const target = inlineTarget(sender, chrome.runtime.id, self.location.origin);
+    if (!target || !contentRequestSchema.safeParse(message).success) return undefined;
+    inlineOpen(target.tabId, target.windowId, target.origin)
+      .catch(() => undefined)
+      .finally(() => {
+        sendResponse(null);
+      });
+    return true;
+  }
   const parsed = requestSchema.safeParse(message);
   if (!parsed.success) {
     sendResponse({ ok: false, code: 'internal' } satisfies ExtensionResponse);
@@ -449,3 +543,7 @@ chrome.alarms.onAlarm.addListener((alarm) => {
 });
 // A worker started again (by the pairing alarm, or any event) goes on with a stored join.
 void resumePairing();
+void reconcileInline().catch(() => undefined);
+chrome.permissions.onRemoved.addListener(() => {
+  void reconcileInline().catch(() => undefined);
+});

@@ -50,6 +50,12 @@ const HIDDEN_FIELDS = `<!doctype html><title>Synthetic hidden fields</title>
 <div style="position:absolute;left:0;top:300px;width:320px;height:40px;background:#fff;pointer-events:none"></div>
 </form>`;
 const HIDDEN_PAGE = `${new URL(LOGIN_PAGE).origin}/hidden`;
+/** A page on the saved origin whose only login form is in a frame of another origin (E-15). */
+const FRAMED = `<!doctype html><title>Synthetic framed login</title>
+<iframe src="${OTHER_PORT}" width="400" height="200"></iframe>`;
+const FRAMED_PAGE = `${new URL(LOGIN_PAGE).origin}/framed`;
+const ICON = 'ruvee-inline-icon';
+const PAGES: Record<string, string> = { '/hidden': HIDDEN_FIELDS, '/framed': FRAMED };
 
 const extensionDir = new URL('../dist-test/', import.meta.url).pathname;
 const popupUrl = (tab?: number) =>
@@ -93,7 +99,7 @@ test.beforeAll(async () => {
       route.fulfill({
         status: 200,
         contentType: 'text/html',
-        body: new URL(route.request().url()).pathname === '/hidden' ? HIDDEN_FIELDS : FORM,
+        body: PAGES[new URL(route.request().url()).pathname] ?? FORM,
       }),
     );
 });
@@ -351,6 +357,163 @@ test('R18: on the saved origin, fields the user cannot see are never filled', as
   ])
     await expect(site.locator(`#${id}`), id).toHaveValue('');
   await site.goto(LOGIN_PAGE);
+});
+
+/** Action popups open now: `chrome.action.openPopup()` from an inline click (not popup tabs). */
+async function actionPopups(): Promise<number> {
+  return worker.evaluate(
+    async () => (await chrome.runtime.getContexts({ contextTypes: ['POPUP'] })).length,
+  );
+}
+
+async function closeActionPopups(): Promise<void> {
+  const cdp = await context.newCDPSession(popup);
+  const { targetInfos } = await cdp.send('Target.getTargets');
+  for (const target of targetInfos)
+    if (target.url === popupUrl())
+      await cdp.send('Target.closeTarget', { targetId: target.targetId });
+  await cdp.detach();
+  await expect.poll(actionPopups).toBe(0);
+}
+
+/** What any script in the page can see of the document, icons included. */
+const pageMarkup = (page: Page) => page.evaluate(() => document.documentElement.outerHTML);
+
+/** A message sent from a content script of this extension in the site's top frame. */
+async function fromContentScript(message: unknown): Promise<unknown> {
+  return worker.evaluate(
+    async ([tabId, msg]) => {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId },
+        world: 'ISOLATED',
+        args: [msg],
+        func: async (m: unknown) => {
+          try {
+            // A message nobody answers resolves with `undefined`; the inline reply is `null`.
+            const reply: unknown = await chrome.runtime.sendMessage(m);
+            return { reply: reply === undefined ? 'no reply' : reply };
+          } catch {
+            return { reply: 'no reply' };
+          }
+        },
+      });
+      return r?.result;
+    },
+    [siteTab, message] as const,
+  );
+}
+
+test('inline icon (phase A): opt-in, opens the popup, never fills, tells the page nothing', async () => {
+  // ---- Off by default: no content script on a login page ----
+  await site.goto(LOGIN_PAGE);
+  await site.waitForTimeout(1000);
+  await expect(site.locator(ICON)).toHaveCount(0);
+
+  // ---- Turned on in the options page ----
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${EXTENSION_ID}/options.html`);
+  await options.getByRole('button', { name: 'Turn on' }).click();
+  await expect(options.getByText(/^On\./)).toBeVisible();
+
+  await site.goto(LOGIN_PAGE);
+  await expect(site.locator(ICON)).toHaveCount(2);
+  // The page cannot reach into the icon.
+  expect(
+    await site.evaluate((tag) => document.querySelector(tag)?.shadowRoot ?? null, ICON),
+  ).toBeNull();
+
+  // ---- §4: the page sees the same thing whatever the vault holds ----
+  const unlockedWithMatch = await pageMarkup(site);
+  const other = await context.newPage();
+  await other.goto(OTHER_PORT);
+  await expect(other.locator(ICON)).toHaveCount(2);
+  const unlockedNoMatch = await pageMarkup(other);
+  await other.close();
+  const unlockedReply = await fromContentScript({ kind: 'inlineOpen' });
+  await closeActionPopups();
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByRole('button', { name: 'Lock' }).click();
+  await expect(popup.getByText('Your vault is locked.')).toBeVisible();
+  await site.goto(LOGIN_PAGE);
+  await expect(site.locator(ICON)).toHaveCount(2);
+  const locked = await pageMarkup(site);
+  expect(unlockedNoMatch).toBe(unlockedWithMatch);
+  expect(locked).toBe(unlockedWithMatch);
+  const lockedReply = await fromContentScript({ kind: 'inlineOpen' });
+  expect(lockedReply).toEqual(unlockedReply);
+  expect(lockedReply).toEqual({ reply: null });
+  await closeActionPopups();
+  await unlock(MASTER);
+
+  // ---- The user's click on the icon opens the toolbar popup; nothing is filled ----
+  await site.goto(LOGIN_PAGE);
+  await site.bringToFront();
+  await expect(site.locator(ICON)).toHaveCount(2);
+  const icon = await site.locator(ICON).nth(1).boundingBox();
+  if (!icon) throw new Error('the icon has no box');
+  await site.mouse.click(icon.x + icon.width / 2, icon.y + icon.height / 2);
+  await expect.poll(actionPopups).toBe(1);
+  await site.waitForTimeout(1000);
+  await expect(site.locator('#user')).toHaveValue('');
+  await expect(site.locator('#pw')).toHaveValue('');
+  await closeActionPopups();
+
+  // ---- Clicks the page makes do nothing ----
+  await site.waitForTimeout(1100);
+  await site.evaluate((tag) => {
+    for (const host of document.querySelectorAll<HTMLElement>(tag)) {
+      host.click();
+      host.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true }));
+    }
+  }, ICON);
+  await site.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+
+  // ---- E-10: a page that makes everything transparent gets a popup, never a fill ----
+  await site.evaluate(() => {
+    document.documentElement.style.opacity = '0';
+  });
+  await site.mouse.click(icon.x + icon.width / 2, icon.y + icon.height / 2);
+  await expect.poll(actionPopups).toBe(1);
+  await site.waitForTimeout(1000);
+  await expect(site.locator('#pw')).toHaveValue('');
+  await closeActionPopups();
+
+  // ---- E-20: a content script can only ask for the popup; everything else is dropped ----
+  const itemId = await firstItemId(popup, siteTab);
+  for (const forged of [
+    { kind: 'fill', tabId: siteTab, itemId },
+    { kind: 'candidates', tabId: siteTab },
+    { kind: 'vault', method: 'phase' },
+    { kind: 'status' },
+    { kind: 'setInline', enabled: false },
+    { kind: 'inlineOpen', tabId: siteTab },
+  ])
+    expect(await fromContentScript(forged), JSON.stringify(forged)).toEqual({ reply: 'no reply' });
+  await site.goto(LOGIN_PAGE);
+  await expect(site.locator('#pw')).toHaveValue('');
+  expect(await actionPopups()).toBe(0);
+
+  // ---- E-15: no icon in a frame of another origin, and none in the top frame without fields ----
+  await site.goto(FRAMED_PAGE);
+  await expect(site.frameLocator('iframe').locator('#pw')).toBeVisible();
+  await site.waitForTimeout(1000);
+  await expect(site.locator(ICON)).toHaveCount(0);
+  await expect(site.frameLocator('iframe').locator(ICON)).toHaveCount(0);
+
+  // ---- Turned off: the script is unregistered ----
+  await options.bringToFront();
+  await options.getByRole('button', { name: 'Turn off' }).click();
+  await expect(options.getByText(/^Off\./)).toBeVisible();
+  await options.close();
+  expect(
+    await worker.evaluate(
+      async () => (await chrome.scripting.getRegisteredContentScripts()).length,
+    ),
+  ).toBe(0);
+  await site.goto(LOGIN_PAGE);
+  await site.waitForTimeout(1000);
+  await expect(site.locator(ICON)).toHaveCount(0);
 });
 
 test('R19: a lock that arrives while an unlock is still running wins', async () => {

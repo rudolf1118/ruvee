@@ -12,6 +12,15 @@ declare namespace chrome {
       tab?: tabs.Tab;
       frameId?: number;
     }
+    interface ContextFilter {
+      contextTypes?: ('POPUP' | 'TAB' | 'OFFSCREEN_DOCUMENT' | 'SIDE_PANEL' | 'BACKGROUND')[];
+    }
+    interface ExtensionContext {
+      contextType: string;
+      documentUrl?: string;
+      tabId: number;
+    }
+    function getContexts(filter: ContextFilter): Promise<ExtensionContext[]>;
     const onMessage: {
       addListener(
         callback: (
@@ -43,6 +52,7 @@ declare namespace chrome {
       id?: number;
       url?: string;
       active: boolean;
+      windowId?: number;
     }
     function get(tabId: number): Promise<Tab>;
     function query(query: { active?: boolean; lastFocusedWindow?: boolean }): Promise<Tab[]>;
@@ -59,11 +69,35 @@ declare namespace chrome {
       args: A;
       world?: 'ISOLATED' | 'MAIN';
     }): Promise<InjectionResult<R>[]>;
+    interface RegisteredContentScript {
+      id: string;
+      js?: string[];
+      matches?: string[];
+      allFrames?: boolean;
+      runAt?: 'document_start' | 'document_end' | 'document_idle';
+      world?: 'ISOLATED' | 'MAIN';
+      persistAcrossSessions?: boolean;
+    }
+    function registerContentScripts(scripts: RegisteredContentScript[]): Promise<void>;
+    function unregisterContentScripts(filter?: { ids?: string[] }): Promise<void>;
+    function getRegisteredContentScripts(filter?: {
+      ids?: string[];
+    }): Promise<RegisteredContentScript[]>;
+  }
+
+  namespace action {
+    function openPopup(options?: { windowId?: number }): Promise<void>;
+    function setBadgeText(details: { tabId?: number; text: string }): Promise<void>;
+    function setBadgeBackgroundColor(details: { tabId?: number; color: string }): Promise<void>;
   }
 
   namespace permissions {
     function request(permissions: { origins: string[] }): Promise<boolean>;
     function contains(permissions: { origins: string[] }): Promise<boolean>;
+    function remove(permissions: { origins: string[] }): Promise<boolean>;
+    const onRemoved: {
+      addListener(callback: (permissions: { origins?: string[] }) => void): void;
+    };
   }
 
   namespace alarms {
