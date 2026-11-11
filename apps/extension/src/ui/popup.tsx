@@ -1,8 +1,8 @@
 import type { DevicePhase, PairingJoinStatus, SyncStatus } from '@ruvee/vault';
 import { type SubmitEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Candidates, FillOutcome, Status } from '../messages';
-import { call, CallError, messageFor } from './client';
+import type { Candidates, FillOutcome, PairingView, Status } from '../messages';
+import { call, CallError, messageFor, PAIRING_RESTART_CODES, pairingMessageFor } from './client';
 
 const PAIRING_POLL_MS = 2000;
 
@@ -69,7 +69,14 @@ function Popup() {
         </section>
       ) : null}
       {screen.name === 'login' ? <Login onDone={refresh} /> : null}
-      {screen.name === 'pending' ? <Pair onDone={refresh} /> : null}
+      {screen.name === 'pending' ? (
+        <Pair
+          onDone={refresh}
+          onRestart={() => {
+            setScreen({ name: 'login' });
+          }}
+        />
+      ) : null}
       {screen.name === 'locked' ? <Unlock onDone={refresh} /> : null}
       {screen.name === 'unlocked' ? <Fill onLocked={refresh} /> : null}
     </main>
@@ -143,57 +150,132 @@ function Login({ onDone }: { onDone: () => void }) {
   );
 }
 
-/** device-enrollment §3: this browser is device B and joins with the code shown on device A. */
-function Pair({ onDone }: { onDone: () => void }) {
+/**
+ * device-enrollment §3: this browser is device B and joins with the code shown on device A. The
+ * worker owns the join and finishes it even while the popup is closed (it closes as soon as the
+ * user switches to the device that approves); this screen only reads where the join stands.
+ */
+function Pair({ onDone, onRestart }: { onDone: () => void; onRestart: () => void }) {
+  const [view, setView] = useState<PairingView | null>(null);
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [needsPassword, setNeedsPassword] = useState(false);
-  const [waiting, setWaiting] = useState(false);
-  const { busy, error, run } = useSubmit();
-  const [waitError, setWaitError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<CallError | null>(null);
+
+  const read = useCallback(
+    () =>
+      call<PairingView>({ kind: 'pairing' }).then(
+        (next) => {
+          if (next.state === 'enrolled') onDone();
+          else setView(next);
+        },
+        (e: unknown) => {
+          setFailure(e instanceof CallError ? e : new CallError('internal'));
+        },
+      ),
+    [onDone],
+  );
 
   useEffect(() => {
+    void read();
     void call<boolean>({ kind: 'vault', method: 'pairingNeedsPassword' }).then(
       setNeedsPassword,
       () => undefined,
     );
-  }, []);
+  }, [read]);
 
+  const joined = view?.state === 'joined';
   useEffect(() => {
-    if (!waiting) return;
-    const timer = setInterval(() => {
-      call<PairingJoinStatus>({ kind: 'vault', method: 'pairingWait' }).then(
-        (status) => {
-          if (status.state === 'enrolled') {
-            clearInterval(timer);
-            onDone();
-          }
-        },
-        (e: unknown) => {
-          clearInterval(timer);
-          setWaiting(false);
-          if (e instanceof CallError && e.code === 'password_required') setNeedsPassword(true);
-          setWaitError(messageFor(e));
-        },
-      );
-    }, PAIRING_POLL_MS);
+    if (!joined) return;
+    const timer = setInterval(() => void read(), PAIRING_POLL_MS);
     return () => {
       clearInterval(timer);
     };
-  }, [waiting, onDone]);
+  }, [joined, read]);
 
-  if (waiting) return <p role="status">Waiting for approval on your other device…</p>;
+  const send = (task: () => Promise<void>) => (event: SubmitEvent) => {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setFailure(null);
+    void task()
+      .catch((e: unknown) => {
+        const error = e instanceof CallError ? e : new CallError('internal');
+        if (error.code === 'password_required') setNeedsPassword(true);
+        setFailure(error);
+      })
+      .then(read)
+      .finally(() => {
+        setBusy(false);
+      });
+  };
+
+  if (!view) return <p aria-busy="true">Loading…</p>;
+  // What stopped the last join, or this screen's own call; either may need a new login.
+  const problem = failure ?? (view.problem === null ? null : new CallError(view.problem));
+  const alert = problem ? (
+    <p role="alert" className="error">
+      {pairingMessageFor(problem)}
+    </p>
+  ) : null;
+  const restart =
+    problem && PAIRING_RESTART_CODES.has(problem.code) ? (
+      <button type="button" onClick={onRestart}>
+        Log in again
+      </button>
+    ) : null;
+
+  if (view.state === 'joined')
+    return (
+      <section>
+        <p role="status">Waiting for approval on your other device…</p>
+        <p className="muted">You can close this window; Ruvee finishes adding this browser.</p>
+        {view.needsPassword ? (
+          <form
+            onSubmit={send(async () => {
+              const status = await call<PairingJoinStatus>({
+                kind: 'vault',
+                method: 'pairingWait',
+                params: { password },
+              });
+              setPassword('');
+              if (status.state === 'enrolled') onDone();
+            })}
+          >
+            <label>
+              Master password
+              <input
+                type="password"
+                value={password}
+                autoComplete="current-password"
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                }}
+              />
+              <span className="muted">Needed once more to finish adding this browser.</span>
+            </label>
+            {alert}
+            <button type="submit" className="primary" aria-disabled={busy || undefined}>
+              {busy ? 'Finishing…' : 'Finish adding this browser'}
+            </button>
+          </form>
+        ) : (
+          alert
+        )}
+        {restart}
+      </section>
+    );
+
   return (
     <form
-      onSubmit={run(async () => {
-        setWaitError(null);
+      onSubmit={send(async () => {
         await call({
           kind: 'vault',
           method: 'pairingJoin',
           params: { code, ...(needsPassword ? { password } : {}) },
         });
         setPassword('');
-        setWaiting(true);
       })}
     >
       <p>
@@ -225,14 +307,11 @@ function Pair({ onDone }: { onDone: () => void }) {
           />
         </label>
       ) : null}
-      {error || waitError ? (
-        <p role="alert" className="error">
-          {error ?? waitError}
-        </p>
-      ) : null}
+      {alert}
       <button type="submit" className="primary" aria-disabled={busy || undefined}>
         {busy ? 'Sending…' : 'Add this browser'}
       </button>
+      {restart}
     </form>
   );
 }

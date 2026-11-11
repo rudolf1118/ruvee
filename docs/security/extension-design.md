@@ -64,6 +64,17 @@ storage": `chrome.storage.session` is browser memory, like the worker heap. It w
 to code that can already run in trusted extension contexts. If the owner does not accept that
 reading, option 1 applies and INV-16 stays literal.
 
+The same reading covers a **join in progress** (device-enrollment §3, device B). The popup closes
+as soon as the user turns to the device that approves, so the worker, not the popup, owns the
+join: it polls until the join ends, and keeps the join's secrets (the pairing secret, the
+ephemeral private key and the new device's `DSK`, never the password) in `chrome.storage.session`
+until then, so a worker restart resumes the join. The password from the login is kept in worker
+memory only, for at most 10 minutes; after a restart, or once that time is up, the popup asks for
+it again to finish, and never sends a second join. Lock, logout, the join's end and its 10-minute
+expiry delete the stored join. A browser restart still loses it; the server's device is then
+active without a key this browser holds, and the popup says to log in again, which starts a new
+device (device-proof.md §8).
+
 ## 4. Manual fill
 
 1. The user opens the popup (or presses the extension's keyboard shortcut) on a tab.

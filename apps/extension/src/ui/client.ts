@@ -18,6 +18,30 @@ export async function call<T>(request: ExtensionRequest): Promise<T> {
   return response.result as T;
 }
 
+const PAIRING_INTERRUPTED =
+  'This browser was already approved, but the pairing was interrupted before it could finish here, so a code cannot complete it. Log in again to start over, then add this browser with a new code. The unfinished entry can be removed under Devices in the web app.';
+
+/**
+ * During pairing, codes that mean this device left the pending state without the join that could
+ * finish it (the server answers `forbidden` or `device_proof_required` to another request, or the
+ * session ended). Only a new login recovers: it starts a new device.
+ */
+export const PAIRING_RESTART_CODES: ReadonlySet<string> = new Set([
+  'pairing_interrupted',
+  'forbidden',
+  'device_proof_required',
+  'device_key_missing',
+  'device_not_enrolled',
+  'session_expired',
+]);
+
+/** `messageFor`, worded for the pairing screen. */
+export function pairingMessageFor(e: unknown): string {
+  const code = e instanceof CallError ? e.code : 'internal';
+  if (PAIRING_RESTART_CODES.has(code)) return PAIRING_INTERRUPTED;
+  return messageFor(e);
+}
+
 /** User-facing text for the codes the worker reports. Never says more than the code does. */
 export function messageFor(e: unknown): string {
   const code = e instanceof CallError ? e.code : 'internal';
@@ -44,6 +68,8 @@ export function messageFor(e: unknown): string {
       return 'This request did not match. Nothing was shared. Start again.';
     case 'password_required':
       return 'Enter your master password to finish adding this browser.';
+    case 'pairing_interrupted':
+      return PAIRING_INTERRUPTED;
     case 'previous_password_required':
       return 'Your master password and Secret Key were both changed on another device. Also enter the master password this browser used before.';
     case 'locked':
