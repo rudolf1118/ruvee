@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Env } from '../config/env.js';
+import { InstanceLockService } from './instance-lock.service.js';
 import { PrismaService } from './prisma.service.js';
 
 export type DependencyStatus = 'up' | 'down';
@@ -12,10 +13,15 @@ export class DatabaseHealthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService<Env, true>,
+    private readonly instance: InstanceLockService,
   ) {}
 
-  /** Runs a trivial query, bounded by READINESS_DB_TIMEOUT_MS. */
+  /**
+   * Runs a trivial query, bounded by READINESS_DB_TIMEOUT_MS. A process that does not hold the
+   * instance lock is not ready either: it serves nothing (InstanceLockService).
+   */
   async check(): Promise<DependencyStatus> {
+    if (!this.instance.held) return 'down';
     const timeoutMs = this.config.get('READINESS_DB_TIMEOUT_MS', { infer: true });
     let timer: NodeJS.Timeout | undefined;
     const timeout = new Promise<never>((_, reject) => {

@@ -73,9 +73,53 @@
   --width-list: 380px;
 }
 
+/* Dark values for the same tokens (docs/brand/tokens.css); every text pair keeps WCAG AA. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-brand: #7357ff;
+    --color-brand-hover: #8a72ff;
+    --color-brand-strong: #d2c8ff;
+    --color-brand-text: #b3a1ff;
+    --color-brand-soft: #2b2452;
+    --color-brand-tint: #251f45;
+    --color-brand-wash: #1f1b38;
+    --color-brand-line: #4a3d8f;
+
+    --color-canvas: #16151c;
+    --color-surface: #1e1d26;
+    --color-ink: #eceaf2;
+    --color-ink-secondary: #cfcdd8;
+    --color-ink-muted: #9b99a8;
+    --color-line: #2f2e39;
+    --color-line-soft: #292833;
+    --color-line-strong: #3b3a46;
+    --color-line-button: #3d3c48;
+    --color-line-input: #44434f;
+    --color-line-menu: #363542;
+    --color-line-dashed: #46455a;
+    --color-hover: #2a2934;
+    --color-hover-soft: #23222c;
+    --color-subtle: #25242e;
+    --color-avatar: #2a2934;
+    --color-avatar-line: #3b3a46;
+    --color-ribbon: #0e0d14;
+
+    --color-danger: #f97066;
+    --color-danger-hover: #fb8a81;
+    --color-danger-strong: #fda29b;
+    --color-danger-wash: #3a1714;
+    --color-caution-strong: #f5c26b;
+    --color-caution-wash: #33240e;
+    --color-caution-line: #5c4214;
+
+    --shadow-card: 0 1px 2px rgb(0 0 0 / 0.3);
+    --shadow-menu: 0 12px 32px rgb(0 0 0 / 0.45);
+  }
+}
+
 @layer base {
   html {
-    color-scheme: light;
+    color-scheme: light dark;
   }
 
   body {

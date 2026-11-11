@@ -1,0 +1,23 @@
+#!/bin/sh
+# Prints the SHA-256 of every file the rehearsal host runs or serves from one build, sorted, with
+# paths relative to the release directory. Two builds of one commit print the same manifest; the
+# host's is compared with the one published by CI for that commit (guide §3).
+#
+#   deploy/bin/build-manifest [release-dir] > build-manifest.txt
+set -eu
+
+cd "${1:-$(dirname "$0")/../..}"
+for dir in apps/api/dist apps/api/prisma/migrations apps/web/out apps/web/out-caddy \
+  packages/contracts/dist packages/crypto/dist packages/vault/dist deploy; do
+  if [ ! -d "$dir" ]; then
+    echo "build-manifest: $dir is missing (build first)" >&2
+    exit 2
+  fi
+done
+{
+  find apps/api/dist apps/api/prisma/migrations apps/web/out apps/web/out-caddy \
+    packages/contracts/dist packages/crypto/dist packages/vault/dist deploy -type f
+  printf '%s\n' pnpm-lock.yaml
+} | LC_ALL=C sort | while IFS= read -r file; do
+  sha256sum "$file"
+done

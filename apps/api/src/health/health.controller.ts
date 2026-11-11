@@ -1,20 +1,13 @@
 import { Controller, Get, HttpStatus, Res } from '@nestjs/common';
+import type { LivenessResponse, ReadinessResponse } from '@ruvee/contracts';
 import type { Response } from 'express';
-import {
-  DatabaseHealthService,
-  type DependencyStatus,
-} from '../database/database-health.service.js';
-
-export interface LivenessResponse {
-  status: 'ok';
-}
-
-export interface ReadinessResponse {
-  status: 'ok' | 'unavailable';
-  checks: { database: DependencyStatus };
-}
+import { DatabaseHealthService } from '../database/database-health.service.js';
+import { Access } from '../sessions/access.decorator.js';
+import { RouteClassOf } from '../sessions/route-class.js';
 
 @Controller('health')
+@RouteClassOf('health')
+@Access('none')
 export class HealthController {
   constructor(private readonly database: DatabaseHealthService) {}
 
@@ -28,9 +21,12 @@ export class HealthController {
   @Get('ready')
   async ready(@Res({ passthrough: true }) res: Response): Promise<ReadinessResponse> {
     const database = await this.database.check();
-    const ready = database === 'up';
-    res.status(ready ? HttpStatus.OK : HttpStatus.SERVICE_UNAVAILABLE);
     res.setHeader('Cache-Control', 'no-store');
-    return { status: ready ? 'ok' : 'unavailable', checks: { database } };
+    if (database === 'up') {
+      res.status(HttpStatus.OK);
+      return { status: 'ok', checks: { database } };
+    }
+    res.status(HttpStatus.SERVICE_UNAVAILABLE);
+    return { status: 'unavailable', checks: { database } };
   }
 }

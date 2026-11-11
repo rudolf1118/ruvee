@@ -1,6 +1,20 @@
 packages:
   - apps/*
   - packages/*
+# libsodium-wrappers-sumo asks for libsodium-sumo ^0.8.0; the override keeps the WebAssembly build
+# at the exact version validated in tools/crypto-validation (INV-22).
+overrides:
+  libsodium-sumo: 0.8.4
+  # GHSA-27r3-jxmh-p828 (CVE-2026-111181): fixed in body-parser 2.4.0, within express 5.3.0's
+  # ^2.3.0 range. Not reachable here (Nest's parser is off and ours uses inflate: false), but
+  # patched anyway. Remove once express's own lower bound includes it.
+  body-parser: 2.4.0
+  # GHSA-q7qp-rjg7-q26m (CVE-2026-113872): fixed in multer 2.5.0 (same dependencies and engines
+  # as 2.4.0). @nestjs/platform-express 12.2.0, the latest, pins multer 2.4.0 exactly. Ruvee has
+  # no upload routes, so multer never runs. Remove when Nest pins 2.5.0 or later.
+  multer: 2.5.0
 allowBuilds:
   '@prisma/engines': true
+  # The binary comes from the platform-specific optional dependency; the install script is not needed.
+  esbuild: false
   prisma: true

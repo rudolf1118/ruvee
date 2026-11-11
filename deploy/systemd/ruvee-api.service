@@ -1,0 +1,76 @@
+# The Ruvee API: one process per database (README, "Deployment topology").
+# Guide: docs/guides/private-rehearsal.md. Install as /etc/systemd/system/ruvee-api.service.
+#
+# Configuration: /etc/ruvee/api.env (deploy/env/api.env.example), root-only; systemd reads it
+# before dropping privileges. The OPAQUE setup file is the only file of /etc/ruvee the service
+# user can read: /etc/ruvee/api/opaque-server-setup, owner ruvee-api, mode 0600, in a directory
+# only ruvee-api can enter. (Not LoadCredential: systemd's copy is group-readable, which the API
+# refuses in production.) Do not set OPAQUE_SERVER_SETUP_FILE in api.env: an EnvironmentFile
+# value would replace the one below.
+
+[Unit]
+Description=Ruvee API
+After=network-online.target postgresql.service
+Wants=network-online.target
+# Ten failed starts within five minutes (for example a configuration the API refuses) stop the
+# restarts and leave the unit failed, visible in `systemctl --failed`.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+Type=simple
+User=ruvee-api
+Group=ruvee-api
+EnvironmentFile=/etc/ruvee/api.env
+Environment=OPAQUE_SERVER_SETUP_FILE=/etc/ruvee/api/opaque-server-setup
+WorkingDirectory=/opt/ruvee/current/apps/api
+ExecStart=/usr/local/bin/node dist/main.js
+# The API ends its work on SIGTERM (enableShutdownHooks). Any exit, clean or not, restarts it:
+# a server has no reason to stay down.
+Restart=always
+RestartSec=5s
+TimeoutStopSec=30s
+
+# Logs go to the journal; its size is capped by deploy/journald/50-ruvee.conf.
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=5000
+
+# Resources (sized for a 2 GB host; see the rehearsal's measurements before changing them).
+MemoryHigh=768M
+MemoryMax=1G
+TasksMax=256
+
+# The API only listens on loopback and connects to PostgreSQL on loopback.
+IPAddressAllow=localhost
+IPAddressDeny=any
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Sandboxing. No MemoryDenyWriteExecute: V8's JIT and WebAssembly need writable code pages.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+UMask=0077
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+
+[Install]
+WantedBy=multi-user.target

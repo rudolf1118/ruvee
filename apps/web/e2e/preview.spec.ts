@@ -14,9 +14,13 @@ test('has no detectable accessibility violations', async ({ page }) => {
   expect(results.violations.map((v) => `${v.id}: ${v.help}`)).toEqual([]);
 });
 
-test('labels the build as an early-development foundation on the home page', async ({ page }) => {
+test('opens on the welcome screen, marked as an unreviewed development build', async ({ page }) => {
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Ruvee is in early development' })).toBeVisible();
+  await expect(
+    page.getByRole('heading', { name: 'Keep every password in one calm, safe place.' }),
+  ).toBeVisible();
+  await expect(page.getByText('Development build, not reviewed.')).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Open the interface preview' })).toBeVisible();
 });
 
 test.describe('desktop layout', () => {

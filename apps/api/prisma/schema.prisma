@@ -1,5 +1,8 @@
-// No models yet. Account, key-storage and vault schemas wait on the open
-// security architecture decisions listed in docs/architecture/open-decisions.md.
+// Phase 2 identity tables and the Phase 3 vault tables from docs/architecture/database-design.md,
+// for the web-vault development milestone. The design is Proposed and not independently
+// reviewed. Byte-length CHECK constraints and the tombstone CHECK live in the migration SQL,
+// because Prisma cannot express them. Confidentiality classes per column are in
+// src/database/column-classes.ts (INV-10).
 
 generator client {
   provider            = "prisma-client"
@@ -10,4 +13,416 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+}
+
+enum DevicePlatform {
+  web
+  extension
+  ios
+  android
+
+  @@map("device_platform")
+}
+
+enum DeviceStatus {
+  pending
+  active
+  revoked
+
+  @@map("device_status")
+}
+
+enum EnrolledVia {
+  bootstrap
+  pairing
+  recovery
+
+  @@map("enrolled_via")
+}
+
+enum SessionKind {
+  cookie
+  token
+  recovery
+  reopen
+
+  @@map("session_kind")
+}
+
+enum RevokeReason {
+  logout
+  user
+  device_revoked
+  password_changed
+  recovery
+  refresh_reuse
+  expired
+  superseded
+  restored
+  reopened
+  proof_failed
+
+  @@map("revoke_reason")
+}
+
+/// Request windows kept in the database (follow-up review §17.2 option B).
+enum RateScope {
+  address
+  wrong_code
+  session
+
+  @@map("rate_scope")
+}
+
+enum LoginPurpose {
+  login
+  reauth
+  reopen
+
+  @@map("login_purpose")
+}
+
+enum ThrottleScope {
+  login
+  recovery
+  bootstrap
+  pairing
+
+  @@map("throttle_scope")
+}
+
+enum SecurityEventType {
+  login_succeeded
+  login_failed
+  session_revoked
+  refresh_reuse
+  password_changed
+  recovery_started
+  recovery_failed
+  recovery_completed
+  recovery_key_rotated
+  secret_key_rotated
+  device_pairing_requested
+  device_enrolled
+  device_revoked
+  pairing_mac_failed
+  vault_reset
+  bootstrap_used
+  bootstrap_failed
+  integrity_warning_reported
+  server_restored
+  restore_review_completed
+  reopen_code_issued
+  reopen_started
+  reopen_failed
+  restore_reopened
+  device_proof_failed
+
+  @@map("security_event_type")
+}
+
+enum PairingState {
+  open
+  requested
+  approved
+
+  @@map("pairing_state")
+}
+
+enum CommitKind {
+  normal
+  reseed
+  rotation
+
+  @@map("commit_kind")
+}
+
+model Account {
+  id                 String   @id @db.Uuid
+  usernameNormalized String   @unique @map("username_normalized")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  opaqueCredential OpaqueCredential?
+  accountKeys      AccountKeys?
+  devices          Device[]
+  sessions         Session[]
+  securityEvents   SecurityEvent[]
+  vaults           Vault[]
+  pairings         Pairing[]
+  proofNonces      ProofNonce[]
+  loginStates      LoginState[]
+
+  @@map("accounts")
+}
+
+model OpaqueCredential {
+  accountId          String   @id @map("account_id") @db.Uuid
+  registrationRecord Bytes    @map("registration_record")
+  configId           String   @map("config_id")
+  updatedAt          DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("opaque_credentials")
+}
+
+model AccountKeys {
+  accountId         String   @id @map("account_id") @db.Uuid
+  kdfProfile        Int      @map("kdf_profile") @db.SmallInt
+  saltPw            Bytes    @map("salt_pw")
+  akId              Bytes    @map("ak_id")
+  akEpoch           Int      @map("ak_epoch")
+  wrappedAkPassword Bytes    @map("wrapped_ak_password")
+  recoveryKeyId     Bytes    @map("recovery_key_id")
+  wrappedAkRecovery Bytes    @map("wrapped_ak_recovery")
+  recoveryVerifier  Bytes    @map("recovery_verifier")
+  keysetVersion     BigInt   @map("keyset_version")
+  keyset            Bytes
+  rowVersion        BigInt   @default(1) @map("row_version")
+  updatedAt         DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+  /// `AVPK`: public key of the AK-derived proof key (device-proof.md §2); null before D-31.
+  akVerifyKey       Bytes?   @map("ak_verify_key")
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+
+  @@map("account_keys")
+}
+
+model Device {
+  id                 String         @id @db.Uuid
+  accountId          String         @map("account_id") @db.Uuid
+  platform           DevicePlatform
+  status             DeviceStatus
+  enrolledVia        EnrolledVia?   @map("enrolled_via")
+  approvedByDeviceId String?        @map("approved_by_device_id") @db.Uuid
+  label              Bytes?
+  createdAt          DateTime       @default(now()) @map("created_at") @db.Timestamptz(3)
+  enrolledAt         DateTime?      @map("enrolled_at") @db.Timestamptz(3)
+  lastSeenAt         DateTime?      @map("last_seen_at") @db.Timestamptz(3)
+  revokedAt          DateTime?      @map("revoked_at") @db.Timestamptz(3)
+  /// `DPK`: the device's Ed25519 public key (device-proof.md §2); null until enrolled with one.
+  publicKey          Bytes?         @map("public_key")
+
+  account           Account         @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  approvedBy        Device?         @relation("DeviceApproval", fields: [approvedByDeviceId], references: [id], onDelete: SetNull)
+  approved          Device[]        @relation("DeviceApproval")
+  sessions          Session[]
+  securityEvents    SecurityEvent[]
+  commits           VaultCommit[]
+  initiatedPairings Pairing[]       @relation("PairingInitiator")
+  requestedPairings Pairing[]       @relation("PairingRequester")
+
+  @@index([accountId])
+  @@map("devices")
+}
+
+model Session {
+  id                String        @id @db.Uuid
+  accountId         String        @map("account_id") @db.Uuid
+  deviceId          String        @map("device_id") @db.Uuid
+  kind              SessionKind
+  secretHash        Bytes         @unique @map("secret_hash")
+  accessExpiresAt   DateTime?     @map("access_expires_at") @db.Timestamptz(3)
+  authAt            DateTime      @map("auth_at") @db.Timestamptz(3)
+  createdAt         DateTime      @default(now()) @map("created_at") @db.Timestamptz(3)
+  lastUsedAt        DateTime      @default(now()) @map("last_used_at") @db.Timestamptz(3)
+  idleExpiresAt     DateTime      @map("idle_expires_at") @db.Timestamptz(3)
+  absoluteExpiresAt DateTime      @map("absolute_expires_at") @db.Timestamptz(3)
+  revokedAt         DateTime?     @map("revoked_at") @db.Timestamptz(3)
+  revokeReason      RevokeReason? @map("revoke_reason")
+  /// When the session proved the device key; null for a pre-proof or pending session.
+  provenAt          DateTime?     @map("proven_at") @db.Timestamptz(3)
+
+  account       Account        @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  device        Device         @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+  proofNonces   ProofNonce[]
+  loginStates   LoginState[]
+
+  @@index([accountId])
+  @@index([deviceId])
+  @@map("sessions")
+}
+
+/// A token session's refresh tokens; the session is the family (authentication.md §5).
+model RefreshToken {
+  tokenHash Bytes     @id @map("token_hash")
+  sessionId String    @map("session_id") @db.Uuid
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  rotatedAt DateTime? @map("rotated_at") @db.Timestamptz(3)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+model AuthThrottle {
+  scope        ThrottleScope
+  subjectHash  Bytes         @map("subject_hash")
+  failureCount Int           @default(0) @map("failure_count")
+  windowStart  DateTime      @map("window_start") @db.Timestamptz(3)
+  blockedUntil DateTime?     @map("blocked_until") @db.Timestamptz(3)
+
+  @@id([scope, subjectHash])
+  @@map("auth_throttle")
+}
+
+model BootstrapToken {
+  id        String    @id @db.Uuid
+  tokenHash Bytes     @unique @map("token_hash")
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz(3)
+  usedAt    DateTime? @map("used_at") @db.Timestamptz(3)
+
+  @@map("bootstrap_tokens")
+}
+
+model SecurityEvent {
+  id        String            @id @db.Uuid
+  accountId String?           @map("account_id") @db.Uuid
+  deviceId  String?           @map("device_id") @db.Uuid
+  type      SecurityEventType
+  ip        String?           @db.Inet
+  userAgent String?           @map("user_agent") @db.VarChar(256)
+  details   Json              @default("{}")
+  createdAt DateTime          @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  device  Device?  @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+
+  @@index([accountId, createdAt])
+  @@map("security_events")
+}
+
+/**
+ * One enrollment attempt (device-enrollment.md §3); deleted on completion, cancel or expiry.
+ */
+model Pairing {
+  pairingId              Bytes           @id @map("pairing_id")
+  accountId              String          @map("account_id") @db.Uuid
+  initiatorDeviceId      String          @map("initiator_device_id") @db.Uuid
+  state                  PairingState
+  requesterDeviceId      String?         @map("requester_device_id") @db.Uuid
+  requestPlatform        DevicePlatform? @map("request_platform")
+  requestEpk             Bytes?          @map("request_epk")
+  requestMac             Bytes?          @map("request_mac")
+  requestedAt            DateTime?       @map("requested_at") @db.Timestamptz(3)
+  responseCiphertext     Bytes?          @map("response_ciphertext")
+  responseMac            Bytes?          @map("response_mac")
+  requestDevicePublicKey Bytes?          @map("request_device_public_key")
+  createdAt              DateTime        @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt              DateTime        @map("expires_at") @db.Timestamptz(3)
+
+  account   Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  initiator Device  @relation("PairingInitiator", fields: [initiatorDeviceId], references: [id], onDelete: Cascade)
+  requester Device? @relation("PairingRequester", fields: [requesterDeviceId], references: [id], onDelete: Cascade)
+
+  @@index([accountId])
+  @@map("pairings")
+}
+
+/// A single-use server nonce for one operation of one session (device-proof.md §6).
+model ProofNonce {
+  id         String    @id @db.Uuid
+  accountId  String    @map("account_id") @db.Uuid
+  deviceId   String    @map("device_id") @db.Uuid
+  sessionId  String    @map("session_id") @db.Uuid
+  operation  Int       @db.SmallInt
+  nonceHash  Bytes     @unique @map("nonce_hash")
+  createdAt  DateTime  @default(now()) @map("created_at") @db.Timestamptz(3)
+  expiresAt  DateTime  @map("expires_at") @db.Timestamptz(3)
+  consumedAt DateTime? @map("consumed_at") @db.Timestamptz(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId])
+  @@map("proof_nonces")
+}
+
+/// A fixed request window (rate-windows in throttle.service.ts). Transient: no rows in backups.
+model RateWindow {
+  scope       RateScope
+  keyHash     Bytes     @map("key_hash")
+  windowStart DateTime  @map("window_start") @db.Timestamptz(3)
+  hits        Int
+
+  @@id([scope, keyHash])
+  @@index([scope, windowStart])
+  @@map("rate_windows")
+}
+
+/// A pending OPAQUE login, step-up or reopening (login-state.store.ts). Transient.
+model LoginState {
+  idHash       Bytes          @id @map("id_hash")
+  purpose      LoginPurpose
+  loginSubject Bytes          @map("login_subject")
+  accountId    String?        @map("account_id") @db.Uuid
+  deviceId     String?        @map("device_id") @db.Uuid
+  platform     DevicePlatform
+  sessionId    String?        @map("session_id") @db.Uuid
+  reopenCodeId String?        @map("reopen_code_id") @db.Uuid
+  sealed       Bytes
+  createdAt    DateTime       @map("created_at") @db.Timestamptz(3)
+  expiresAt    DateTime       @map("expires_at") @db.Timestamptz(3)
+
+  account Account? @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  session Session? @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("login_states")
+}
+
+model Vault {
+  id         String   @id @db.Uuid
+  accountId  String   @unique @map("account_id") @db.Uuid
+  vkId       Bytes    @map("vk_id")
+  currentSeq BigInt   @default(0) @map("current_seq")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  account Account       @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  items   VaultItem[]
+  commits VaultCommit[]
+
+  @@map("vaults")
+}
+
+model VaultItem {
+  vaultId    String   @map("vault_id") @db.Uuid
+  itemId     String   @map("item_id") @db.Uuid
+  revision   BigInt
+  record     Bytes?
+  tombstone  Boolean
+  updatedSeq BigInt   @map("updated_seq")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz(3)
+  updatedAt  DateTime @default(now()) @map("updated_at") @db.Timestamptz(3)
+
+  vault Vault @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+
+  @@id([vaultId, itemId])
+  @@index([vaultId, updatedSeq])
+  @@map("vault_items")
+}
+
+model VaultCommit {
+  vaultId       String     @map("vault_id") @db.Uuid
+  seq           BigInt
+  commitId      String     @map("commit_id") @db.Uuid
+  requestHash   Bytes      @map("request_hash")
+  deviceId      String     @map("device_id") @db.Uuid
+  manifest      Bytes
+  mutationCount Int        @map("mutation_count")
+  kind          CommitKind @default(normal)
+  createdAt     DateTime   @default(now()) @map("created_at") @db.Timestamptz(3)
+
+  vault  Vault  @relation(fields: [vaultId], references: [id], onDelete: Cascade)
+  // NoAction (checked at the end of the statement) so deleting an account can cascade through
+  // both devices and vaults; a device that authored commits is never deleted on its own.
+  device Device @relation(fields: [deviceId], references: [id], onDelete: NoAction)
+
+  @@id([vaultId, seq])
+  @@unique([vaultId, commitId])
+  @@map("vault_commits")
 }

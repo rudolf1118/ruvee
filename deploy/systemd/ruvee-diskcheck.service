@@ -1,0 +1,14 @@
+# Warns in the journal, and fails, when a filesystem Ruvee needs is nearly full.
+# Started by ruvee-diskcheck.timer. Guide: docs/guides/private-rehearsal.md.
+
+[Unit]
+Description=Ruvee disk space check
+
+[Service]
+Type=oneshot
+ExecStart=/opt/ruvee/current/deploy/bin/ruvee-diskcheck
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=yes
+NoNewPrivileges=yes

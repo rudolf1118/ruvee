@@ -1,19 +1,38 @@
 # Ruvee
 
-Monorepo for Ruvee, a planned password manager. **This is the Phase 1 foundation only.** There is
-no working vault, account system, encryption, sync or recovery. Do not use it to store real
-credentials. Open security architecture decisions are tracked in
+Monorepo for Ruvee, a self-hosted password manager. **This is a development build of the first
+functional web vault:** account setup with a Recovery Kit check, OPAQUE login, pairing a second
+browser, offline unlock, logins and secure notes, and verified sync with explicit conflicts.
+Recovery, revocation, password change, the extension and mobile are not built. Nothing has been
+independently reviewed: use synthetic data only and never store real credentials. Current state,
+commands and gaps: [docs/planning/status.md](docs/planning/status.md). Open security architecture decisions are tracked in
 [docs/architecture/open-decisions.md](docs/architecture/open-decisions.md).
+
+The Phase 0 security architecture is **proposed, not approved, and not independently reviewed**.
+Start with [docs/architecture/system-overview.md](docs/architecture/system-overview.md). The
+product specification is [docs/planning/master-engineering-prompt.md](docs/planning/master-engineering-prompt.md),
+and the next steps are in [docs/planning/implementation-roadmap.md](docs/planning/implementation-roadmap.md).
+A self-review of that architecture, with a library compatibility spike, is in
+[docs/security/architecture-validation.md](docs/security/architecture-validation.md). It is not an
+independent audit.
 
 ## What is here
 
-| Path                     | Contents                                                                    |
-| ------------------------ | --------------------------------------------------------------------------- |
-| `apps/api`               | NestJS API: validated config, Prisma/PostgreSQL, health endpoints, logging  |
-| `apps/web`               | Next.js web app: design tokens, UI components, vault app shell, dev preview |
-| `packages/eslint-config` | Shared ESLint flat configs (`base`, `node`, `next`)                         |
-| `tsconfig.base.json`     | Shared strict TypeScript settings                                           |
-| `docker-compose.yml`     | Local PostgreSQL 18 with a persistent volume and health check               |
+| Path                      | Contents                                                                                                                                                                                           |
+| ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `apps/api`                | NestJS API: OPAQUE login, cookie and token sessions, sync, pairing, recovery, devices, key rotations, security events; Prisma/PostgreSQL                                                           |
+| `apps/web`                | Next.js web vault (static export with a hash-based CSP): setup, items, sync, pairing, recovery, devices, security, activity. A separate test-only export (`out-diagnostics/`) holds the CSP probes |
+| `apps/extension`          | Chromium MV3 extension, development build: pairing, unlock and exact-origin manual fill ([README](apps/extension/README.md))                                                                       |
+| `deploy/Caddyfile`        | Serves `apps/web/out` with the header snippet the web build generates (`out-caddy/`), and a same-origin `/api` proxy. Caddy is not required for local checks                                       |
+| `packages/contracts`      | Zod schemas for every implemented endpoint, shared by server and clients; `openapi.json` is generated from them                                                                                    |
+| `packages/crypto`         | Ruvee's client-side format over libsodium.js: keys, wraps, envelopes, records, manifests, Recovery Key and pairing. Development only, not reviewed                                                 |
+| `packages/vault`          | The vault engine shared by the web worker and the extension's service worker                                                                                                                       |
+| `packages/eslint-config`  | Shared ESLint flat configs (`base`, `node`, `next`)                                                                                                                                                |
+| `tsconfig.base.json`      | Shared strict TypeScript settings                                                                                                                                                                  |
+| `docker-compose.yml`      | Local PostgreSQL 18 with a persistent volume and health check                                                                                                                                      |
+| `docs/`                   | Architecture, security specifications, ADRs and planning (Phase 0, proposed)                                                                                                                       |
+| `spikes/`                 | Disposable compatibility experiments; not workspace packages, synthetic data only                                                                                                                  |
+| `tools/crypto-validation` | Primitive validation harness (P2-01) for the candidate crypto libraries; own lockfile, synthetic data only, not Ruvee's format ([README](tools/crypto-validation/README.md))                       |
 
 ## Requirements
 
@@ -32,6 +51,23 @@ pnpm dev                  # API on http://127.0.0.1:4000, web on http://127.0.0.
 
 PostgreSQL is published on loopback port 5433 (not 5432) to avoid clashing with a locally
 installed server. Change `POSTGRES_PORT` and `DATABASE_URL` together if you need another port.
+
+The API serves a database only once it is marked as a fresh installation (predeployment-review
+R14); until then every API request answers `503 maintenance`. Once per new database, after its
+migrations, `ruvee-admin init` marks it, as the **operator** role with `RUVEE_ADMIN_DATABASE_URL`
+and `RUVEE_RUNTIME_ROLE` (it refuses a superuser). The API, the migrations and `ruvee-admin` use
+three separate database roles (follow-up review F-25); the local superuser from `.env` still
+runs the API in development, with a warning. Setup:
+[docs/guides/database-roles.md](docs/guides/database-roles.md).
+
+**Development migration to device keys (D-31, 2026-10-26).** Devices now prove possession of their
+own key ([device-proof.md](docs/security/device-proof.md)). The migration
+`20261026200000_device_proof` adds nullable columns and a table; it changes no row and erases
+nothing. After it, every existing session lacks a proof and keeps no privilege, and a device set
+up earlier opens its local vault but cannot sync. On each such device, lock it and choose **Use
+your Recovery Kit**: the recovery keeps the browser's vault and unsynced edits, enrolls a device
+key and, the first time, the account's verification key. Each recovery issues a new Recovery Kit;
+finish one device before the next. A browser in the middle of pairing simply pairs again.
 
 ### Inspecting it
 
@@ -73,16 +109,42 @@ pnpm typecheck
 pnpm test                 # unit and HTTP-level tests (no database needed)
 pnpm test:integration     # API against a real PostgreSQL; needs DATABASE_URL (pnpm db:up)
 pnpm build
-pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan
+pnpm test:e2e             # Playwright, desktop and mobile viewports, including an axe scan (`next dev`)
+pnpm --filter @ruvee/web test:headers          # export headers and CSP in three engines (needs a prior web build; builds the diagnostics export)
+pnpm --filter @ruvee/api test:caddy           # real Caddy in front of the API: headers, cache rules, 404s, /api spellings (needs Docker, a prior build, RUVEE_CADDY_IMAGE and RUVEE_E2E_ADMIN_DATABASE_URL)
+pnpm --filter @ruvee/contracts openapi:write   # regenerate openapi.json after changing a contract
+pnpm --filter @ruvee/crypto test:browsers      # crypto checks in Chromium, Firefox and WebKit, page and worker
+pnpm --filter @ruvee/crypto vectors:write      # regenerate the provisional protocol vectors after a format change
 ```
+
+The browser checks need Playwright's engines once
+(`pnpm --filter @ruvee/crypto exec playwright-core install chromium firefox webkit`).
 
 `pnpm test:integration` reads `DATABASE_URL` from the environment, e.g.
 `set -a; . ./.env; set +a; pnpm test:integration` (open a new shell afterwards so
 `NODE_ENV=development` does not leak into `next build`).
+Each test file creates and drops its own databases, and PostgreSQL forces a checkpoint for every
+`DROP DATABASE`. On slow storage (Docker Desktop's disk, for example) with the default worker
+count, those checkpoints can take tens of seconds and teardown hooks time out; connection setup
+also stalls meanwhile (measured in
+[docs/security/followup-review.md](docs/security/followup-review.md#5-test-instability)). Use a
+throwaway server started with `-c fsync=off`, or run with `--maxWorkers=3`; never a server that
+holds data you want to keep.
+The restore tests (`restore*.int-spec.ts`) also run `pg_dump` and `pg_restore`, which must have
+the server's major version (18). If the host's client is older, run them inside the database
+container: `RUVEE_PG_TOOLS_PREFIX='["docker","exec","-i","-e","PGPASSWORD","<container>"]'
+RUVEE_PG_TOOLS_HOST=127.0.0.1:5432` (the address as seen inside the container).
+`pnpm --filter @ruvee/web test:restore` (R14: encrypted backup, restore and review with two
+browser devices) needs the same variables plus `RUVEE_E2E_ADMIN_DATABASE_URL`. Operators: see
+[docs/guides/server-backup-restore.md](docs/guides/server-backup-restore.md).
 
 For end-to-end tests, either install Playwright's browser once
 (`pnpm --filter @ruvee/web exec playwright install chromium`) or reuse a local Chrome with
 `PLAYWRIGHT_CHANNEL=chrome pnpm test:e2e`.
+
+The header tests serve the static export on `127.0.0.1:3101` (not the `next dev` port). They do
+not start or stop the development server. After `pnpm --filter @ruvee/web build`,
+`pnpm --filter @ruvee/web serve:export` is the local stand-in for Caddy.
 
 CI (`.github/workflows/ci.yml`) runs all of the above on pushes and pull requests, with
 PostgreSQL as a service container.
@@ -92,16 +154,44 @@ PostgreSQL as a service container.
 Validated at startup by `apps/api/src/config/env.ts`. Invalid values stop the process with a
 message naming the variable but never printing its value.
 
-| Variable                  | Default     | Notes                                        |
-| ------------------------- | ----------- | -------------------------------------------- |
-| `DATABASE_URL`            | (required)  | `postgres://` or `postgresql://` URL         |
-| `NODE_ENV`                | development | `development`, `test` or `production`        |
-| `API_HOST`                | 127.0.0.1   | Bind address                                 |
-| `API_PORT`                | 4000        | 1–65535                                      |
-| `LOG_LEVEL`               | info        | pino level, or `silent`                      |
-| `READINESS_DB_TIMEOUT_MS` | 2000        | Upper bound for the readiness database check |
+| Variable                   | Default     | Notes                                                                                                 |
+| -------------------------- | ----------- | ----------------------------------------------------------------------------------------------------- |
+| `DATABASE_URL`             | (required)  | `postgres://` or `postgresql://` URL                                                                  |
+| `NODE_ENV`                 | development | `development`, `test` or `production`                                                                 |
+| `API_HOST`                 | 127.0.0.1   | Bind address                                                                                          |
+| `API_PORT`                 | 4000        | 1–65535                                                                                               |
+| `LOG_LEVEL`                | info        | pino level, or `silent`                                                                               |
+| `READINESS_DB_TIMEOUT_MS`  | 2000        | Upper bound for the readiness database check                                                          |
+| `OPAQUE_SERVER_SETUP_FILE` | (required)  | OPAQUE server setup, created by `ruvee-admin opaque-setup`; mode 0600 in production                   |
+| `PUBLIC_ORIGIN`            | (required)  | Origin of the web app and API; state-changing requests must send it as `Origin`                       |
+| `SESSION_COOKIE_SECURE`    | true        | `false` only for loopback HTTP development (cookie `ruvee_session` instead of `__Host-ruvee_session`) |
+| `TRUSTED_PROXY_ADDRESS`    | (unset)     | Reverse proxy whose `X-Forwarded-For` is trusted for the client IP                                    |
 
 The API reads `.env` from `apps/api` or the repository root.
+
+### Deployment topology: one API process per database
+
+A rehearsal installation on one Ubuntu 24.04 host (systemd units, environment templates,
+PostgreSQL and journal settings in `deploy/`), synthetic data only:
+[docs/guides/private-rehearsal.md](docs/guides/private-rehearsal.md).
+
+V1 supports exactly **one API process per database**, and enforces it. This is an operational
+rule, not a security mechanism: login states, request windows and every limit live in the
+database (authentication.md §7), so a second process that serves by accident, for example while
+the first one has lost its lock connection, shares them instead of splitting them. Ruvee does not
+claim multi-process or high-availability support.
+
+- The serving process holds a PostgreSQL session advisory lock on its own connection to the
+  database. Another process on the same database answers `/health/live` only: `/health/ready`
+  is 503 and every other route is `503 server_unavailable`, and it logs that another process
+  serves the database. It takes over within a few seconds once the first one stops.
+- Startup does not wait for the database; the lock is retried, and taken again if its
+  connection is lost (no route is served meanwhile).
+- Connect directly, or through a pooler in session mode. A transaction-mode pooler does not keep
+  session advisory locks, so the guard would not work; it is not supported.
+- Do not run replicas, a second container or a blue-green pair against one database. Restarting
+  the one process is supported. Separate databases (a restore target, the test suites) each have
+  their own process.
 
 ## Design reference
 

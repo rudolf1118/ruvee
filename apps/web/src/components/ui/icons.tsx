@@ -181,3 +181,52 @@ export const VaultIcon = (p: IconProps) => (
     <path d="M3.5 10h17" />
   </Icon>
 );
+
+export const EyeOffIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M3 3l18 18" />
+    <path d="M10.6 6.1A9.8 9.8 0 0 1 12 6c5.2 0 8.5 4.6 9.5 6-.5.7-1.5 2.1-3 3.4M6.6 7.6C4.6 8.9 3.2 10.9 2.5 12c1 1.4 4.3 6 9.5 6 1.6 0 3-.4 4.2-1" />
+    <path d="M9.9 10a3 3 0 0 0 4.1 4.1" />
+  </Icon>
+);
+
+export const CheckIcon = (p: IconProps) => (
+  <Icon strokeWidth={2} {...p}>
+    <path d="M5 12.5l4.5 4.5L19 7.5" />
+  </Icon>
+);
+
+export const AlertIcon = (p: IconProps) => (
+  <Icon strokeWidth={2} {...p}>
+    <circle cx="12" cy="12" r="9" />
+    <path d="M12 7.5v5.5M12 16.2v.2" />
+  </Icon>
+);
+
+export const CloudIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M7.5 18.5h9.5a4 4 0 0 0 .6-7.95A5.5 5.5 0 0 0 7 9.6 4.5 4.5 0 0 0 7.5 18.5z" />
+  </Icon>
+);
+
+export const RefreshIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M19.5 12a7.5 7.5 0 0 1-13 5.1M4.5 12a7.5 7.5 0 0 1 13-5.1" />
+    <path d="M17.5 3.5v3.4h-3.4M6.5 20.5v-3.4h3.4" />
+  </Icon>
+);
+
+export const DevicesIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <rect x="3" y="5" width="13" height="10" rx="1.5" />
+    <path d="M7 19h5M9.5 15v4" />
+    <rect x="17" y="9" width="4.5" height="10" rx="1.2" />
+  </Icon>
+);
+
+export const LogoutIcon = (p: IconProps) => (
+  <Icon {...p}>
+    <path d="M14 4.5h3.5A1.5 1.5 0 0 1 19 6v12a1.5 1.5 0 0 1-1.5 1.5H14" />
+    <path d="M10 8l-4 4 4 4M6 12h9" />
+  </Icon>
+);
