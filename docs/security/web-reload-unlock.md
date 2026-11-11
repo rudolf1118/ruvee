@@ -1,7 +1,7 @@
-# Keeping the web vault unlocked across a reload (D-33)
+# Keeping the web vault unlocked across a reload (D-34)
 
 Status: **Proposed (2026-11-11). A design for the owner to decide; nothing is implemented.** Not
-reviewed. The decision is [D-33](../architecture/open-decisions.md). Approving it would change the
+reviewed. The decision is [D-34](../architecture/open-decisions.md). Approving it would change the
 wording of INV-15 and INV-16 and add one invariant (§6), so it needs the owner's explicit
 decision, like D-27.
 
@@ -293,10 +293,10 @@ today.
   period without activity. Verified by: API integration tests for each of those, including
   concurrent redeems; a browser test that a profile copied after expiry does not resume; the INV-01
   and INV-12 capture scans with the ticket flow included."
-- **T-18:** add "With a live reload ticket (D-33), XSS can also obtain `AK` itself, not only drive
+- **T-18:** add "With a live reload ticket (D-34), XSS can also obtain `AK` itself, not only drive
   the worker. A ticket lives while the vault is unlocked and at most 3 minutes after the tab
   closes."
-- **T-19, T-22:** add "except within a live reload ticket's window (D-33, INV-25)".
+- **T-19, T-22:** add "except within a live reload ticket's window (D-34, INV-25)".
 - **R-18** gets a sentence: the stolen-device case now also covers the ticket window.
 - **device-proof.md**, "a locked device cannot sign": unchanged in meaning; add that a tab resumed
   from a ticket is unlocked.
