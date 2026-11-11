@@ -1,11 +1,12 @@
 # Extension inline fill, save and generate: design and threat-model addendum
 
-Status: **Proposed (2026-11-11). Not approved, not implemented, not reviewed.** It proposes the
-next scope for the browser extension and needs the owner's decision D-33
-([open-decisions.md](../architecture/open-decisions.md#later-phase-decisions)). Until D-33 is
-decided, [extension-design.md](extension-design.md) stays the rule: logins only, manual fill from
-the popup, no autofill on load, no saving of new logins, no long-lived content script, no
-`web_accessible_resources`.
+Status: **D-33 approved by the owner for development (2026-11-12). Not implemented, not
+independently reviewed.** The owner accepted the recommendation in §9 as a whole: opt-in
+permission for `https:` sites, the installed-extension disclosure in §4, option I1 first, vault
+writes from the extension with the previous password kept on update, and the order A, B, C, D.
+Phase E (an in-page menu) and cross-origin frame fill remain separate, undecided questions.
+[extension-design.md](extension-design.md) stays the rule for the code until each phase lands:
+the rules in §7 change in the pull request that implements the phase that needs them.
 
 Why now: on 2026-11-11 the owner paired the extension in real Chrome on the rehearsal server and
 asked for what 1Password and Bitwarden offer: an icon in login fields that fills, an offer to save
@@ -186,7 +187,7 @@ the credential the user chose to fill there.
 
 ## 7. What changes in existing rules
 
-If D-33 is approved, these change and must be edited in the same pull request as the code:
+D-33 approves these changes. Each is edited in the same pull request as the code that needs it:
 
 | Rule                                                                          | Today                                                     | Proposed                                                                                                                                                                     |
 | ----------------------------------------------------------------------------- | --------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -256,7 +257,7 @@ clickjacking techniques.
 Not planned: autofill on page load, fill on focus, registrable-domain matching, fill into
 cross-origin frames, cards and identities inline, passkeys.
 
-## 9. Open questions for the owner (D-33)
+## 9. Questions decided by D-33 (approved 2026-11-12, as recommended)
 
 1. Accept that inline features need permission to read all `https:` sites, off by default and
    granted on the options page?
