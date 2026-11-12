@@ -319,6 +319,13 @@ multiple of 256 bytes. This is the same scheme as libsodium's `sodium_pad`, impl
 `packages/crypto` because `react-native-libsodium` does not expose `pad`, and tested against
 libsodium.js. Padded plaintext is at most 65,536 bytes.
 
+Version 1 may gain **optional** fields (the first is `login.totp`, D-35). A client that does not
+know a field refuses the whole body, so the item shows as unreadable (section 7); it never reads
+the body without the field and never writes it back without it. A body without the new field
+encodes exactly as before. A change that alters the meaning of an existing field needs a new
+`item_schema_version`, and with it a way to learn the version before decrypting
+([totp-authenticator.md §2.2](totp-authenticator.md#22-schema-version-and-mixed-client-versions)).
+
 ### 5.3 Vault manifest (`MANIFEST`)
 
 The fixed-length binary plaintext (137 bytes):

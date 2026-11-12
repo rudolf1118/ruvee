@@ -1,7 +1,7 @@
 'use client';
 
-import { type SubmitEvent, useEffect, useRef, useState } from 'react';
-import { ITEM_LIMITS, parseTags } from '@ruvee/vault';
+import { type SubmitEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { ITEM_LIMITS, parseTags, parseTotpInput } from '@ruvee/vault';
 import type { ItemDetail, ItemDraft, ItemSummary, ItemType } from '@ruvee/vault';
 import { VaultClientError, type VaultClient } from '@/vault/client';
 import { Button } from '../ui/button';
@@ -9,6 +9,7 @@ import { cx } from '../ui/cx';
 import { ChevronLeftIcon, DiceIcon } from '../ui/icons';
 import { Notice, PasswordField, TextArea, TextField } from './fields';
 import { messageFor } from './messages';
+import { TOTP_INPUT_MESSAGES, TotpEditorSection } from './totp';
 import { PERSONAL_VAULT } from './view-model';
 
 interface Errors {
@@ -16,6 +17,7 @@ interface Errors {
   url?: string;
   password?: string;
   tags?: string;
+  totp?: string;
 }
 
 function validate(draft: ItemDraft, tagsText: string): Errors {
@@ -29,6 +31,10 @@ function validate(draft: ItemDraft, tagsText: string): Errors {
       errors.url = 'Enter a web address like https://example.com.';
     if (draft.password.length > ITEM_LIMITS.password)
       errors.password = `Use at most ${ITEM_LIMITS.password} characters.`;
+    if (typeof draft.totp === 'string') {
+      const parsed = parseTotpInput(draft.totp);
+      if (!parsed.ok) errors.totp = TOTP_INPUT_MESSAGES[parsed.error];
+    }
   }
   const tags = parseTags(tagsText);
   if (tags.length > ITEM_LIMITS.tags || tags.some((t) => t.length > ITEM_LIMITS.tag))
@@ -57,6 +63,8 @@ export function ItemEditor({
   const [noteText, setNoteText] = useState(existing?.noteText ?? '');
   const [tagsText, setTagsText] = useState(existing?.tags.join(', ') ?? '');
   const [favorite, setFavorite] = useState(existing?.favorite ?? false);
+  // Undefined keeps the stored authenticator; the secret is never loaded into the editor.
+  const [totp, setTotp] = useState<string | null | undefined>(undefined);
   const [errors, setErrors] = useState<Errors>({});
   const [failure, setFailure] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -89,7 +97,15 @@ export function ItemEditor({
     noteText,
     tags: parseTags(tagsText),
     favorite,
+    ...(type === 'login' && totp !== undefined ? { totp } : {}),
   };
+
+  // A pasted otpauth:// link fills an empty title and username, never overwrites them.
+  const onTotpHints = useCallback((hints: { issuer?: string; account?: string }) => {
+    if (hints.issuer) setTitle((t) => t || (hints.issuer ?? '').slice(0, ITEM_LIMITS.title));
+    if (hints.account)
+      setUsername((u) => u || (hints.account ?? '').slice(0, ITEM_LIMITS.username));
+  }, []);
 
   const submit = (event: SubmitEvent) => {
     event.preventDefault();
@@ -102,6 +118,7 @@ export function ItemEditor({
       (saved) => {
         if (!open.current) return;
         setPassword('');
+        setTotp(undefined);
         onSaved(saved);
       },
       (e: unknown) => {
@@ -221,6 +238,16 @@ export function ItemEditor({
                   Generate
                 </Button>
               }
+            />
+            <TotpEditorSection
+              hasStored={existing?.hasTotp ?? false}
+              value={totp}
+              onChange={(next) => {
+                setTotp(next);
+                setErrors(({ totp: _dropped, ...rest }) => rest);
+              }}
+              onHints={onTotpHints}
+              error={errors.totp}
             />
             <TextArea
               label="Notes"
