@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { totpSchema } from './totp.js';
 
 /**
  * Item body schema version 1 (cryptographic-design §5.2: "Item schemas are defined in Phase 3").
@@ -49,6 +50,12 @@ export const loginBodySchema = z.strictObject({
     password: text(ITEM_LIMITS.password),
     urls: z.array(text(ITEM_LIMITS.url).min(1)).max(ITEM_LIMITS.urls),
     notes: text(ITEM_LIMITS.notes),
+    /**
+     * Authenticator secret (D-35, totp-authenticator.md §2). Absent when the login has none, so
+     * a login without one encodes exactly as before. A client that predates this field refuses
+     * the body (the item shows as unreadable) and never strips it.
+     */
+    totp: totpSchema.optional(),
   }),
 });
 

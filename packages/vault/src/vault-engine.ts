@@ -37,6 +37,7 @@ import type {
   ItemDetail,
   ItemDraft,
   ItemSummary,
+  TotpView,
   LocalExport,
   LocalStateView,
   MigrationReport,
@@ -58,6 +59,8 @@ import {
 import { buildExport, openExport, type OpenedExport } from './export-file.js';
 import { withKeys, type KeyScope } from './key-scope.js';
 import { VaultError } from './vault-error.js';
+import { clockSkewMs } from './clock.js';
+import { parseTotpInput, totpCodes, type Totp } from './totp.js';
 
 export { VaultError } from './vault-error.js';
 import {
@@ -1817,6 +1820,26 @@ export class VaultEngine {
     return body.type === 'login' ? body.login.password : '';
   }
 
+  /**
+   * The current and next authenticator code, computed here so the secret never leaves the engine
+   * (totp-authenticator.md §4.1, INV-26 as proposed). The device clock is the only time source.
+   */
+  async totp(params: { id: string }): Promise<TotpView> {
+    const session = this.requireSession();
+    const { body } = this.current(session, params.id);
+    if (body.type !== 'login' || !body.login.totp) throw new VaultError('not_found');
+    const totp = body.login.totp;
+    const codes = await totpCodes(totp, this.deps.now());
+    // A lock while the HMAC ran: nothing is returned after it.
+    if (this.session !== session) throw new VaultError('locked');
+    return {
+      ...codes,
+      digits: totp.digits,
+      period: totp.period,
+      clockSkewMs: clockSkewMs(),
+    };
+  }
+
   save(params: { draft: ItemDraft }): Promise<ItemSummary> {
     return this.exclusive(async () => {
       const session = this.writable();
@@ -1824,6 +1847,16 @@ export class VaultEngine {
       const now = this.deps.now();
       const existing = draft.id ? this.current(session, draft.id) : undefined;
       const id = draft.id ?? this.deps.crypto.generateUuid();
+      let totp: Totp | undefined;
+      if (draft.type === 'login') {
+        if (draft.totp === undefined)
+          totp = existing?.body.type === 'login' ? existing.body.login.totp : undefined;
+        else if (draft.totp !== null) {
+          const parsed = parseTotpInput(draft.totp);
+          if (!parsed.ok) throw new VaultError('invalid_item');
+          totp = parsed.totp;
+        }
+      }
       const base = {
         v: 1 as const,
         title: draft.title.trim(),
@@ -1843,6 +1876,7 @@ export class VaultEngine {
                 password: draft.password,
                 urls: draft.urls.filter((u) => u.trim() !== '').map((u) => u.trim()),
                 notes: draft.notes,
+                ...(totp ? { totp } : {}),
               },
             }
           : { ...base, type: 'note', note: { text: draft.noteText } };
@@ -4631,6 +4665,7 @@ function detailOf(
     ...summaryOf(id, body, pending, conflict),
     username: body.type === 'login' ? body.login.username : '',
     hasPassword: body.type === 'login' && body.login.password !== '',
+    hasTotp: body.type === 'login' && body.login.totp !== undefined,
     notes: body.type === 'login' ? body.login.notes : '',
     noteText: body.type === 'note' ? body.note.text : '',
     createdAtMs: body.createdAtMs,

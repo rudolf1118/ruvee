@@ -17,6 +17,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   items: (e) => e.items(),
   detail: (e, p: Parameters<VaultEngine['detail']>[0]) => e.detail(p),
   secret: (e, p: Parameters<VaultEngine['secret']>[0]) => e.secret(p),
+  totp: (e, p: Parameters<VaultEngine['totp']>[0]) => e.totp(p),
   save: (e, p: Parameters<VaultEngine['save']>[0]) => e.save(p),
   setFavorite: (e, p: Parameters<VaultEngine['setFavorite']>[0]) => e.setFavorite(p),
   trash: (e, p: Parameters<VaultEngine['trash']>[0]) => e.trash(p),

@@ -27,6 +27,8 @@ export interface ItemSummary {
 export interface ItemDetail extends ItemSummary {
   readonly username: string;
   readonly hasPassword: boolean;
+  /** Whether the login has an authenticator secret (D-35). The secret itself never leaves. */
+  readonly hasTotp: boolean;
   readonly notes: string;
   readonly noteText: string;
   readonly createdAtMs: number;
@@ -44,6 +46,24 @@ export interface ItemDraft {
   readonly noteText: string;
   readonly tags: readonly string[];
   readonly favorite: boolean;
+  /**
+   * The authenticator, as pasted (a secret or an `otpauth://totp/` URI), parsed again by the
+   * engine. Absent keeps the stored one, so editing other fields never round-trips the secret
+   * through the page; null removes it. Logins only.
+   */
+  readonly totp?: string | null;
+}
+
+/** The current authenticator code of a login (totp-authenticator.md §4, §5). */
+export interface TotpView {
+  readonly code: string;
+  readonly nextCode: string;
+  readonly digits: number;
+  readonly period: number;
+  /** When `code` stops being current, by this device's clock. */
+  readonly validUntilMs: number;
+  /** Device clock minus the server's `Date` header; null before any API response. */
+  readonly clockSkewMs: number | null;
 }
 
 /**
@@ -383,6 +403,7 @@ export interface VaultMethods {
   items(): readonly ItemSummary[];
   detail(params: { id: string }): ItemDetail;
   secret(params: { id: string }): string;
+  totp(params: { id: string }): TotpView;
   save(params: { draft: ItemDraft }): ItemSummary;
   setFavorite(params: { id: string; favorite: boolean }): ItemSummary;
   trash(params: { id: string }): ItemSummary;
