@@ -1,9 +1,15 @@
 # Authenticator codes (TOTP) in login items: design and threat-model addendum
 
-Status: **Proposed (2026-11-12). A design for the owner to decide; nothing is implemented.** Not
-reviewed. The decision is [D-35](../architecture/open-decisions.md). It adds a field inside the
-encrypted item body, a new kind of value the extension may fill, and one invariant, so it needs the
-owner's explicit decision (§10). The server, the API and the sync protocol do not change.
+Status: **D-35 approved by the owner for development (2026-11-12). Not independently reviewed.**
+The owner accepted all six recommendations in §10: V-A (optional `login.totp` in item schema
+version 1), W-A (available on every login, the trade-off stated in the add dialog), TOTP only with
+paste and image-QR entry in the web app and no web screen capture (extension page scan later,
+T3b), "Fill code" from the popup under the manual-fill rules (T3) and then the inline icon on
+one-time-code fields (T4, allowed now that D-33 phase A is built, sequenced after T3), WebCrypto
+HMAC in the web and extension workers with `@noble/hashes` exactly pinned for mobile later, and
+the "keep outside Ruvee" guidance shown briefly in the add dialog and in full here (§8.2). The
+rule changes in §9 land in the pull request of the phase that needs them. The server, the API and
+the sync protocol do not change.
 
 ## 1. What is being asked
 
@@ -374,7 +380,7 @@ Nothing changes until the owner approves D-35. Each change lands in the pull req
 | [research-sources.md](research-sources.md)                                      | RFC 4226, RFC 6238, the Key Uri Format page, the DEF CON 33 inline-menu research (already cited by D-33; TOTP fill is part of it), and the chosen QR decoder with its version and review notes. |
 | API, Prisma schema, sync protocol, envelope formats                             | **No change.**                                                                                                                                                                                  |
 
-## 10. Questions for the owner (D-35)
+## 10. Questions decided by D-35 (approved 2026-11-12, as recommended)
 
 1. **Format:** an optional `login.totp` field in item schema version 1 (V-A), with old clients
    showing such items as unreadable until updated? (Alternatives: V-B, a record-format change;
@@ -389,7 +395,8 @@ Nothing changes until the owner approves D-35. Each change lands in the pull req
    mobile when it gets the feature?
 6. **The "keep outside Ruvee" guidance** in §8.2: shown in the product, or in the docs only?
 
-Approving one question approves only that question.
+The owner answered all six as recommended. For question 4, T4 may follow T3 without a further
+decision, because D-33 phase A exists (draft PR #6).
 
 ## 11. Phases and tests
 
