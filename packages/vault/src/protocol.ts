@@ -359,6 +359,16 @@ export type PairingJoinState =
       readonly expiresAtMs: number;
     };
 
+/**
+ * D-34: what the web page keeps in `sessionStorage` so a reload can resume the vault. The tab half
+ * and the sealed `AK`; never `AK`, never the server half (web-reload-unlock.md §5.1).
+ */
+export interface ReloadTicket {
+  readonly ticketId: string;
+  readonly tabHalf: string;
+  readonly envelope: string;
+}
+
 export interface VaultMethods {
   phase(): DevicePhase;
   setupBegin(params: {
@@ -440,6 +450,17 @@ export interface VaultMethods {
     conflictsSeen: number;
   }): true;
   logout(): true;
+  /** D-34, web: a reload ticket for this unlocked session; null if the server gave none. */
+  reloadTicketIssue(params: { idleSeconds: number }): ReloadTicket | null;
+  /** D-34, web: unlocks from a ticket after a reload; any failure leaves the vault locked. */
+  reloadTicketResume(params: ReloadTicket): UnlockedVault;
+  /**
+   * D-34, web: keeps the ticket alive. Returns a new ticket when this unlocked session has none
+   * the server knows (it ended while the tab slept), null when nothing changed.
+   */
+  reloadTicketHeartbeat(params: { active: boolean; idleSeconds: number }): ReloadTicket | null;
+  /** D-34, web: deletes the ticket on the server (lock). */
+  reloadTicketDrop(): true;
   /** Resolves when every queued operation has finished, so nothing is mid-write (F-2). */
   settle(): true;
   /** Best-effort zeroing of keys before the worker is terminated. */

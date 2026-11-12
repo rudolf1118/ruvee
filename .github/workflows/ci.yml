@@ -122,6 +122,8 @@ jobs:
       # Through turbo, so the Prisma client and the workspace packages are built first.
       - run: pnpm turbo run build --filter=@ruvee/api --filter=@ruvee/web
       - run: pnpm --filter @ruvee/web test:vault
+      # D-34 web reload tickets: its own installation; ages ticket rows in its throwaway database.
+      - run: pnpm --filter @ruvee/web test:reload
       # Export from one installation, restore into a second, fresh one (two stacks, two databases).
       - run: pnpm --filter @ruvee/web test:import
       # An account from before D-31 moves to a new account through a verified export.
