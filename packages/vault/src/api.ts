@@ -45,6 +45,7 @@ import {
   type SecretKeyRotateRequest,
 } from '@ruvee/contracts';
 import { z } from 'zod';
+import { noteServerDate } from './clock.js';
 
 /** A response with a contract error code. Messages are the contract's fixed text. */
 export class ApiError extends Error {
@@ -125,6 +126,7 @@ async function request<S extends z.ZodType>(
   } catch {
     throw new NetworkError('offline');
   }
+  noteServerDate(res.headers.get('Date'), Date.now());
   if (!res.ok) {
     const parsed = errorResponseSchema.safeParse(await res.json().catch(() => undefined));
     if (!parsed.success) throw new NetworkError('unexpected_error');

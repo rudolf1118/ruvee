@@ -231,9 +231,11 @@ big-endian integer (T0 = 0); dynamic truncation per RFC 4226 §5.3; left-padded 
 
 ### 4.4 Memory and lock
 
-The secret is handled like the password: decoded from the body for each call, the decrypted bytes
-zeroed as `openBody` already does, the JavaScript string not zeroable (the documented limit of
-INV-15). No per-item key cache. Locking stops every refresh timer, and the UI drops every code it
+The secret is handled like the password: it is part of the decoded body, which the engine keeps in
+its in-memory body cache while the vault is unlocked and drops on lock (INV-15); the decrypted
+bytes are zeroed as `openBody` already does, and the JavaScript string is not zeroable (the
+documented limit of INV-15). The decoded key bytes for each HMAC are zeroed after use. No
+`CryptoKey` cache. Locking stops every refresh timer, and the UI drops every code it
 shows (INV-15). Codes and secrets never appear in logs, URLs, error payloads or activity events
 (INV-12); no route or deep link ever carries an `otpauth` URI.
 
