@@ -223,3 +223,8 @@ hand-over (§5.6) is not part of the approval. The invariant changes in
 [web-reload-unlock.md §6](../security/web-reload-unlock.md#6-proposed-invariant-and-threat-model-wording-option-d)
 are made when the implementation lands, together with its tests. This is not a security review;
 D-19 stays open.
+
+Implemented for development on 2026-11-12 (branch `web/reload-ticket`): INV-15 and INV-16 are
+reworded and INV-25 added; one transient table and migration (`20261112090000_reload_tickets`,
+deployment and rollback in [database-roles.md §3.2](../guides/database-roles.md)). What differs
+from the proposal is in [web-reload-unlock.md §10](../security/web-reload-unlock.md#10-as-built-2026-11-12).
