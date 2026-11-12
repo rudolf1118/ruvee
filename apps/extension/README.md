@@ -11,7 +11,9 @@ pnpm turbo run build --filter=@ruvee/extension   # writes apps/extension/dist/
 ```
 
 Open `chrome://extensions`, turn on Developer mode, choose **Load unpacked** and pick
-`apps/extension/dist`. The manifest carries a development public key, so the id is always
+`apps/extension/dist`. After replacing the files with a newer build, press **Reload** on the
+extension's card: Chrome opens the new popup from disk but keeps running the old service worker
+until then. The popup notices the mismatch and offers **Reload Ruvee**. The manifest carries a development public key, so the id is always
 `ikjjmgfofphmclnkphkceboclijkfkbd`. The matching private key was not kept; a store release gets
 its own key.
 

@@ -325,6 +325,24 @@ extension.
   - the item appearing in the web app (it syncs through the engine like any edit; not checked
     here).
 
+**Rehearsal bug and fix (2026-11-12).** In real Chrome, the popup showed "Something went
+wrong" on every page and offered no save. The extension had been updated **in place**: the
+phase B files were copied over the phase A build without a reload. Chrome opens an unpacked
+extension's pages from disk each time, but keeps running the service worker it loaded until the
+extension is reloaded, even across a worker restart (reproduced in Chromium 156). The phase A
+worker refused the new popup's `pendingSave` request as invalid (`internal`), and dropped the
+content script's new `inlineCapture`, so nothing was captured. The phase B code itself works,
+including a sign-in that goes on to a second same-origin page (browser test added). The fix:
+
+- every build carries one id in all its bundles;
+- the popup and options page compare it with the worker's, and on a mismatch send nothing else
+  and offer **Reload Ruvee** (`chrome.runtime.reload()`), which locks the vault;
+- the popup's three calls on opening (`candidates`, `pendingSave`, `sync`) no longer share one
+  `try`, so one failure cannot hide the others' results;
+- an error with no specific text names its call and code, for example "(pendingSave: internal)".
+
+Covered by `e2e/upgrade.spec.ts`: an old worker with new files gets the reload offer, not "Something went wrong". The button itself is a hand check: the test browser loads the extension with `--load-extension`, and Chromium does not bring such an extension back after it reloads itself.
+
 **Phase C: update a changed password.**
 
 - Browser: change-password form and different-password sign-in both offer an update naming the

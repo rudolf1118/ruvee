@@ -47,6 +47,8 @@ export type ExtensionRequest = z.infer<typeof requestSchema>;
 export interface Status {
   readonly serverOrigin: string | null;
   readonly unlocked: boolean;
+  /** The worker's build id. A worker older than the popup does not send it at all. */
+  readonly build?: string;
 }
 
 /**

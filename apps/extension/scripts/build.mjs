@@ -11,6 +11,14 @@ const out = new URL(test ? 'dist-test/' : 'dist/', root);
 await rm(out, { recursive: true, force: true });
 await mkdir(out, { recursive: true });
 
+/**
+ * One id per build, shared by the worker and the pages. Chrome reads an unpacked extension's
+ * pages from disk on every open but keeps running the worker it loaded until the extension is
+ * reloaded; files replaced in place leave a new popup talking to an old worker. The popup
+ * compares the two ids and offers a reload (phase B rehearsal bug, 2026-11-12).
+ */
+const buildId = new Date().toISOString();
+
 const common = {
   bundle: true,
   platform: 'browser',
@@ -19,7 +27,11 @@ const common = {
   // Minified, not obfuscated; names stay readable enough for store review.
   minify: true,
   legalComments: 'none',
-  define: { __RUVEE_TEST__: String(test), 'process.env.NODE_ENV': '"production"' },
+  define: {
+    __RUVEE_TEST__: String(test),
+    __RUVEE_BUILD__: JSON.stringify(buildId),
+    'process.env.NODE_ENV': '"production"',
+  },
 };
 await build({
   ...common,

@@ -555,7 +555,11 @@ async function handleContent(request: ContentRequest, target: InlineTarget): Pro
 async function handle(request: ExtensionRequest): Promise<unknown> {
   switch (request.kind) {
     case 'status': {
-      const status: Status = { serverOrigin: await serverOrigin(), unlocked: await isUnlocked() };
+      const status: Status = {
+        serverOrigin: await serverOrigin(),
+        unlocked: await isUnlocked(),
+        build: __RUVEE_BUILD__,
+      };
       return status;
     }
     case 'setServer':

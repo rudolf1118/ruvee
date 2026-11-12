@@ -65,6 +65,18 @@ const SIGNIN = `<!doctype html><title>Synthetic sign-in</title>
 <label>Email <input id="user" type="email"></label>
 <label>Password <input id="pw" type="password"></label><button id="go">Sign in</button></form>`;
 const SIGNIN_PAGE = `${new URL(LOGIN_PAGE).origin}/signin`;
+/**
+ * A sign-in that continues on a second page of the same origin, like a two-factor step: the form
+ * posts to `/session`, which answers with a page that sends the browser on to `/two-factor`.
+ */
+const SIGNIN_2FA = `<!doctype html><title>Synthetic sign-in with a second step</title>
+<form method="post" action="/session">
+<label>Username <input id="user" type="text"></label>
+<label>Password <input id="pw" type="password"></label><input id="go" type="submit" value="Sign in"></form>`;
+const SESSION_REDIRECT = `<!doctype html><title>Signing in</title>
+<script>location.replace('/two-factor/mobile')</script>`;
+const TWO_FACTOR = `<!doctype html><title>Synthetic two-factor</title>
+<p>Approve the sign-in on your phone.</p>`;
 const WELCOME = '<!doctype html><title>Synthetic welcome</title><p>Signed in.</p>';
 const SAVED_USER = 'saved-user@portal.example';
 const SAVED_PASSWORD = 'synthetic-captured-secret-5c2';
@@ -73,6 +85,9 @@ const PAGES: Record<string, string> = {
   '/framed': FRAMED,
   '/signin': SIGNIN,
   '/welcome': WELCOME,
+  '/signin-2fa': SIGNIN_2FA,
+  '/session': SESSION_REDIRECT,
+  '/two-factor/mobile': TWO_FACTOR,
 };
 /** Every request to the Ruvee server (web origin and API), for the phase B capture check. */
 const toServer: string[] = [];
@@ -713,6 +728,36 @@ test('save a new login (phase B): offered in the popup only, for the form’s or
     (tabId) => chrome.runtime.sendMessage({ kind: 'dismissPending', tabId }),
     siteTab,
   );
+
+  await options.bringToFront();
+  await options.getByRole('button', { name: 'Turn off' }).click();
+  await expect(options.getByText(/^Off\./)).toBeVisible();
+  await options.close();
+});
+
+test('save offer after a sign-in that goes on to a second same-origin page (two-factor)', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${EXTENSION_ID}/options.html`);
+  await options.getByRole('button', { name: 'Turn on' }).click();
+  await expect(options.getByText(/^On\./)).toBeVisible();
+  const origin = new URL(LOGIN_PAGE).origin;
+
+  await site.goto(`${origin}/signin-2fa`);
+  await site.bringToFront();
+  await site.locator('#user').fill('two-step-user');
+  await site.locator('#pw').fill('synthetic-two-step-secret');
+  await site.locator('#go').click();
+  await site.waitForURL(`${origin}/two-factor/mobile`);
+  await expect.poll(() => badgeOf(siteTab)).toBe('+');
+
+  // The popup opened on the second page: the offer, the (empty) list, and no error.
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByText(`Logins for ${origin}`)).toBeVisible();
+  await expect(popup.getByText(`Save this login for ${origin}?`)).toBeVisible();
+  await expect(popup.getByText('Username: two-step-user')).toBeVisible();
+  await popup.waitForTimeout(1500);
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+  await popup.getByRole('button', { name: 'Not now' }).click();
 
   await options.bringToFront();
   await options.getByRole('button', { name: 'Turn off' }).click();

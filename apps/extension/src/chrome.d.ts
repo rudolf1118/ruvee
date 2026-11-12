@@ -33,6 +33,7 @@ declare namespace chrome {
     function sendMessage(message: unknown): Promise<unknown>;
     function openOptionsPage(): Promise<void>;
     function getURL(path: string): string;
+    function reload(): void;
   }
 
   namespace storage {
@@ -118,3 +119,5 @@ declare namespace chrome {
 
 /** Replaced at build time; true only in the test build (extension-design.md §6). */
 declare const __RUVEE_TEST__: boolean;
+/** Replaced at build time: the same id in every bundle of one build (scripts/build.mjs). */
+declare const __RUVEE_BUILD__: string;

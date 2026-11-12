@@ -9,7 +9,14 @@ import type {
   SavePendingResult,
   Status,
 } from '../messages';
-import { call, CallError, messageFor, PAIRING_RESTART_CODES, pairingMessageFor } from './client';
+import {
+  call,
+  CallError,
+  messageFor,
+  PAIRING_RESTART_CODES,
+  pairingMessageFor,
+  stepMessageFor,
+} from './client';
 
 const PAIRING_POLL_MS = 2000;
 
@@ -27,7 +34,7 @@ async function targetTab(): Promise<number | null> {
 }
 
 interface Screen {
-  readonly name: 'loading' | 'no-server' | 'login' | 'pending' | 'locked' | 'unlocked';
+  readonly name: 'loading' | 'stale' | 'no-server' | 'login' | 'pending' | 'locked' | 'unlocked';
 }
 
 function Popup() {
@@ -36,6 +43,9 @@ function Popup() {
 
   const refresh = useCallback(() => {
     const next = (status: Status): Promise<Screen> => {
+      // A worker from another build (files replaced without a reload) does not know this
+      // popup's messages; nothing else is sent to it.
+      if (status.build !== __RUVEE_BUILD__) return Promise.resolve({ name: 'stale' });
       if (!status.serverOrigin) return Promise.resolve({ name: 'no-server' });
       if (status.unlocked) return Promise.resolve({ name: 'unlocked' });
       return call<DevicePhase>({ kind: 'vault', method: 'phase' }).then((phase) => ({
@@ -45,7 +55,7 @@ function Popup() {
     call<Status>({ kind: 'status' })
       .then(next)
       .then(setScreen, (e: unknown) => {
-        setError(messageFor(e));
+        setError(stepMessageFor('status', e));
       });
   }, []);
 
@@ -63,6 +73,24 @@ function Popup() {
         </p>
       ) : null}
       {screen.name === 'loading' ? <p aria-busy="true">Loading…</p> : null}
+      {screen.name === 'stale' ? (
+        <section>
+          <p role="alert" className="error">
+            Ruvee was updated, but the browser is still running the previous version. Reload it to
+            finish the update (or press Reload on its card in chrome://extensions). The vault locks;
+            unlock it again afterwards.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              chrome.runtime.reload();
+            }}
+          >
+            Reload Ruvee
+          </button>
+        </section>
+      ) : null}
       {screen.name === 'no-server' ? (
         <section>
           <p>Choose your Ruvee server first.</p>
@@ -425,26 +453,35 @@ function Fill({ onLocked }: { onLocked: () => void }) {
 
   useEffect(() => {
     void (async () => {
-      try {
-        const tab = await targetTab();
-        setTabId(tab);
-        if (tab !== null) {
-          setFound(await call<Candidates>({ kind: 'candidates', tabId: tab }));
-          setPending(await call<PendingSave | null>({ kind: 'pendingSave', tabId: tab }));
-        } else setFound({ origin: null, items: [] });
-        // A sync on every open: it brings other devices' changes, and it is how a revoked
-        // browser or an ended session is noticed (the worker then locks or wipes itself).
-        const synced = await call<SyncStatus>({ kind: 'vault', method: 'sync' });
-        if (synced.state === 'session_expired') onLocked();
-        else setNotice(restoreNotice(synced));
-      } catch (e) {
+      // Each call on its own: one that fails does not hide what the others found (a save
+      // offer must not vanish because a sync failed), and the error names the call.
+      const failed = (step: string) => (e: unknown) => {
         if (
           e instanceof CallError &&
           ['locked', 'session_expired', 'device_revoked'].includes(e.code)
         )
           onLocked();
-        else setError(messageFor(e));
+        else setError(stepMessageFor(step, e));
+      };
+      const tab = await targetTab().catch(() => null);
+      setTabId(tab);
+      if (tab === null) setFound({ origin: null, items: [] });
+      else {
+        await call<Candidates>({ kind: 'candidates', tabId: tab }).then(setFound, (e: unknown) => {
+          setFound({ origin: null, items: [] });
+          failed('candidates')(e);
+        });
+        await call<PendingSave | null>({ kind: 'pendingSave', tabId: tab }).then(
+          setPending,
+          failed('pendingSave'),
+        );
       }
+      // A sync on every open: it brings other devices' changes, and it is how a revoked
+      // browser or an ended session is noticed (the worker then locks or wipes itself).
+      await call<SyncStatus>({ kind: 'vault', method: 'sync' }).then((synced) => {
+        if (synced.state === 'session_expired') onLocked();
+        else setNotice(restoreNotice(synced));
+      }, failed('sync'));
     })();
   }, [onLocked]);
 

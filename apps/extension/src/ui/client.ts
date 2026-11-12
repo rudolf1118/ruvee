@@ -42,6 +42,19 @@ export function pairingMessageFor(e: unknown): string {
   return messageFor(e);
 }
 
+/**
+ * `messageFor`, and for a code it has no words for, which call failed and its code: the
+ * development build has no other way to tell (codes are never secret, INV-12).
+ */
+export function stepMessageFor(step: string, e: unknown): string {
+  const text = messageFor(e);
+  if (text !== GENERIC) return text;
+  const code = e instanceof CallError ? e.code : 'internal';
+  return `${GENERIC} (${step}: ${code})`;
+}
+
+const GENERIC = 'Something went wrong. Try again.';
+
 /** User-facing text for the codes the worker reports. Never says more than the code does. */
 export function messageFor(e: unknown): string {
   const code = e instanceof CallError ? e.code : 'internal';
@@ -79,6 +92,6 @@ export function messageFor(e: unknown): string {
     case 'server_maintenance':
       return 'Your Ruvee server is being restored by its owner and is not available yet. This browser keeps its copy, read-only.';
     default:
-      return 'Something went wrong. Try again.';
+      return GENERIC;
   }
 }
