@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import type {
   Candidates,
   FillOutcome,
+  InlineSettings,
   PairingView,
   PendingSave,
   SavePendingResult,
@@ -448,6 +449,7 @@ function Fill({ onLocked }: { onLocked: () => void }) {
   const [tabId, setTabId] = useState<number | null>(null);
   const [found, setFound] = useState<Candidates | null>(null);
   const [pending, setPending] = useState<PendingSave | null>(null);
+  const [autoOpenOff, setAutoOpenOff] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -475,12 +477,23 @@ function Fill({ onLocked }: { onLocked: () => void }) {
           setPending,
           failed('pendingSave'),
         );
+        // Only for the hint under a save offer; a failure here changes nothing else.
+        await call<InlineSettings>({ kind: 'inlineSettings' }).then(
+          (s) => {
+            setAutoOpenOff(!s.autoOpenSave);
+          },
+          () => undefined,
+        );
       }
       // A sync on every open: it brings other devices' changes, and it is how a revoked
       // browser or an ended session is noticed (the worker then locks or wipes itself).
       await call<SyncStatus>({ kind: 'vault', method: 'sync' }).then((synced) => {
         if (synced.state === 'session_expired') onLocked();
-        else setNotice(restoreNotice(synced));
+        else {
+          // Only a notice of its own: a fill result shown meanwhile stays.
+          const notice = restoreNotice(synced);
+          if (notice !== null) setNotice(notice);
+        }
       }, failed('sync'));
     })();
   }, [onLocked]);
@@ -518,6 +531,12 @@ function Fill({ onLocked }: { onLocked: () => void }) {
             {pending.username === '' ? 'No username' : `Username: ${pending.username}`}. The
             password stays hidden.
           </p>
+          {autoOpenOff ? (
+            <p className="muted">
+              Ruvee can open this offer by itself after a sign-in: turn on &ldquo;Open Ruvee by
+              itself&rdquo; in Settings.
+            </p>
+          ) : null}
           <button
             type="button"
             className="primary"

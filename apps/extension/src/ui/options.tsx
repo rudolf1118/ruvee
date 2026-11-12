@@ -1,7 +1,13 @@
 import { type SubmitEvent, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { INLINE_ORIGINS } from '../inline/gate';
-import type { InlineSettings, SetInlineResult, SetServerResult, Status } from '../messages';
+import type {
+  InlineSettings,
+  OfferLogEntry,
+  SetInlineResult,
+  SetServerResult,
+  Status,
+} from '../messages';
 import { fillableOrigin } from '../origin';
 import { call, messageFor } from './client';
 
@@ -116,6 +122,7 @@ function Options() {
 function Inline() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
   const [autoOpen, setAutoOpen] = useState(false);
+  const [log, setLog] = useState<OfferLogEntry[]>([]);
   const [message, setMessage] = useState<{ tone: 'error' | 'ok'; text: string } | null>(null);
 
   useEffect(() => {
@@ -123,6 +130,7 @@ function Inline() {
       (settings) => {
         setEnabled(settings.enabled);
         setAutoOpen(settings.autoOpenSave);
+        void call<OfferLogEntry[]>({ kind: 'offerLog' }).then(setLog, () => undefined);
       },
       (e: unknown) => {
         setMessage({ tone: 'error', text: messageFor(e) });
@@ -241,6 +249,33 @@ function Inline() {
             with that username.
           </span>
         </label>
+      ) : null}
+      {enabled === true ? (
+        // Development build: what became of the last sign-ins, so a hand check can tell why a
+        // popup did or did not open (extension-inline-autofill.md §8.3).
+        <div className="offer-log">
+          <h3>Recent sign-ins (development build)</h3>
+          {log.length === 0 ? (
+            <p className="muted">None since the browser started.</p>
+          ) : (
+            <ul>
+              {log.map((entry) => (
+                <li key={`${String(entry.atMs)}-${entry.origin}`}>
+                  <span className="muted">{new Date(entry.atMs).toLocaleTimeString()}</span>{' '}
+                  {entry.origin}: {entry.result}
+                </li>
+              ))}
+            </ul>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              void call<OfferLogEntry[]>({ kind: 'offerLog' }).then(setLog, () => undefined);
+            }}
+          >
+            Refresh
+          </button>
+        </div>
       ) : null}
     </section>
   );

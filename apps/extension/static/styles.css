@@ -189,3 +189,12 @@ label.check {
 label.check input {
   margin-right: 6px;
 }
+.offer-log ul {
+  padding-left: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.offer-log li {
+  padding: 2px 0;
+  word-break: break-all;
+}

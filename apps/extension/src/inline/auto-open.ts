@@ -28,9 +28,20 @@ export interface AutoOpenState {
   readonly windowFocused: boolean;
 }
 
+/** Why the popup is or is not opened by itself; recorded for hand checks (§8.3). */
+export type AutoOpenDecision =
+  'open' | 'off' | 'tab_not_active' | 'window_not_focused' | 'limit_any' | 'limit_tab';
+
+export function autoOpenDecision(s: AutoOpenState): AutoOpenDecision {
+  if (!s.enabled) return 'off';
+  if (!s.tabActive) return 'tab_not_active';
+  if (!s.windowFocused) return 'window_not_focused';
+  if (s.lastAnyMs !== undefined && s.nowMs - s.lastAnyMs < AUTO_OPEN_ANY_MS) return 'limit_any';
+  if (s.lastForTabMs !== undefined && s.nowMs - s.lastForTabMs < AUTO_OPEN_PER_TAB_MS)
+    return 'limit_tab';
+  return 'open';
+}
+
 export function shouldAutoOpen(s: AutoOpenState): boolean {
-  if (!s.enabled || !s.tabActive || !s.windowFocused) return false;
-  if (s.lastAnyMs !== undefined && s.nowMs - s.lastAnyMs < AUTO_OPEN_ANY_MS) return false;
-  if (s.lastForTabMs !== undefined && s.nowMs - s.lastForTabMs < AUTO_OPEN_PER_TAB_MS) return false;
-  return true;
+  return autoOpenDecision(s) === 'open';
 }

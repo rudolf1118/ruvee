@@ -400,6 +400,24 @@ Covered by `e2e/upgrade.spec.ts`: an old worker with new files gets the reload o
   - a second window focused;
   - Chrome versions older than 156.
 
+**Rehearsal report and diagnostics (2026-11-12).** On build 39271f4 the owner signed in on a
+site: the "+" badge appeared, but the popup did not open by itself. A popup opened while the
+sign-in navigates the tab stays open in Chromium 156 (spike: a fast and a slow POST,
+headless and headed), so navigation is not the cause. The capture was kept (the badge), so the
+open was either skipped or refused. The likely reason is the setting, which is off by default
+(§5.2a), but the build could not say. Now:
+
+- the worker records each reported sign-in: "popup opened", "badge only: <reason>" (`off`,
+  `tab_not_active`, `window_not_focused`, `limit_any`, `limit_tab`, no window), "badge only:
+  Chrome refused (<Chrome's message>)", or "not kept: locked" / "not kept: a login with this
+  username is already saved";
+- the last 8 records are kept in `chrome.storage.session` (memory, trusted contexts only;
+  origins and outcomes, never a username or password) and cleared on logout and removal;
+- the options page lists them under "Recent sign-ins (development build)";
+- the popup's save offer says how to turn the setting on when it is off;
+- browser test: the owner's case (setting at its default) ends in "badge only: off" with the
+  hint shown, and every other path records its reason.
+
 **Phase C: update a changed password.**
 
 - Browser: change-password form and different-password sign-in both offer an update naming the

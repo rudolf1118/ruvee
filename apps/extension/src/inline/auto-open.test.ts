@@ -1,6 +1,7 @@
 import {
   AUTO_OPEN_ANY_MS,
   AUTO_OPEN_PER_TAB_MS,
+  autoOpenDecision,
   shouldAutoOpen,
   type AutoOpenState,
 } from './auto-open';
@@ -40,5 +41,14 @@ describe('opening the popup by itself for a save offer', () => {
     expect(shouldAutoOpen({ ...base, lastAnyMs: NOW - AUTO_OPEN_ANY_MS + 1 })).toBe(false);
     expect(shouldAutoOpen({ ...base, lastAnyMs: NOW - AUTO_OPEN_ANY_MS })).toBe(true);
     expect(AUTO_OPEN_ANY_MS).toBe(30_000);
+  });
+
+  it('says why it does not open, in the order a hand check needs', () => {
+    expect(autoOpenDecision(base)).toBe('open');
+    expect(autoOpenDecision({ ...base, enabled: false, tabActive: false })).toBe('off');
+    expect(autoOpenDecision({ ...base, tabActive: false })).toBe('tab_not_active');
+    expect(autoOpenDecision({ ...base, windowFocused: false })).toBe('window_not_focused');
+    expect(autoOpenDecision({ ...base, lastAnyMs: NOW - 1 })).toBe('limit_any');
+    expect(autoOpenDecision({ ...base, lastForTabMs: NOW - AUTO_OPEN_ANY_MS })).toBe('limit_tab');
   });
 });

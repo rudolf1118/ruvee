@@ -39,6 +39,7 @@ export const requestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('inlineSettings') }),
   z.strictObject({ kind: z.literal('setInline'), enabled: z.boolean() }),
   z.strictObject({ kind: z.literal('setAutoOpenSave'), enabled: z.boolean() }),
+  z.strictObject({ kind: z.literal('offerLog') }),
   z.strictObject({ kind: z.literal('pendingSave'), tabId }),
   z.strictObject({ kind: z.literal('savePending'), tabId }),
   z.strictObject({ kind: z.literal('dismissPending'), tabId }),
@@ -92,6 +93,16 @@ export interface PendingSave {
 }
 
 export type SavePendingResult = 'saved' | 'gone';
+
+/**
+ * What happened to a sign-in the content script reported (§8.3): kept or not, and whether the
+ * popup opened by itself, was skipped (and why) or was refused by Chrome. No username or password.
+ */
+export interface OfferLogEntry {
+  readonly atMs: number;
+  readonly origin: string;
+  readonly result: string;
+}
 
 export type SetServerResult = 'saved' | 'not_an_origin' | 'device_exists' | 'no_permission';
 

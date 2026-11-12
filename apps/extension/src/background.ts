@@ -13,7 +13,7 @@ import {
 } from '@ruvee/vault';
 import * as opaque from '@serenity-kit/opaque';
 import { fillPage, type FillResult } from './fill';
-import { shouldAutoOpen } from './inline/auto-open';
+import { autoOpenDecision } from './inline/auto-open';
 import {
   contentRequestSchema,
   INLINE_ORIGINS,
@@ -28,6 +28,7 @@ import {
   type ExtensionResponse,
   type FillOutcome,
   type InlineSettings,
+  type OfferLogEntry,
   type PairingView,
   type PendingSave,
   type SavePendingResult,
@@ -201,7 +202,8 @@ async function lock(): Promise<void> {
 async function forget(): Promise<void> {
   await lock();
   await clearTokens();
-  await chrome.storage.session.remove(SESSION_JOIN_PROBLEM);
+  // The record of recent sign-ins names sites; it does not outlive the account here.
+  await chrome.storage.session.remove([SESSION_JOIN_PROBLEM, SESSION_OFFER_LOG]);
 }
 
 /**
@@ -504,7 +506,11 @@ async function liveCapture(tabId: number): Promise<Pending | undefined> {
 async function inlineCapture(target: InlineTarget, username: string, password: string) {
   // An unlock that has expired is ended here, not resumed (the message is not activity).
   await lockIfIdle();
-  if (!(await inlineEnabled()) || !(await isUnlocked())) return;
+  if (!(await inlineEnabled())) return;
+  if (!(await isUnlocked())) {
+    await logOffer(target.origin, 'not kept: locked');
+    return;
+  }
   const generation = lockGeneration;
   const e = await getEngine();
   const known = e
@@ -516,10 +522,14 @@ async function inlineCapture(target: InlineTarget, username: string, password: s
         i.urls.some((u) => originMatches(u, target.origin)) &&
         e.detail({ id: i.id }).username === username,
     );
-  if (known || generation !== lockGeneration) return;
+  if (known) {
+    await logOffer(target.origin, 'not kept: a login with this username is already saved');
+    return;
+  }
+  if (generation !== lockGeneration) return;
   captures.set(target.tabId, { origin: target.origin, username, password, atMs: Date.now() });
   await showBadge(target.tabId);
-  await offerByPopup(target.tabId, target.windowId);
+  await offerByPopup(target.tabId, target.windowId, target.origin);
 }
 
 // ---- Opening the popup by itself for a save offer (§5.2a) ----
@@ -530,6 +540,28 @@ async function inlineCapture(target: InlineTarget, username: string, password: s
  */
 const LOCAL_AUTO_OPEN = 'autoOpenSave';
 let lastAutoOpenMs: number | undefined;
+
+/**
+ * The last few sign-ins and what became of them, for a hand check (§8.3), shown on the options
+ * page. In `chrome.storage.session` (memory, trusted contexts only), never a username or password;
+ * the origins are the sites the user signed in to, and leave with the browser session.
+ */
+const SESSION_OFFER_LOG = 'offerLog';
+const OFFER_LOG_SIZE = 8;
+
+async function logOffer(origin: string, result: string): Promise<void> {
+  const stored = (await chrome.storage.session.get(SESSION_OFFER_LOG))[SESSION_OFFER_LOG];
+  const log = Array.isArray(stored) ? (stored as OfferLogEntry[]) : [];
+  const entry: OfferLogEntry = { atMs: Date.now(), origin, result };
+  await chrome.storage.session.set({
+    [SESSION_OFFER_LOG]: [entry, ...log].slice(0, OFFER_LOG_SIZE),
+  });
+}
+
+async function offerLog(): Promise<OfferLogEntry[]> {
+  const stored = (await chrome.storage.session.get(SESSION_OFFER_LOG))[SESSION_OFFER_LOG];
+  return Array.isArray(stored) ? (stored as OfferLogEntry[]) : [];
+}
 const lastAutoOpenByTab = new Map<number, number>();
 
 async function autoOpenEnabled(): Promise<boolean> {
@@ -542,14 +574,21 @@ async function autoOpenEnabled(): Promise<boolean> {
  * tab is the active tab of the focused window and the rate limits allow; otherwise, or when the
  * browser refuses, the "+" badge already shown is the offer.
  */
-async function offerByPopup(tabId: number, windowId: number | undefined): Promise<void> {
-  if (windowId === undefined) return;
+async function offerByPopup(
+  tabId: number,
+  windowId: number | undefined,
+  origin: string,
+): Promise<void> {
+  if (windowId === undefined) {
+    await logOffer(origin, 'badge only: no window for the tab');
+    return;
+  }
   const [tab, win] = await Promise.all([
     chrome.tabs.get(tabId).catch(() => undefined),
     chrome.windows.get(windowId).catch(() => undefined),
   ]);
   const now = Date.now();
-  const open = shouldAutoOpen({
+  const decision = autoOpenDecision({
     enabled: await autoOpenEnabled(),
     nowMs: now,
     lastAnyMs: lastAutoOpenMs,
@@ -557,13 +596,20 @@ async function offerByPopup(tabId: number, windowId: number | undefined): Promis
     tabActive: tab?.active === true && tab.windowId === windowId,
     windowFocused: win?.focused === true,
   });
-  if (!open || !captures.has(tabId)) return;
+  if (decision !== 'open' || !captures.has(tabId)) {
+    await logOffer(origin, `badge only: ${decision === 'open' ? 'capture gone' : decision}`);
+    return;
+  }
   try {
     await chrome.action.openPopup({ windowId });
     lastAutoOpenMs = now;
     lastAutoOpenByTab.set(tabId, now);
-  } catch {
+    await logOffer(origin, 'popup opened');
+  } catch (error) {
     // A popup already open, another window focused, a browser without the API: the badge stays.
+    // Chrome's own words are kept: they say which rule refused it.
+    const why = error instanceof Error ? error.message.slice(0, 160) : 'unknown';
+    await logOffer(origin, `badge only: Chrome refused (${why})`);
   }
 }
 
@@ -637,6 +683,8 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     }
     case 'setAutoOpenSave':
       return setAutoOpenSave(request.enabled);
+    case 'offerLog':
+      return offerLog();
     case 'setInline':
       return setInline(request.enabled);
     case 'pendingSave':
