@@ -91,6 +91,12 @@ export const TABLE_INVENTORY: Record<
     secretMaterial: true,
     transient: true,
   },
+  reload_tickets: {
+    holds:
+      'web reload tickets (D-34, ≤ 3 minutes without a heartbeat): SHA-256 of the ticket id, its session and expiries; no rows in a backup',
+    secretMaterial: true,
+    transient: true,
+  },
   bootstrap_tokens: { holds: 'SHA-256 of setup tokens, expiry, use', secretMaterial: true },
   security_events: { holds: 'allow-listed event history (INV-12)', secretMaterial: false },
   pairings: { holds: 'open pairings: ephemeral key, MACs, sealed reply', secretMaterial: true },
