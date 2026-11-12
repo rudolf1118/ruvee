@@ -332,12 +332,48 @@ server limits.
 - **New tab (if §5.6 is approved):** a second tab takes over without a password; the first tab
   shows the lock screen.
 
-## 8. Before implementation
+## 8. Before implementation: the spike (run 2026-11-12)
 
-A short spike, in the three Playwright engines, confirms the browser facts in §3 (whether
-`sessionStorage` and stored `CryptoKey` bytes appear in the profile files; worker timers in a
-hidden tab) and measures the reload time with a resume. If worker timers are throttled, the
-heartbeat interval and the 3-minute limit are revised before the owner's final approval.
+[`apps/web/scripts/d34-browser-spike.mjs`](../../apps/web/scripts/d34-browser-spike.mjs) runs the
+checks in Playwright 1.64.1's Chromium, Firefox and WebKit on macOS, against a page served from
+`http://127.0.0.1` (a secure context). Results:
+
+| Fact                                                                 | Chromium                             | Firefox                     | WebKit (Playwright build) |
+| -------------------------------------------------------------------- | ------------------------------------ | --------------------------- | ------------------------- |
+| `sessionStorage` survives a reload                                   | yes                                  | yes                         | yes                       |
+| A reload fires `pagehide` with `persisted: false`                    | yes                                  | yes                         | yes                       |
+| A reload ends the dedicated worker's state                           | yes                                  | yes                         | yes                       |
+| A new tab starts with empty `sessionStorage`                         | yes                                  | yes                         | yes                       |
+| `window.open` with an opener copies `sessionStorage`                 | yes                                  | yes                         | yes                       |
+| `window.open` with `noopener` copies it                              | no                                   | no                          | no                        |
+| A relaunch of the profile (no session restore) brings it back        | no                                   | no                          | no                        |
+| `sessionStorage` value found in the profile files after closing      | yes, `Default/Session Storage/*.log` | yes, `sessionstore.jsonlz4` | no                        |
+| Non-extractable key: `exportKey` refused                             | yes                                  | yes                         | yes                       |
+| Non-extractable key stored in IndexedDB still decrypts after reading | yes                                  | yes                         | yes                       |
+| Its raw key bytes found in the profile files after closing           | yes, IndexedDB leveldb log           | yes, IndexedDB sqlite       | no                        |
+| A page with a dedicated worker restored from bfcache                 | not observed (see below)             | not observed                | not observed              |
+
+What this means for the design:
+
+- **Confirmed, and needed by D:** a reload keeps `sessionStorage` and loses the worker; a new tab
+  does not inherit `sessionStorage`. A tab opened by `window.open` with an opener does, so the app
+  opens other tabs with `noopener` (it does not open any today), and a copied ticket is single-use
+  in any case.
+- **Confirmed, and the reason for D over B:** Chromium and Firefox write both the tab half and the
+  raw bytes of a "non-extractable" key into the profile. B's at-rest protection would be nothing in
+  either. WebKit's build wrote neither (WebKit wraps stored `CryptoKey`s with a key held outside
+  the profile); Safari itself was not tested.
+- **Not observed: bfcache.** No engine restored the test page from the back-forward cache under
+  Playwright, even with Chromium's `--disable-back-forward-cache` default removed, so this needs a
+  hand check in a desktop browser. D does not depend on it: a page restored from bfcache keeps its
+  worker, so it is as unlocked as before it was hidden; the implementation checks its ticket on
+  `pageshow` with `persisted: true` and locks if the server no longer has it.
+- **Not measured: hidden-tab timer throttling.** Headless engines do not throttle hidden pages. The
+  heartbeat runs every 60 seconds against a 3-minute limit, so even Chromium's once-a-minute
+  intensive throttling leaves two missed beats of margin. A hidden tab on a desktop browser for
+  10 minutes followed by a reload is a hand check.
+
+No fact the design depends on was false, so implementation proceeds.
 
 ## 9. Recommendation
 
