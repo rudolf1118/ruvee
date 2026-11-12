@@ -13,6 +13,7 @@ import {
 } from '@ruvee/vault';
 import * as opaque from '@serenity-kit/opaque';
 import { fillPage, type FillResult } from './fill';
+import { shouldAutoOpen } from './inline/auto-open';
 import {
   contentRequestSchema,
   INLINE_ORIGINS,
@@ -226,8 +227,10 @@ async function tabOrigin(tabId: number): Promise<string | null> {
 }
 
 async function candidates(tabId: number): Promise<Candidates> {
-  // The popup is open for this tab: a fallback badge from an inline click has done its job.
-  await chrome.action.setBadgeText({ tabId, text: '' }).catch(() => undefined);
+  // The popup is open for this tab: a fallback badge from an inline click has done its job. A
+  // save offer's "+" stays until it is answered: the popup may close unanswered.
+  if (!captures.has(tabId))
+    await chrome.action.setBadgeText({ tabId, text: '' }).catch(() => undefined);
   const origin = await tabOrigin(tabId);
   if (!origin) return { origin: null, items: [] };
   const e = await getEngine();
@@ -516,6 +519,58 @@ async function inlineCapture(target: InlineTarget, username: string, password: s
   if (known || generation !== lockGeneration) return;
   captures.set(target.tabId, { origin: target.origin, username, password, atMs: Date.now() });
   await showBadge(target.tabId);
+  await offerByPopup(target.tabId, target.windowId);
+}
+
+// ---- Opening the popup by itself for a save offer (§5.2a) ----
+
+/**
+ * Present means the user turned it on. Off by default: the popup taking focus may tell the page
+ * that the vault is unlocked and has no such login (§5.2a, E-25).
+ */
+const LOCAL_AUTO_OPEN = 'autoOpenSave';
+let lastAutoOpenMs: number | undefined;
+const lastAutoOpenByTab = new Map<number, number>();
+
+async function autoOpenEnabled(): Promise<boolean> {
+  return (await chrome.storage.local.get(LOCAL_AUTO_OPEN))[LOCAL_AUTO_OPEN] === true;
+}
+
+/**
+ * Called once, right after a new capture is kept (never without one, never while locked: no
+ * capture is kept then). Opens the toolbar popup, where the offer is answered, when the capture's
+ * tab is the active tab of the focused window and the rate limits allow; otherwise, or when the
+ * browser refuses, the "+" badge already shown is the offer.
+ */
+async function offerByPopup(tabId: number, windowId: number | undefined): Promise<void> {
+  if (windowId === undefined) return;
+  const [tab, win] = await Promise.all([
+    chrome.tabs.get(tabId).catch(() => undefined),
+    chrome.windows.get(windowId).catch(() => undefined),
+  ]);
+  const now = Date.now();
+  const open = shouldAutoOpen({
+    enabled: await autoOpenEnabled(),
+    nowMs: now,
+    lastAnyMs: lastAutoOpenMs,
+    lastForTabMs: lastAutoOpenByTab.get(tabId),
+    tabActive: tab?.active === true && tab.windowId === windowId,
+    windowFocused: win?.focused === true,
+  });
+  if (!open || !captures.has(tabId)) return;
+  try {
+    await chrome.action.openPopup({ windowId });
+    lastAutoOpenMs = now;
+    lastAutoOpenByTab.set(tabId, now);
+  } catch {
+    // A popup already open, another window focused, a browser without the API: the badge stays.
+  }
+}
+
+async function setAutoOpenSave(enabled: boolean): Promise<true> {
+  if (enabled) await chrome.storage.local.set({ [LOCAL_AUTO_OPEN]: true });
+  else await chrome.storage.local.remove(LOCAL_AUTO_OPEN);
+  return true;
 }
 
 async function pendingSave(tabId: number): Promise<PendingSave | null> {
@@ -574,9 +629,14 @@ async function handle(request: ExtensionRequest): Promise<unknown> {
     case 'pairing':
       return pairingView();
     case 'inlineSettings': {
-      const settings: InlineSettings = { enabled: await inlineEnabled() };
+      const settings: InlineSettings = {
+        enabled: await inlineEnabled(),
+        autoOpenSave: await autoOpenEnabled(),
+      };
       return settings;
     }
+    case 'setAutoOpenSave':
+      return setAutoOpenSave(request.enabled);
     case 'setInline':
       return setInline(request.enabled);
     case 'pendingSave':
@@ -675,6 +735,7 @@ void resumePairing();
 void reconcileInline().catch(() => undefined);
 chrome.tabs.onRemoved.addListener((tabId) => {
   captures.delete(tabId);
+  lastAutoOpenByTab.delete(tabId);
 });
 // A tab's badge does not always survive its navigation; the sign-in usually navigates.
 chrome.tabs.onUpdated.addListener((tabId, change) => {

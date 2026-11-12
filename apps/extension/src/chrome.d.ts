@@ -90,6 +90,14 @@ declare namespace chrome {
     }): Promise<RegisteredContentScript[]>;
   }
 
+  namespace windows {
+    interface Window {
+      id?: number;
+      focused: boolean;
+    }
+    function get(windowId: number): Promise<Window>;
+  }
+
   namespace action {
     function openPopup(options?: { windowId?: number }): Promise<void>;
     function setBadgeText(details: { tabId?: number; text: string }): Promise<void>;

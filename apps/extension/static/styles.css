@@ -181,3 +181,11 @@ li > span {
 .save-offer button + button {
   margin-left: 8px;
 }
+/* A setting with its explanation. */
+label.check {
+  display: block;
+  margin-top: 12px;
+}
+label.check input {
+  margin-right: 6px;
+}

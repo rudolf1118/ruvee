@@ -115,12 +115,14 @@ function Options() {
  */
 function Inline() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [autoOpen, setAutoOpen] = useState(false);
   const [message, setMessage] = useState<{ tone: 'error' | 'ok'; text: string } | null>(null);
 
   useEffect(() => {
     call<InlineSettings>({ kind: 'inlineSettings' }).then(
       (settings) => {
         setEnabled(settings.enabled);
+        setAutoOpen(settings.autoOpenSave);
       },
       (e: unknown) => {
         setMessage({ tone: 'error', text: messageFor(e) });
@@ -211,6 +213,34 @@ function Inline() {
         <button type="button" onClick={turnOff}>
           Turn off
         </button>
+      ) : null}
+      {enabled === true ? (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={autoOpen}
+            onChange={(event) => {
+              const next = event.target.checked;
+              setMessage(null);
+              call<true>({ kind: 'setAutoOpenSave', enabled: next }).then(
+                () => {
+                  setAutoOpen(next);
+                },
+                (e: unknown) => {
+                  setMessage({ tone: 'error', text: messageFor(e) });
+                },
+              );
+            }}
+          />
+          Open Ruvee by itself to offer saving a login
+          <span className="muted">
+            {' '}
+            After you sign in on a site, Ruvee opens its own window to ask whether to save the
+            login. Off: only a + on the Ruvee button shows the offer. When the window opens, the
+            site may notice that its page lost focus, and so that Ruvee is unlocked and has no login
+            with that username.
+          </span>
+        </label>
       ) : null}
     </section>
   );

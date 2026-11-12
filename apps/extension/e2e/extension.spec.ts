@@ -765,6 +765,164 @@ test('save offer after a sign-in that goes on to a second same-origin page (two-
   await options.close();
 });
 
+/** A message from this extension's content script in the top frame of `tabId`. */
+async function fromContentScriptIn(tabId: number, message: unknown): Promise<unknown> {
+  return worker.evaluate(
+    async ([id, msg]) => {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId: id },
+        world: 'ISOLATED',
+        args: [msg],
+        func: async (m: unknown) => {
+          const reply: unknown = await chrome.runtime.sendMessage(m);
+          return reply === undefined ? 'no reply' : reply;
+        },
+      });
+      return r?.result;
+    },
+    [tabId, message] as const,
+  );
+}
+
+/** A new tab on the sign-in page, in front, and its id. */
+async function signInTab(name: string): Promise<{ page: Page; tab: number }> {
+  const page = await context.newPage();
+  const url = `${SIGNIN_PAGE}?tab=${name}`;
+  await page.goto(url);
+  await page.bringToFront();
+  const tab = await worker.evaluate(async () => {
+    const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return front?.id ?? -1;
+  });
+  return { page, tab };
+}
+
+async function signInOn(page: Page, username: string, password: string): Promise<void> {
+  await page.locator('#user').fill(username);
+  await page.locator('#pw').fill(password);
+  await page.locator('#go').click();
+  await page.waitForURL(/\/welcome$/);
+}
+
+/** Past the browser-wide interval between two automatic popups (3 s in the test build). */
+const pastAutoOpenInterval = () => site.waitForTimeout(3_500);
+
+test('save offer opens the popup by itself: once per capture, the badge when it cannot, off by the toggle', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${EXTENSION_ID}/options.html`);
+  await options.getByRole('button', { name: 'Turn on' }).click();
+  await expect(options.getByText(/^On\./)).toBeVisible();
+  const toggle = options.getByRole('checkbox', { name: /Open Ruvee by itself/ });
+  // Off by default (§5.2a); turned on here. The box changes once the worker stored it.
+  await expect(toggle).not.toBeChecked();
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await closeActionPopups();
+  await pastAutoOpenInterval();
+
+  // ---- A sign-in opens the popup once; the "+" stays until the offer is answered ----
+  const a = await signInTab('a');
+  await signInOn(a.page, 'auto-a@portal.example', 'synthetic-auto-a');
+  await expect.poll(actionPopups).toBe(1);
+  expect(await pendingFor(a.tab)).toEqual({
+    origin: new URL(LOGIN_PAGE).origin,
+    username: 'auto-a@portal.example',
+  });
+  await a.page.waitForTimeout(1000);
+  expect(await badgeOf(a.tab)).toBe('+');
+  await closeActionPopups();
+
+  // ---- Once per tab: a second sign-in there only updates the offer and the badge ----
+  await pastAutoOpenInterval();
+  await a.page.goto(`${SIGNIN_PAGE}?tab=a`);
+  await signInOn(a.page, 'auto-a2@portal.example', 'synthetic-auto-a2');
+  await expect.poll(() => pendingFor(a.tab)).toMatchObject({ username: 'auto-a2@portal.example' });
+  await a.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+  expect(await badgeOf(a.tab)).toBe('+');
+
+  // ---- Never without a capture: a page's own submit opens nothing ----
+  const b = await signInTab('b');
+  await b.page.evaluate(() => {
+    (document.getElementById('user') as HTMLInputElement).value = 'planted@portal.example';
+    (document.getElementById('pw') as HTMLInputElement).value = 'planted-secret';
+    document.querySelector('form')?.requestSubmit();
+  });
+  await b.page.waitForURL(/\/welcome$/);
+  await b.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+  expect(await pendingFor(b.tab)).toBeNull();
+
+  // ---- Never while locked: no capture, no popup ----
+  await lockFromPopup();
+  await b.page.goto(`${SIGNIN_PAGE}?tab=b`);
+  await b.page.bringToFront();
+  await signInOn(b.page, 'locked-user@portal.example', 'synthetic-locked');
+  await b.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+  expect(await badgeOf(b.tab)).toBe('');
+  await unlockAgain();
+  await pastAutoOpenInterval();
+
+  // ---- The badge when the browser cannot open it: a popup already open ----
+  const c = await signInTab('c');
+  expect(await fromContentScriptIn(c.tab, { kind: 'inlineOpen' })).toBeNull();
+  await expect.poll(actionPopups).toBe(1);
+  expect(
+    await fromContentScriptIn(c.tab, {
+      kind: 'inlineCapture',
+      username: 'popup-open@portal.example',
+      password: 'synthetic-popup-open',
+    }),
+  ).toBeNull();
+  await expect.poll(() => badgeOf(c.tab)).toBe('+');
+  expect(await actionPopups()).toBe(1);
+  expect(await pendingFor(c.tab)).toMatchObject({ username: 'popup-open@portal.example' });
+  await closeActionPopups();
+  await pastAutoOpenInterval();
+
+  // ---- ... and for a tab that is not in front (it would open for the wrong tab) ----
+  const d = await signInTab('d');
+  await c.page.bringToFront();
+  expect(
+    await fromContentScriptIn(d.tab, {
+      kind: 'inlineCapture',
+      username: 'background@portal.example',
+      password: 'synthetic-background',
+    }),
+  ).toBeNull();
+  await expect.poll(() => badgeOf(d.tab)).toBe('+');
+  await c.page.waitForTimeout(1000);
+  expect(await actionPopups()).toBe(0);
+
+  // ---- Turned off: the badge only ----
+  await options.bringToFront();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await options.reload();
+  await expect(options.getByRole('checkbox', { name: /Open Ruvee by itself/ })).not.toBeChecked();
+  await pastAutoOpenInterval();
+  const e = await signInTab('e');
+  await signInOn(e.page, 'toggle-off@portal.example', 'synthetic-toggle-off');
+  await expect.poll(() => badgeOf(e.tab)).toBe('+');
+  await e.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+
+  // Inline fill off for the tests that follow (the setting is back at its default, off).
+  await options.bringToFront();
+  await options.getByRole('button', { name: 'Turn off' }).click();
+  await expect(options.getByText(/^Off\./)).toBeVisible();
+  for (const t of [a, b, c, d, e]) {
+    await popup.evaluate(
+      (tabId) => chrome.runtime.sendMessage({ kind: 'dismissPending', tabId }),
+      t.tab,
+    );
+    await t.page.close();
+  }
+  await options.close();
+  await site.bringToFront();
+});
+
 test('R19: a lock that arrives while an unlock is still running wins', async () => {
   await popup.goto(popupUrl(siteTab));
   await popup.getByRole('button', { name: 'Lock' }).click();
