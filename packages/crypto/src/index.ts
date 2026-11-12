@@ -26,7 +26,15 @@ export {
   KEYSET_ENVELOPE_MAX_BYTES,
   LOCAL_RECORD_ENVELOPE_MAX_BYTES,
   MANIFEST_ENVELOPE_BYTES,
+  RELOAD_TICKET_ENVELOPE_BYTES,
 } from './envelope.js';
+export {
+  RELOAD_HALF_BYTES,
+  RELOAD_TICKET_ID_BYTES,
+  type ReloadServerHalfInput,
+  type ReloadTicketContext,
+  type ReloadTicketOperations,
+} from './reload-ticket.js';
 export {
   LOGIN_STATE_SEAL_MAX_BYTES,
   LOGIN_STATE_SEAL_MIN_BYTES,
