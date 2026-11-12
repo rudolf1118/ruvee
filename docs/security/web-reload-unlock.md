@@ -1,9 +1,10 @@
 # Keeping the web vault unlocked across a reload (D-34)
 
-Status: **Proposed (2026-11-11). A design for the owner to decide; nothing is implemented.** Not
-reviewed. The decision is [D-34](../architecture/open-decisions.md). Approving it would change the
-wording of INV-15 and INV-16 and add one invariant (§6), so it needs the owner's explicit
-decision, like D-27.
+Status: **Option D approved by the owner for development (2026-11-12)**, reload only; the new
+tab (§5.6) is not approved. Proposed 2026-11-11. Not reviewed. The decision is
+[D-34](../architecture/open-decisions.md). It changes the wording of INV-15 and INV-16 and adds
+INV-25 (§6) when the implementation lands. The owner accepted the cost stated in §9: while a
+ticket lives, XSS or a malicious extension can take `AK` silently.
 
 ## 1. The problem
 
