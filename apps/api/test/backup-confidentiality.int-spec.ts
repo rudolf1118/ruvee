@@ -19,7 +19,7 @@ import {
   type SyntheticAccount,
 } from './support/synthetic-client.js';
 import { VaultWriter } from './support/vault-writer.js';
-import { registerStartResponseSchema } from '@ruvee/contracts';
+import { registerStartResponseSchema, reloadTicketCreateResponseSchema } from '@ruvee/contracts';
 
 /**
  * R13 (backup-restore.md §6): what a decrypted backup contains, against the documented
@@ -48,6 +48,7 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
   let sessionToken: string;
   let unusedSetupToken: string;
   let registrationRecord: string;
+  let reloadTicket: { ticketId: string; serverHalf: string };
 
   beforeAll(async () => {
     h = await startHarness();
@@ -90,12 +91,17 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
         deviceId: account.deviceId,
       })
       .expect(200);
-    const [pending] = await query<{ logins: number; windows: number }>(
+    // A live web reload ticket (D-34), also transient.
+    reloadTicket = reloadTicketCreateResponseSchema.parse(
+      (await h.post('/api/v1/reload-tickets', { idleSeconds: 900 }, cookie).expect(201)).body,
+    );
+    const [pending] = await query<{ logins: number; windows: number; tickets: number }>(
       h.db.url,
       `SELECT (SELECT count(*) FROM login_states)::int AS logins,
-              (SELECT count(*) FROM rate_windows)::int AS windows`,
+              (SELECT count(*) FROM rate_windows)::int AS windows,
+              (SELECT count(*) FROM reload_tickets)::int AS tickets`,
     );
-    expect(pending).toEqual({ logins: 1, windows: expect.any(Number) as number });
+    expect(pending).toEqual({ logins: 1, windows: expect.any(Number) as number, tickets: 1 });
     expect(pending?.windows).toBeGreaterThan(0);
 
     key = await testBackupKey();
@@ -167,6 +173,12 @@ describe('R13: a decrypted backup holds authentication records and ciphertext, n
     );
     forbidden['recovery auth key (hex)'] = hex(rak.recoveryAuthKey);
     forbidden['recovery wrap key (hex)'] = hex(rak.recoveryWrapKey);
+    // A live reload ticket: neither its id, its hash nor the server half (INV-25).
+    const ticketId = Buffer.from(reloadTicket.ticketId, 'base64url');
+    forbidden['reload ticket id (hex)'] = hex(ticketId);
+    forbidden['reload ticket id hash (hex)'] = createHash('sha256').update(ticketId).digest('hex');
+    forbidden['reload server half (hex)'] = hex(Buffer.from(reloadTicket.serverHalf, 'base64url'));
+    forbidden['reload server half (base64url)'] = reloadTicket.serverHalf;
     for (const [what, value] of Object.entries(forbidden)) expect(sql, what).not.toContain(value);
   });
 

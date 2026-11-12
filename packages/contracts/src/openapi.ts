@@ -67,6 +67,13 @@ import {
   reopenStartResponseSchema,
 } from './reopen.js';
 import {
+  reloadTicketCreateRequestSchema,
+  reloadTicketCreateResponseSchema,
+  reloadTicketHeartbeatRequestSchema,
+  reloadTicketRedeemRequestSchema,
+  reloadTicketRedeemResponseSchema,
+} from './reload.js';
+import {
   createPairingRequestSchema,
   pairingApproveRequestSchema,
   pairingCancelRequestSchema,
@@ -778,6 +785,49 @@ export function buildOpenApiDocument(): JsonSchema {
           ],
         }),
       },
+      '/api/v1/reload-tickets': {
+        post: operation({
+          operationId: 'createReloadTicket',
+          summary:
+            'D-34: a web session that proved its device key gets a reload ticket id and the server half; replaces its earlier ticket.',
+          access: 'active',
+          request: 'ReloadTicketCreateRequest',
+          success: { status: '201', description: 'Created.', schema: 'ReloadTicketCreateResponse' },
+          errors: ['forbidden'],
+        }),
+        delete: operation({
+          operationId: 'deleteReloadTicket',
+          summary: "Deletes this session's reload ticket (lock). Succeeds when there is none.",
+          access: 'session',
+          success: { status: '204', description: 'Deleted.' },
+        }),
+      },
+      '/api/v1/reload-tickets/heartbeat': {
+        post: operation({
+          operationId: 'reloadTicketHeartbeat',
+          summary:
+            'Keeps the ticket for 3 more minutes; active also restarts its idle limit. not_found once it has ended.',
+          access: 'active',
+          request: 'ReloadTicketHeartbeatRequest',
+          success: { status: '204', description: 'Extended.' },
+          errors: ['not_found'],
+        }),
+      },
+      '/api/v1/reload-tickets/redeem': {
+        post: operation({
+          operationId: 'redeemReloadTicket',
+          summary:
+            "Returns the server half once and deletes the ticket; only the ticket's own live session, before either limit.",
+          access: 'active',
+          request: 'ReloadTicketRedeemRequest',
+          success: {
+            status: '200',
+            description: 'The server half.',
+            schema: 'ReloadTicketRedeemResponse',
+          },
+          errors: ['not_found'],
+        }),
+      },
       '/api/v1/pairings': {
         post: operation({
           operationId: 'createPairing',
@@ -888,6 +938,11 @@ export function buildOpenApiDocument(): JsonSchema {
         ReopenRecoveryStartRequest: jsonSchema(reopenRecoveryStartRequestSchema),
         ReopenStartResponse: jsonSchema(reopenStartResponseSchema),
         ReopenMaterialResponse: jsonSchema(reopenMaterialResponseSchema),
+        ReloadTicketCreateRequest: jsonSchema(reloadTicketCreateRequestSchema),
+        ReloadTicketCreateResponse: jsonSchema(reloadTicketCreateResponseSchema),
+        ReloadTicketHeartbeatRequest: jsonSchema(reloadTicketHeartbeatRequestSchema),
+        ReloadTicketRedeemRequest: jsonSchema(reloadTicketRedeemRequestSchema),
+        ReloadTicketRedeemResponse: jsonSchema(reloadTicketRedeemResponseSchema),
         PairingCreated: {
           type: 'object',
           properties: { expiresAt: { type: 'string', format: 'date-time' } },

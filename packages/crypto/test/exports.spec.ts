@@ -39,6 +39,9 @@ describe('public surface (INV-02)', () => {
       'PLATFORM_CODES',
       'PROOF_OPERATIONS',
       'RECOVERY_KEY_BYTES',
+      'RELOAD_HALF_BYTES',
+      'RELOAD_TICKET_ENVELOPE_BYTES',
+      'RELOAD_TICKET_ID_BYTES',
       'RuveeCryptoError',
       'UUID_BYTES',
       'initRuveeCrypto',
@@ -60,6 +63,7 @@ describe('public surface (INV-02)', () => {
     expect(publicApi.ACCOUNT_KEY_WRAP_BYTES).toBe(93);
     expect(publicApi.KEYSET_ENVELOPE_MAX_BYTES).toBe(16_445);
     expect(publicApi.KEYSET_FORMAT_VERSION).toBe(1);
+    expect(publicApi.RELOAD_TICKET_ENVELOPE_BYTES).toBe(93);
     expect(publicApi.LOGIN_STATE_SEAL_MIN_BYTES).toBe(74);
     expect(publicApi.LOGIN_STATE_SEAL_MAX_BYTES).toBe(585);
   });

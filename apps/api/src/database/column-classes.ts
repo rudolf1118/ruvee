@@ -99,6 +99,17 @@ export const COLUMN_CLASSES: Readonly<Record<string, Readonly<Record<string, Col
     created_at: 'S',
     expires_at: 'S',
   },
+  // D-34: SHA-256 of the ticket id only; the server half is recomputed, never stored.
+  reload_tickets: {
+    id_hash: 'V',
+    account_id: 'M',
+    device_id: 'M',
+    session_id: 'M',
+    idle_seconds: 'S',
+    created_at: 'S',
+    expires_at: 'S',
+    idle_expires_at: 'S',
+  },
   bootstrap_tokens: { id: 'S', token_hash: 'V', created_at: 'S', expires_at: 'S', used_at: 'S' },
   security_events: {
     id: 'S',

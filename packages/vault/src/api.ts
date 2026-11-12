@@ -11,6 +11,8 @@ import {
   loginStartResponseSchema,
   recoveryMaterialResponseSchema,
   recoveryStartResponseSchema,
+  reloadTicketCreateResponseSchema,
+  reloadTicketRedeemResponseSchema,
   reopenMaterialResponseSchema,
   reopenStartResponseSchema,
   pairingStateResponseSchema,
@@ -263,6 +265,14 @@ export function createApi(t: Transport) {
       ),
     rotateRecoveryKey: (body: RecoveryKeyRotateRequest) =>
       send('PUT', '/account/recovery', null, body),
+    // D-34 web reload tickets (web-reload-unlock.md §5).
+    reloadTicketCreate: (idleSeconds: number) =>
+      send('POST', '/reload-tickets', reloadTicketCreateResponseSchema, { idleSeconds }),
+    reloadTicketHeartbeat: (ticketId: string, active: boolean) =>
+      send('POST', '/reload-tickets/heartbeat', null, { ticketId, active }),
+    reloadTicketRedeem: (ticketId: string) =>
+      send('POST', '/reload-tickets/redeem', reloadTicketRedeemResponseSchema, { ticketId }),
+    reloadTicketDelete: () => send('DELETE', '/reload-tickets', null),
   };
 }
 

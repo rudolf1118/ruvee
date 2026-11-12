@@ -228,9 +228,8 @@ After every unlock, resume or successful redeem, while the tab holds the vault l
 
 ### 5.2 Keeping it alive
 
-- **Heartbeat:** the worker sends `POST /api/v1/reload-tickets/:tid/heartbeat` every 60 seconds
-  while the tab is open (worker timers, to avoid hidden-tab throttling), which moves `expires_at`
-  to now + 3 minutes. A closed tab, a closed browser and a sleeping laptop stop it.
+- **Heartbeat:** the tab sends a heartbeat for its ticket every 60 seconds while it is open (as
+  built: the page's timer, §10), which moves `expires_at` to now + 3 minutes. A closed tab, a closed browser and a sleeping laptop stop it.
 - **Activity:** the page already tracks pointer and key events for auto-lock. At most once a
   minute, a heartbeat carries `active: true`, which moves `idle_expires_at` to now + `idleSeconds`.
 - The server never extends either limit past the session's own expiry.
@@ -386,3 +385,37 @@ to phish the password. If the owner does not accept that, Option A stays, with t
 
 The parameters are the owner's to set: the 3-minute heartbeat limit, and whether the ticket
 follows the auto-lock setting (proposed) or a shorter fixed limit.
+
+## 10. As built (2026-11-12)
+
+Option D, reload only, is implemented for development on the branch after this document's
+approval. Differences from §5, each at least as strict unless stated:
+
+- **`H_srv` is never stored** (stricter than §5.1, where the server kept it). The server derives
+  `K_srv = MAC(H(setup), "ruvee/v1/reload-server")` once from the OPAQUE setup file and
+  recomputes `H_srv = MAC(K_srv, "ruvee/v1/reload-half" ‖ tid ‖ session_id ‖ device_id)` when it
+  is needed; the server draws `tid`, and the table keeps only `SHA-256(tid)`. A database dump,
+  even together with a copied profile, does not give `H_srv` without the setup file (the same
+  protection as the login-state seal, D-32). The table is transient: a backup holds no rows and a
+  restore empties it.
+- **Endpoints:** `POST /api/v1/reload-tickets`, `POST …/heartbeat`, `POST …/redeem` and
+  `DELETE /api/v1/reload-tickets`, with the ticket id in the body rather than the path, so it never
+  appears in routing or access logs (INV-12). Only a web cookie session of a web device that proved
+  its key gets one (INV-24); the extension keeps using D-27.
+- **Heartbeat:** sent by the page's timer every 60 seconds through the worker, not by a worker
+  timer; the 3-minute limit leaves two missed beats for hidden-tab throttling. A heartbeat that
+  finds the ticket gone (the tab slept past the limit, or came back from the back-forward cache)
+  issues a new one, because that tab is still unlocked in memory; the page's own auto-lock still
+  applies. This replaces §8's "locks if the server no longer has it".
+- **Revocation:** logout deletes the session's ticket in the same transaction as the revocation
+  (`SessionService.revoke`). Every other revocation (another device ending this session, device
+  revocation, password change, restore) makes the ticket unusable at once, because only its own
+  live session may redeem it; its row is removed at the next ticket write. Key rotation needs
+  nothing extra: the envelope is bound to `ak_id`, and `resume` refuses an `AK` that does not open
+  the device's keyset.
+- **Not built:** the new-tab hand-over (§5.6), as approved.
+- **Deployment:** one migration (`20261112090000_reload_tickets`), then `ruvee-admin grant-runtime`
+  before the new API serves; rollback runs its `down.sql`
+  ([database-roles.md §3.2](../guides/database-roles.md)).
+- **Hand checks still open:** bfcache restore and hidden-tab throttling in desktop browsers (§8),
+  and Safari itself (only Playwright's WebKit build was run).
