@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -13,7 +14,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Writable } from 'node:stream';
+import { PassThrough, Writable } from 'node:stream';
 import { Decrypter, Encrypter } from 'age-encryption';
 import { backupDigest, type Manifest } from '../src/admin/backup-files.js';
 import { pgToolsFromEnv, type PgTools } from '../src/admin/pg-tools.js';
@@ -236,6 +237,29 @@ describe('encrypted server backups (real dumps, real age)', () => {
       };
       const d = dir();
       await expect(createBackup(backupArgs(d, { tools: failing }))).rejects.toThrow(/exit 3/);
+      expect(readdirSync(d)).toEqual([]);
+    });
+
+    it('publishes nothing when pg_dump exits with a failure before its output is read', async () => {
+      // The exit status can arrive while the encryption still reads (and is about to create
+      // the dump file). Before: cleanup ran at once, and the encryption created
+      // `.dump.age.partial` after it (the CI flake of the test above).
+      const failing: PgTools = {
+        ...tools,
+        dump: (target) => {
+          const stdout = new PassThrough();
+          stdout.write(archiveHeader(target.database));
+          const done = Promise.reject(new Error('pg_dump failed (exit 3)'));
+          done.catch(() => undefined);
+          setTimeout(() => {
+            stdout.end(randomBytes(300_000));
+          }, 200);
+          return { stdout, done, kill: () => stdout.destroy() };
+        },
+      };
+      const d = dir();
+      await expect(createBackup(backupArgs(d, { tools: failing }))).rejects.toThrow(/exit 3/);
+      await new Promise((resolve) => setTimeout(resolve, 500));
       expect(readdirSync(d)).toEqual([]);
     });
 

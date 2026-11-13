@@ -923,6 +923,9 @@ test('R19: a lock that arrives while an unlock is still running wins', async () 
   // unlock the lock overtook finished afterwards and stored AK back.
   for (const round of rounds) expect(round.unlocked).toBe(false);
   expect(await sessionKeys(worker)).not.toContain('ak');
+  // An overtaken unlock says so: before, one the lock caught after its session existed failed on
+  // the zeroed keys and answered "internal", and on CI that could be every overtaken round.
+  for (const round of rounds) if (!round.unlock.ok) expect(round.unlock.code).toBe('locked');
   // And the race was really exercised: at least one unlock was overtaken and reported it.
   expect(rounds.some((r) => !r.unlock.ok && r.unlock.code === 'locked')).toBe(true);
   await unlock(MASTER);

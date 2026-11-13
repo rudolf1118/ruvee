@@ -163,6 +163,8 @@ export const ageFailure = () =>
 /**
  * Streams `source` through age to a new file. Resolves with the ciphertext's size and SHA-256
  * once every byte is written and flushed; the caller decides whether the result is published.
+ * Settles, either way, only after the output is closed: a file still being opened when a failure
+ * is reported would otherwise appear after the caller removed it.
  */
 export async function encryptToFile(
   recipient: string,
@@ -177,12 +179,22 @@ export async function encryptToFile(
     Readable.toWeb(source) as unknown as ReadableStream<Uint8Array>,
   );
   const tap = new Tap();
-  await pipeline(
-    Readable.fromWeb(encrypted as unknown as WebReadableStream<Uint8Array>),
-    tap,
-    open(path),
-    ...(signal ? [{ signal }] : []),
-  );
+  const out = open(path);
+  try {
+    await pipeline(
+      Readable.fromWeb(encrypted as unknown as WebReadableStream<Uint8Array>),
+      tap,
+      out,
+      ...(signal ? [{ signal }] : []),
+    );
+  } finally {
+    if (!out.closed)
+      await new Promise<void>((resolve) => {
+        out.once('close', () => {
+          resolve();
+        });
+      });
+  }
   return { size: tap.bytes, sha256: tap.digest() };
 }
 
