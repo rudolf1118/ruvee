@@ -92,6 +92,22 @@ export class FakeServer {
   akVerifyKey: string | undefined;
   /** Open proof nonces: value → operation and session (device-proof.md §6). */
   private nonces = new Map<string, { operation: ProofOperation; sessionId: string }>();
+  /**
+   * D-34 reload tickets, as the API keeps them (reload-tickets.service.ts): by ticket id, one per
+   * session, single use. Tests move `expiresAtMs` / `idleExpiresAtMs` to make a ticket end.
+   */
+  reloadTickets = new Map<
+    string,
+    {
+      sessionId: string;
+      deviceId: string;
+      idleSeconds: number;
+      expiresAtMs: number;
+      idleExpiresAtMs: number;
+    }
+  >();
+  /** The fake's stand-in for the OPAQUE setup file, from which `K_srv` is derived. */
+  private readonly reloadSetup = randomBytes(128);
   revokeReasons: string[] = [];
   pairings = new Map<
     string,
@@ -322,6 +338,17 @@ export class FakeServer {
         expiresAt: new Date(Date.now() + 120_000).toISOString(),
       };
     };
+    const reloadHalf = async (ticketId: Uint8Array, deviceId: string) => {
+      const c = await cryptoReady;
+      return b64(
+        c.reloadServerHalf({
+          serverKey: c.deriveReloadServerKey(this.reloadSetup),
+          ticketId,
+          sessionId: uuidToBytes(sessionId),
+          deviceId: uuidToBytes(deviceId),
+        }),
+      );
+    };
     const consumeCode = (code: string) => {
       if (this.reopenCode === undefined || code !== this.reopenCode || this.reopenConsumed)
         this.fail(401, 'reopen_failed');
@@ -478,6 +505,54 @@ export class FakeServer {
       logout: () => {
         this.check({});
         this.sessionValid = false;
+        for (const [id, t] of this.reloadTickets)
+          if (t.sessionId === sessionId) this.reloadTickets.delete(id);
+        return Promise.resolve(undefined);
+      },
+      reloadTicketCreate: async (idleSeconds) => {
+        this.check({ idleSeconds });
+        const deviceId = requireActive();
+        for (const [id, t] of this.reloadTickets)
+          if (t.sessionId === sessionId) this.reloadTickets.delete(id);
+        const ticketId = randomBytes(16);
+        const now = Date.now();
+        this.reloadTickets.set(b64(ticketId), {
+          sessionId,
+          deviceId,
+          idleSeconds,
+          expiresAtMs: now + 3 * 60_000,
+          idleExpiresAtMs: now + idleSeconds * 1000,
+        });
+        return { ticketId: b64(ticketId), serverHalf: await reloadHalf(ticketId, deviceId) };
+      },
+      reloadTicketHeartbeat: (ticketId, active) => {
+        this.check({ ticketId, active });
+        requireActive();
+        const t = this.reloadTickets.get(ticketId);
+        const now = Date.now();
+        if (t?.sessionId !== sessionId || t.expiresAtMs <= now || t.idleExpiresAtMs <= now) {
+          if (t?.sessionId === sessionId) this.reloadTickets.delete(ticketId);
+          this.fail(404, 'not_found');
+        }
+        t.expiresAtMs = now + 3 * 60_000;
+        if (active) t.idleExpiresAtMs = now + t.idleSeconds * 1000;
+        return Promise.resolve(undefined);
+      },
+      reloadTicketRedeem: async (ticketId) => {
+        this.check({ ticketId });
+        const deviceId = requireActive();
+        const t = this.reloadTickets.get(ticketId);
+        if (t?.sessionId !== sessionId || t.deviceId !== deviceId) this.fail(404, 'not_found');
+        this.reloadTickets.delete(ticketId);
+        const now = Date.now();
+        if (t.expiresAtMs <= now || t.idleExpiresAtMs <= now) this.fail(404, 'not_found');
+        return { serverHalf: await reloadHalf(raw(ticketId), deviceId) };
+      },
+      reloadTicketDelete: () => {
+        this.check();
+        requireSession();
+        for (const [id, t] of this.reloadTickets)
+          if (t.sessionId === sessionId) this.reloadTickets.delete(id);
         return Promise.resolve(undefined);
       },
       currentDevice: () => {

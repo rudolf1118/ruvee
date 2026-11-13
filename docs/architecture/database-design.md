@@ -198,6 +198,26 @@ Each state's key is keyed BLAKE2b of the client's `loginId` under a key of the O
 (authentication.md §4.1); neither is in the database. The runtime role may select, insert and delete rows, never update
 them. At most 10,000 live states.
 
+### `reload_tickets`
+
+**Implemented** in `20261112090000_reload_tickets` (D-34, [web-reload-unlock.md](../security/web-reload-unlock.md)).
+Transient, like `login_states`: no rows in a backup, emptied by a restore.
+
+| Column            | Type                    | Class | Purpose                                                             |
+| ----------------- | ----------------------- | ----- | ------------------------------------------------------------------- |
+| `id_hash`         | bytea (32), primary key | V     | `SHA-256(tid)`; the ticket id itself is never stored                |
+| `account_id`      | uuid, FK                | M     |                                                                     |
+| `device_id`       | uuid, FK                | M     | The web device                                                      |
+| `session_id`      | uuid, FK, unique        | M     | One ticket per session; the only session that may redeem it         |
+| `idle_seconds`    | integer, 60 to 28,800   | S     | The auto-lock period (D-10)                                         |
+| `created_at`      | timestamptz             | S     |                                                                     |
+| `expires_at`      | timestamptz             | S     | 3 minutes after the last heartbeat                                  |
+| `idle_expires_at` | timestamptz             | S     | `idle_seconds` after the last heartbeat that reported user activity |
+
+The server half `H_srv` is not a column: it is recomputed from a key of the OPAQUE setup file, the
+ticket id the tab sends, the session and the device. The runtime role may select, insert, update
+and delete rows.
+
 ### `bootstrap_tokens`
 
 **Implemented** in the first migration.

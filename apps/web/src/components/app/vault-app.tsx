@@ -2,8 +2,17 @@
 
 import '@/vault/zod-config';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import type { DevicePhase, ItemDetail, ItemSummary, SyncStatus, UnlockedVault } from '@ruvee/vault';
+import { RELOAD_TICKET_HEARTBEAT_MS } from '@ruvee/contracts';
+import type {
+  DevicePhase,
+  ItemDetail,
+  ItemSummary,
+  ReloadTicket,
+  SyncStatus,
+  UnlockedVault,
+} from '@ruvee/vault';
 import { VaultClient, VaultClientError } from '@/vault/client';
+import { clearReloadTicket, storeReloadTicket, takeReloadTicket } from '@/vault/reload-ticket';
 import { askOtherTab, onHandOver, tabLockSupported, takeTabLock } from '@/vault/tab-lock';
 import { messageFor } from './messages';
 import { DevicesIcon, InfoIcon, LogoutIcon } from '../ui/icons';
@@ -31,6 +40,8 @@ import { PERSONAL_VAULT, toView } from './view-model';
 
 /** D-10, approved for development: lock after 15 minutes without interaction. */
 export const AUTO_LOCK_MS = 15 * 60_000;
+/** D-34: a reload ticket ends after the same period without activity. */
+const AUTO_LOCK_SECONDS = AUTO_LOCK_MS / 1000;
 /** While unlocked and visible, pull changes this often when there is no push channel yet. */
 const POLL_MS = 60_000;
 
@@ -84,7 +95,17 @@ export function VaultApp() {
   const start = useCallback(() => {
     const c = freshClient();
     void c.call('phase').then(
-      (phase) => {
+      async (phase) => {
+        // D-34: after a reload, this tab's ticket unlocks without the password while it lives.
+        // It is taken out of sessionStorage first: any failure shows the lock screen, once.
+        const ticket = takeReloadTicket();
+        if (phase.phase === 'enrolled' && ticket) {
+          const vault = await c.call('reloadTicketResume', ticket).catch(() => null);
+          if (vault) {
+            setScreen({ name: 'unlocked', vault });
+            return;
+          }
+        }
         setScreen(screenFor(phase));
       },
       () => {
@@ -105,7 +126,9 @@ export function VaultApp() {
         new Promise((resolve) => setTimeout(resolve, 5_000)),
       ]);
       await clearClipboard();
+      await endReloadTicket(c);
       await c?.lock();
+      clearReloadTicket();
       setScreen({ name: 'elsewhere', moved: true, waiting: false });
     });
     let active = true;
@@ -130,7 +153,10 @@ export function VaultApp() {
   const lock = useCallback(
     async (username: string, notice?: string) => {
       await clearClipboard();
+      await endReloadTicket(clientRef.current);
       await clientRef.current?.lock();
+      // Again after the worker is gone: no reply of it can store a ticket any more.
+      clearReloadTicket();
       const c = freshClient();
       // A worker that cannot start says nothing about this device: it is not a new one (F-5).
       const phase = await c.call('phase').catch(() => undefined);
@@ -339,6 +365,18 @@ export function VaultApp() {
   }
 }
 
+/**
+ * D-34, every lock path: the tab forgets its ticket, and the server is asked to forget its half
+ * (best effort, at most a second; offline, the server's limits end it within 3 minutes).
+ */
+async function endReloadTicket(c: VaultClient | null | undefined): Promise<void> {
+  clearReloadTicket();
+  await Promise.race([
+    c?.call('reloadTicketDrop').catch(() => undefined),
+    new Promise((resolve) => setTimeout(resolve, 1_000)),
+  ]);
+}
+
 function UnlockedApp({
   client,
   vault,
@@ -422,6 +460,36 @@ function UnlockedApp({
       window.removeEventListener('focus', onFocus);
     };
   }, [syncNow]);
+
+  // D-34: a reload ticket while unlocked, kept alive once a minute (web-reload-unlock.md §5).
+  useEffect(() => {
+    let stopped = false;
+    let seen = lastActivity.current;
+    const keep = (ticket: ReloadTicket | null) => {
+      if (ticket && !stopped) storeReloadTicket(ticket);
+    };
+    void client
+      .call('reloadTicketIssue', { idleSeconds: AUTO_LOCK_SECONDS })
+      .then(keep, () => undefined);
+    const beat = () => {
+      const active = lastActivity.current > seen;
+      seen = lastActivity.current;
+      void client
+        .call('reloadTicketHeartbeat', { active, idleSeconds: AUTO_LOCK_SECONDS })
+        .then(keep, () => undefined);
+    };
+    const heartbeat = setInterval(beat, RELOAD_TICKET_HEARTBEAT_MS);
+    // Back from the back-forward cache, the worker kept its keys: check the ticket at once.
+    const onShow = (event: PageTransitionEvent) => {
+      if (event.persisted) beat();
+    };
+    window.addEventListener('pageshow', onShow);
+    return () => {
+      stopped = true;
+      clearInterval(heartbeat);
+      window.removeEventListener('pageshow', onShow);
+    };
+  }, [client]);
 
   // After "Restore into a new account": the export opened before setup is imported now.
   const [importError, setImportError] = useState<string | null>(null);

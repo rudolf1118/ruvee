@@ -104,6 +104,32 @@ by the API itself, a few hundred at a time, as new ones are added. To empty both
 The instance lock stays: run one API process per database. It is now an operational guard only;
 no limit depends on it (README, "Deployment topology").
 
+### 3.2 The reload-tickets migration (`20261112090000_reload_tickets`, D-34)
+
+This migration adds one transient table, `reload_tickets`: the server side of the web reload
+ticket ([web-reload-unlock.md](../security/web-reload-unlock.md)). It converts nothing: the table
+starts empty, a backup holds its definition without rows, and a restore empties it. It changes no
+existing table. **Take an encrypted backup first** (server-backup-restore.md §3), then:
+
+1. Stop the API.
+2. As the owner: `prisma migrate deploy` (above).
+3. As the operator: `ruvee-admin grant-runtime` (above). It grants the runtime role exactly
+   `SELECT, INSERT, UPDATE, DELETE` on `reload_tickets`, and nothing else new.
+4. Start the new API build, with the same OPAQUE setup file as before: the server half of a
+   ticket is derived from it, so a different file makes every live ticket fail (the next reload
+   asks for the password; nothing else changes).
+
+If step 3 is skipped, the API fails closed: issuing, keeping and redeeming tickets, and also
+logging out, are refused with `500 internal_error` (permission denied on `reload_tickets`) until
+`grant-runtime` runs. Unlocking with the password is not affected.
+
+**Rollback** to a build without D-34: stop the API; as the owner, run
+`apps/api/prisma/migrations/20261112090000_reload_tickets/down.sql` (it drops the table and its
+migration row; tickets are transient, so nothing is lost but the next reload asks for the
+password); as the operator, run the older build's `grant-runtime`; start the older build. Both
+steps are needed: the older build's `grant-runtime` refuses a database with a table it does not
+list, and its restore refuses the newer schema fingerprint.
+
 ## 4. Moving an existing database (set up before F-25)
 
 Before F-25 the API connected as one administrator role that owned everything. Do this during a
