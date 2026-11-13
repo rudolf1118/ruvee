@@ -4,6 +4,7 @@ import { INLINE_ORIGINS } from '../inline/gate';
 import type { InlineSettings, SetInlineResult, SetServerResult, Status } from '../messages';
 import { fillableOrigin } from '../origin';
 import { call, messageFor } from './client';
+import { Header } from './parts';
 
 const RESULT_TEXT: Record<Exclude<SetServerResult, 'saved'>, string> = {
   not_an_origin:
@@ -66,44 +67,51 @@ function Options() {
 
   return (
     <main className="options">
-      <h1>Ruvee settings</h1>
-      {stale ? (
-        <p role="alert" className="error">
-          Ruvee was updated, but the browser is still running the previous version.{' '}
-          <button
-            type="button"
-            onClick={() => {
-              chrome.runtime.reload();
-            }}
-          >
-            Reload Ruvee
-          </button>
-        </p>
-      ) : null}
-      <p className="badge">Development build, not reviewed. Use synthetic data only.</p>
-      <form onSubmit={submit}>
-        <label>
-          Server address
-          <input
-            value={text}
-            placeholder="https://vault.example"
-            spellCheck={false}
-            onChange={(e) => {
-              setText(e.target.value);
-            }}
-          />
-        </label>
-        {current ? <p className="muted">Current server: {current}</p> : null}
-        {message ? (
-          <p role={message.tone === 'error' ? 'alert' : 'status'} className={message.tone}>
-            {message.text}
+      <Header server={current} lock={null} title="Settings" />
+      <div className="options-body">
+        <h1>Ruvee settings</h1>
+        {stale ? (
+          <p role="alert" className="error">
+            Ruvee was updated, but the browser is still running the previous version.{' '}
+            <button
+              type="button"
+              className="btn btn-secondary btn-sm"
+              onClick={() => {
+                chrome.runtime.reload();
+              }}
+            >
+              Reload Ruvee
+            </button>
           </p>
         ) : null}
-        <button type="submit" className="primary">
-          Save
-        </button>
-      </form>
-      <Inline />
+        <p className="dev-note">Development build, not reviewed. Use synthetic data only.</p>
+        <form onSubmit={submit} className="card" aria-labelledby="server-heading">
+          <h2 id="server-heading">Server</h2>
+          <label>
+            Server address
+            <input
+              value={text}
+              placeholder="https://vault.example"
+              spellCheck={false}
+              onChange={(e) => {
+                setText(e.target.value);
+              }}
+            />
+          </label>
+          {current ? <p className="muted">Current server: {current}</p> : null}
+          {message ? (
+            <p role={message.tone === 'error' ? 'alert' : 'status'} className={message.tone}>
+              {message.text}
+            </p>
+          ) : null}
+          <div className="actions">
+            <button type="submit" className="btn btn-primary">
+              Save
+            </button>
+          </div>
+        </form>
+        <Inline />
+      </div>
     </main>
   );
 }
@@ -181,9 +189,9 @@ function Inline() {
   };
 
   return (
-    <section aria-labelledby="inline-heading">
+    <section className="card" aria-labelledby="inline-heading">
       <h2 id="inline-heading">Fill from login fields</h2>
-      <p>
+      <p className="muted">
         Shows the Ruvee icon in login fields. Clicking it opens Ruvee, where you choose what to
         fill, as from the toolbar. Ruvee never fills by itself and never asks for your master
         password inside a web page.
@@ -193,8 +201,8 @@ function Inline() {
         installed, but not whether it is unlocked or has a login for them.
       </p>
       {enabled === null ? null : (
-        <p>
-          Status: <strong>{enabled ? 'on' : 'off'}</strong>
+        <p className="muted">
+          Status: <strong className={enabled ? 'pill on' : 'pill'}>{enabled ? 'on' : 'off'}</strong>
         </p>
       )}
       {message ? (
@@ -203,14 +211,18 @@ function Inline() {
         </p>
       ) : null}
       {enabled === false ? (
-        <button type="button" className="primary" onClick={turnOn}>
-          Turn on
-        </button>
+        <div className="actions">
+          <button type="button" className="btn btn-primary" onClick={turnOn}>
+            Turn on
+          </button>
+        </div>
       ) : null}
       {enabled === true ? (
-        <button type="button" onClick={turnOff}>
-          Turn off
-        </button>
+        <div className="actions">
+          <button type="button" className="btn btn-secondary" onClick={turnOff}>
+            Turn off
+          </button>
+        </div>
       ) : null}
     </section>
   );

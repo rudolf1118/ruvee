@@ -2,6 +2,7 @@ import type { DevicePhase, PairingJoinStatus, SyncStatus } from '@ruvee/vault';
 import { type SubmitEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type {
+  Candidate,
   Candidates,
   FillOutcome,
   PairingView,
@@ -17,6 +18,20 @@ import {
   pairingMessageFor,
   stepMessageFor,
 } from './client';
+import { storedServerOrigin } from './open-web';
+import {
+  AlertIcon,
+  CopyIcon,
+  DevTag,
+  GlobeIcon,
+  Header,
+  KeyIcon,
+  LockIcon,
+  type LockState,
+  OpenRuvee,
+  SettingsIcon,
+  StateCard,
+} from './parts';
 
 const PAIRING_POLL_MS = 2000;
 
@@ -40,9 +55,12 @@ interface Screen {
 function Popup() {
   const [screen, setScreen] = useState<Screen>({ name: 'loading' });
   const [error, setError] = useState<string | null>(null);
+  // The paired server, for "Open Ruvee"; null hides the button.
+  const [server, setServer] = useState<string | null>(null);
 
   const refresh = useCallback(() => {
     const next = (status: Status): Promise<Screen> => {
+      setServer(status.serverOrigin);
       // A worker from another build (files replaced without a reload) does not know this
       // popup's messages; nothing else is sent to it.
       if (status.build !== __RUVEE_BUILD__) return Promise.resolve({ name: 'stale' });
@@ -56,64 +74,113 @@ function Popup() {
       .then(next)
       .then(setScreen, (e: unknown) => {
         setError(stepMessageFor('status', e));
+        // The worker did not answer; the address stored at pairing still opens the web vault.
+        void storedServerOrigin().then(setServer);
       });
   }, []);
 
   useEffect(refresh, [refresh]);
 
+  const lock: LockState =
+    screen.name === 'unlocked' ? 'unlocked' : screen.name === 'locked' ? 'locked' : null;
+
   return (
-    <main>
-      <header>
-        <strong>Ruvee</strong>
-        <span className="badge">Development build</span>
-      </header>
-      {error ? (
-        <p role="alert" className="error">
-          {error}
-        </p>
-      ) : null}
-      {screen.name === 'loading' ? <p aria-busy="true">Loading…</p> : null}
-      {screen.name === 'stale' ? (
-        <section>
-          <p role="alert" className="error">
-            Ruvee was updated, but the browser is still running the previous version. Reload it to
-            finish the update (or press Reload on its card in chrome://extensions). The vault locks;
-            unlock it again afterwards.
+    <main className="popup">
+      <Header server={server} lock={lock} />
+      <div className="content">
+        {error ? (
+          <StateCard
+            tone="danger"
+            icon={<AlertIcon />}
+            title="Ruvee could not start"
+            action={
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                onClick={() => {
+                  setError(null);
+                  refresh();
+                }}
+              >
+                Try again
+              </button>
+            }
+          >
+            <p role="alert" className="state-body">
+              {error}
+            </p>
+          </StateCard>
+        ) : null}
+        {screen.name === 'loading' && !error ? (
+          <p aria-busy="true" className="muted center">
+            Loading…
           </p>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => {
-              chrome.runtime.reload();
+        ) : null}
+        {screen.name === 'stale' ? (
+          <StateCard
+            tone="danger"
+            icon={<AlertIcon />}
+            title="Finish the update"
+            action={
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                onClick={() => {
+                  chrome.runtime.reload();
+                }}
+              >
+                Reload Ruvee
+              </button>
+            }
+          >
+            <p role="alert" className="state-body">
+              Ruvee was updated, but the browser is still running the previous version. Reload it to
+              finish the update (or press Reload on its card in chrome://extensions). The vault
+              locks; unlock it again afterwards.
+            </p>
+          </StateCard>
+        ) : null}
+        {screen.name === 'no-server' ? (
+          <StateCard
+            icon={<GlobeIcon />}
+            title="Connect your Ruvee server"
+            action={
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                onClick={() => void chrome.runtime.openOptionsPage()}
+              >
+                Open settings
+              </button>
+            }
+          >
+            <p className="state-body">Choose your Ruvee server first.</p>
+          </StateCard>
+        ) : null}
+        {screen.name === 'login' ? <Login onDone={refresh} /> : null}
+        {screen.name === 'pending' ? (
+          <Pair
+            onDone={refresh}
+            onRestart={() => {
+              setScreen({ name: 'login' });
             }}
-          >
-            Reload Ruvee
-          </button>
-        </section>
-      ) : null}
-      {screen.name === 'no-server' ? (
-        <section>
-          <p>Choose your Ruvee server first.</p>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => void chrome.runtime.openOptionsPage()}
-          >
-            Open settings
-          </button>
-        </section>
-      ) : null}
-      {screen.name === 'login' ? <Login onDone={refresh} /> : null}
-      {screen.name === 'pending' ? (
-        <Pair
-          onDone={refresh}
-          onRestart={() => {
-            setScreen({ name: 'login' });
-          }}
-        />
-      ) : null}
-      {screen.name === 'locked' ? <Unlock onDone={refresh} /> : null}
-      {screen.name === 'unlocked' ? <Fill onLocked={refresh} /> : null}
+          />
+        ) : null}
+        {screen.name === 'locked' ? <Unlock onDone={refresh} /> : null}
+        {screen.name === 'unlocked' ? <Fill onLocked={refresh} server={server} /> : null}
+      </div>
+      <footer className="foot">
+        <DevTag />
+        <button
+          type="button"
+          className="btn btn-ghost btn-icon"
+          aria-label="Settings"
+          title="Settings"
+          onClick={() => void chrome.runtime.openOptionsPage()}
+        >
+          <SettingsIcon />
+        </button>
+      </footer>
     </main>
   );
 }
@@ -149,9 +216,13 @@ function Login({ onDone }: { onDone: () => void }) {
         onDone();
       })}
     >
-      <p>
-        Log in with your Ruvee account. Then add this browser from a device that is already set up.
-      </p>
+      <div className="form-head">
+        <p className="state-title">Log in to Ruvee</p>
+        <p className="muted">
+          Log in with your Ruvee account. Then add this browser from a device that is already set
+          up.
+        </p>
+      </div>
       <label>
         Username
         <input
@@ -174,11 +245,11 @@ function Login({ onDone }: { onDone: () => void }) {
         />
       </label>
       {error ? (
-        <p role="alert" className="error">
+        <p role="alert" className="notice error">
           {error}
         </p>
       ) : null}
-      <button type="submit" className="primary" aria-disabled={busy || undefined}>
+      <button type="submit" className="btn btn-primary btn-block" aria-disabled={busy || undefined}>
         {busy ? 'Logging in…' : 'Log in'}
       </button>
     </form>
@@ -250,21 +321,23 @@ function Pair({ onDone, onRestart }: { onDone: () => void; onRestart: () => void
   // What stopped the last join, or this screen's own call; either may need a new login.
   const problem = failure ?? (view.problem === null ? null : new CallError(view.problem));
   const alert = problem ? (
-    <p role="alert" className="error">
+    <p role="alert" className="notice error">
       {pairingMessageFor(problem)}
     </p>
   ) : null;
   const restart =
     problem && PAIRING_RESTART_CODES.has(problem.code) ? (
-      <button type="button" onClick={onRestart}>
+      <button type="button" className="btn btn-secondary btn-block" onClick={onRestart}>
         Log in again
       </button>
     ) : null;
 
   if (view.state === 'joined')
     return (
-      <section>
-        <p role="status">Waiting for approval on your other device…</p>
+      <section className="stack">
+        <p role="status" className="state-title">
+          Waiting for approval on your other device…
+        </p>
         <p className="muted">You can close this window; Ruvee finishes adding this browser.</p>
         {view.needsPassword ? (
           <form
@@ -288,10 +361,14 @@ function Pair({ onDone, onRestart }: { onDone: () => void; onRestart: () => void
                   setPassword(e.target.value);
                 }}
               />
-              <span className="muted">Needed once more to finish adding this browser.</span>
+              <span className="hint">Needed once more to finish adding this browser.</span>
             </label>
             {alert}
-            <button type="submit" className="primary" aria-disabled={busy || undefined}>
+            <button
+              type="submit"
+              className="btn btn-primary btn-block"
+              aria-disabled={busy || undefined}
+            >
               {busy ? 'Finishing…' : 'Finish adding this browser'}
             </button>
           </form>
@@ -313,10 +390,13 @@ function Pair({ onDone, onRestart }: { onDone: () => void; onRestart: () => void
         setPassword('');
       })}
     >
-      <p>
-        On a device that is already set up, open <strong>Devices</strong>, choose{' '}
-        <strong>Add a device</strong>, and type the code it shows here.
-      </p>
+      <div className="form-head">
+        <p className="state-title">Add this browser</p>
+        <p className="muted">
+          On a device that is already set up, open <strong>Devices</strong>, choose{' '}
+          <strong>Add a device</strong>, and type the code it shows here.
+        </p>
+      </div>
       <label>
         Pairing code
         <input
@@ -343,7 +423,7 @@ function Pair({ onDone, onRestart }: { onDone: () => void; onRestart: () => void
         </label>
       ) : null}
       {alert}
-      <button type="submit" className="primary" aria-disabled={busy || undefined}>
+      <button type="submit" className="btn btn-primary btn-block" aria-disabled={busy || undefined}>
         {busy ? 'Sending…' : 'Add this browser'}
       </button>
       {restart}
@@ -379,7 +459,13 @@ function Unlock({ onDone }: { onDone: () => void }) {
         onDone();
       })}
     >
-      <p>Your vault is locked.</p>
+      <div className="locked-head">
+        <span className="state-icon">
+          <LockIcon size={22} />
+        </span>
+        <p className="state-title">Your vault is locked.</p>
+        <p className="muted">Enter your master password to fill logins on this page.</p>
+      </div>
       <label>
         Master password
         <input
@@ -403,15 +489,15 @@ function Unlock({ onDone }: { onDone: () => void }) {
               setPrevious(e.target.value);
             }}
           />
-          <span className="muted">The one this browser used before the change. Needed once.</span>
+          <span className="hint">The one this browser used before the change. Needed once.</span>
         </label>
       )}
       {error ? (
-        <p role="alert" className="error">
+        <p role="alert" className="notice error">
           {error}
         </p>
       ) : null}
-      <button type="submit" className="primary" aria-disabled={busy || undefined}>
+      <button type="submit" className="btn btn-primary btn-block" aria-disabled={busy || undefined}>
         {busy ? 'Unlocking…' : 'Unlock'}
       </button>
     </form>
@@ -445,7 +531,7 @@ const FILL_TEXT: Record<FillOutcome, string> = {
 };
 
 /** extension-design.md §4: logins saved for exactly this page's origin, filled on request. */
-function Fill({ onLocked }: { onLocked: () => void }) {
+function Fill({ onLocked, server }: { onLocked: () => void; server: string | null }) {
   const [tabId, setTabId] = useState<number | null>(null);
   const [found, setFound] = useState<Candidates | null>(null);
   const [pending, setPending] = useState<PendingSave | null>(null);
@@ -529,95 +615,161 @@ function Fill({ onLocked }: { onLocked: () => void }) {
       });
   };
 
+  const fill = (item: Candidate) => {
+    if (tabId === null) return;
+    setNotice(null);
+    call<FillOutcome>({ kind: 'fill', tabId, itemId: item.id }).then((outcome) => {
+      setNotice(FILL_TEXT[outcome]);
+      if (outcome === 'gone') void list(tabId);
+    }, failed('fill'));
+  };
+
+  // The username only: it is already on screen. The password never reaches the popup.
+  const copyUsername = (item: Candidate) => {
+    setNotice(null);
+    navigator.clipboard.writeText(item.username).then(
+      () => {
+        setNotice('Username copied.');
+      },
+      () => {
+        setError('The browser did not allow copying. Select the username and copy it instead.');
+      },
+    );
+  };
+
   return (
-    <section>
+    <section className="stack">
       {pending ? (
         // extension-inline-autofill.md §5.2: the only place a save is offered (never in the page).
         <div className="save-offer" role="group" aria-labelledby="save-offer-title">
-          <p id="save-offer-title">
-            Save this login for <strong>{pending.origin}</strong>?
-          </p>
-          <p className="muted">
-            {pending.username === '' ? 'No username' : `Username: ${pending.username}`}. The
-            password stays hidden.
-          </p>
-          <button
-            type="button"
-            className="primary"
-            onClick={() => {
-              answerSave(true);
-            }}
-          >
-            Save login
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              answerSave(false);
-            }}
-          >
-            Not now
-          </button>
+          <span className="save-icon" aria-hidden="true">
+            <KeyIcon />
+          </span>
+          <div className="save-body">
+            <p id="save-offer-title" className="save-title">
+              Save this login for <strong>{pending.origin}</strong>?
+            </p>
+            <p className="muted">
+              {pending.username === '' ? 'No username' : `Username: ${pending.username}`}. The
+              password stays hidden.
+            </p>
+            <div className="actions">
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                onClick={() => {
+                  answerSave(true);
+                }}
+              >
+                Save login
+              </button>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                onClick={() => {
+                  answerSave(false);
+                }}
+              >
+                Not now
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
       {found?.origin ? (
-        <p className="origin">
+        <p className="site">
           Logins for <strong>{found.origin}</strong>
         </p>
-      ) : found ? (
-        <p>Ruvee fills only HTTPS pages (and loopback addresses during development).</p>
-      ) : (
-        <p aria-busy="true">Looking for logins…</p>
+      ) : found ? null : (
+        <p aria-busy="true" className="muted center">
+          Looking for logins…
+        </p>
       )}
       {error ? (
-        <p role="alert" className="error">
+        <p role="alert" className="notice error">
           {error}
         </p>
       ) : null}
-      {notice ? <p role="status">{notice}</p> : null}
-      {found?.origin && found.items.length === 0 ? (
-        <p>No login is saved for exactly this address.</p>
+      {notice ? (
+        <p role="status" className="notice ok">
+          {notice}
+        </p>
       ) : null}
-      <ul>
+      {found && !found.origin ? (
+        <StateCard icon={<GlobeIcon />} title="Nothing to fill here">
+          <p className="state-body">
+            Ruvee fills only HTTPS pages (and loopback addresses during development).
+          </p>
+        </StateCard>
+      ) : null}
+      {found?.origin && found.items.length === 0 ? (
+        <StateCard
+          icon={<KeyIcon />}
+          title="No logins for this site"
+          action={<OpenRuvee server={server} label="Add one in Ruvee" />}
+        >
+          <p className="state-body">No login is saved for exactly this address.</p>
+        </StateCard>
+      ) : null}
+      <ul className="logins">
         {found?.items.map((item) => (
           <li key={item.id}>
-            <span>
-              <strong>{item.title}</strong>
-              <span className="muted">{item.username}</span>
+            <span className="avatar" aria-hidden="true">
+              {(item.title.trim().charAt(0) || '?').toUpperCase()}
             </span>
-            <button
-              type="button"
-              aria-label={`Fill ${item.title}`}
-              onClick={() => {
-                if (tabId === null) return;
-                setNotice(null);
-                call<FillOutcome>({ kind: 'fill', tabId, itemId: item.id }).then((outcome) => {
-                  setNotice(FILL_TEXT[outcome]);
-                  if (outcome === 'gone') void list(tabId);
-                }, failed('fill'));
-              }}
-            >
-              Fill
-            </button>
+            <span className="login-text">
+              <strong>{item.title}</strong>
+              <span className="muted">{item.username === '' ? 'No username' : item.username}</span>
+            </span>
+            <span className="row-actions">
+              {item.username === '' ? null : (
+                <button
+                  type="button"
+                  className="btn btn-ghost btn-icon"
+                  aria-label={`Copy username for ${item.title}`}
+                  title="Copy username"
+                  onClick={() => {
+                    copyUsername(item);
+                  }}
+                >
+                  <CopyIcon />
+                </button>
+              )}
+              <button
+                type="button"
+                className="btn btn-primary btn-sm"
+                aria-label={`Fill ${item.title}`}
+                onClick={() => {
+                  fill(item);
+                }}
+              >
+                Fill
+              </button>
+            </span>
           </li>
         ))}
       </ul>
-      <button
-        type="button"
-        onClick={() => {
-          void call({ kind: 'lock' }).then(onLocked);
-        }}
-      >
-        Lock
-      </button>
-      <button
-        type="button"
-        onClick={() => {
-          void call({ kind: 'vault', method: 'logout' }).finally(onLocked);
-        }}
-      >
-        Log out
-      </button>
+      <div className="actions spread">
+        <button
+          type="button"
+          className="btn btn-secondary btn-sm"
+          onClick={() => {
+            void call({ kind: 'lock' }).then(onLocked);
+          }}
+        >
+          <LockIcon size={14} />
+          Lock
+        </button>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm"
+          onClick={() => {
+            void call({ kind: 'vault', method: 'logout' }).finally(onLocked);
+          }}
+        >
+          Log out
+        </button>
+      </div>
     </section>
   );
 }
