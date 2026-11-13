@@ -777,7 +777,7 @@ async function addLoginInWeb(title: string, password: string): Promise<void> {
     .getByLabel('Username or email')
     .fill(`${title.toLowerCase().replace(/ /g, '-')}@portal.example`);
   await web.getByRole('textbox', { name: 'Password', exact: true }).fill(password);
-  await web.getByRole('button', { name: 'Save' }).click();
+  await web.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(web.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
     timeout: 15_000,
   });
