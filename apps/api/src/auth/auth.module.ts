@@ -7,6 +7,8 @@ import { DatabaseModule } from '../database/database.module.js';
 import { MaintenanceService } from '../maintenance/maintenance.service.js';
 import { PairingController } from '../pairing/pairing.controller.js';
 import { PairingService } from '../pairing/pairing.service.js';
+import { ReloadTicketsController } from '../reload-tickets/reload-tickets.controller.js';
+import { ReloadTicketsService } from '../reload-tickets/reload-tickets.service.js';
 import { RecoveryController } from '../recovery/recovery.controller.js';
 import { RecoveryService } from '../recovery/recovery.service.js';
 import { ReopenController } from '../reopen/reopen.controller.js';
@@ -34,6 +36,7 @@ import { ThrottleService } from './throttle.service.js';
     RecoveryController,
     ReopenController,
     AccountSecurityController,
+    ReloadTicketsController,
   ],
   providers: [
     AuthService,
@@ -49,6 +52,7 @@ import { ThrottleService } from './throttle.service.js';
     ReopenService,
     AccountSecurityService,
     ProofService,
+    ReloadTicketsService,
     { provide: APP_GUARD, useClass: AccessGuard },
   ],
   exports: [SessionService, SecurityEventsService, ThrottleService],

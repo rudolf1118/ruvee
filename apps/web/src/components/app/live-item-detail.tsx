@@ -20,6 +20,7 @@ import { KIND_LABELS } from '../vault/filter';
 import { copySecret } from './clipboard';
 import { Notice } from './fields';
 import { messageFor } from './messages';
+import { TotpRow } from './totp';
 import { relativeTime, safeHref } from './view-model';
 
 const MASK = '••••••••••••';
@@ -429,6 +430,9 @@ export function LiveItemDetail({
                     )}
                   </span>
                 </Row>
+              ) : null}
+              {detail.hasTotp && !detail.trashed ? (
+                <TotpRow client={client} itemId={itemId} />
               ) : null}
               {detail.urls.length > 0 ? (
                 <Row

@@ -17,6 +17,7 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   items: (e) => e.items(),
   detail: (e, p: Parameters<VaultEngine['detail']>[0]) => e.detail(p),
   secret: (e, p: Parameters<VaultEngine['secret']>[0]) => e.secret(p),
+  totp: (e, p: Parameters<VaultEngine['totp']>[0]) => e.totp(p),
   save: (e, p: Parameters<VaultEngine['save']>[0]) => e.save(p),
   setFavorite: (e, p: Parameters<VaultEngine['setFavorite']>[0]) => e.setFavorite(p),
   trash: (e, p: Parameters<VaultEngine['trash']>[0]) => e.trash(p),
@@ -61,6 +62,13 @@ const HANDLERS: Record<VaultMethod, Handler> = {
   exportLocal: (e, p: Parameters<VaultEngine['exportLocal']>[0]) => e.exportLocal(p),
   startOver: (e, p: Parameters<VaultEngine['startOver']>[0]) => e.startOver(p),
   logout: (e) => e.logout(),
+  reloadTicketIssue: (e, p: Parameters<VaultEngine['reloadTicketIssue']>[0]) =>
+    e.reloadTicketIssue(p),
+  reloadTicketResume: (e, p: Parameters<VaultEngine['reloadTicketResume']>[0]) =>
+    e.reloadTicketResume(p),
+  reloadTicketHeartbeat: (e, p: Parameters<VaultEngine['reloadTicketHeartbeat']>[0]) =>
+    e.reloadTicketHeartbeat(p),
+  reloadTicketDrop: (e) => e.reloadTicketDrop(),
   settle: async (e) => {
     await e.idle();
     return true;

@@ -21,6 +21,7 @@
     "e2e-vault/**/*.ts",
     "e2e-import/**/*.ts",
     "e2e-restore/**/*.ts",
+    "e2e-reload/**/*.ts",
     "*.ts",
     ".next/types/**/*.ts",
     ".next/dev/types/**/*.ts"

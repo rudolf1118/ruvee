@@ -431,10 +431,14 @@ export class SessionService {
     };
   }
 
+  /** Also deletes the session's web reload ticket (D-34, INV-25): logout ends it at once. */
   async revoke(sessionId: string, reason: RevokeReason, now = new Date()): Promise<void> {
-    await this.prisma.session.updateMany({
-      where: { id: sessionId, revokedAt: null },
-      data: { revokedAt: now, revokeReason: reason },
-    });
+    await this.prisma.$transaction([
+      this.prisma.session.updateMany({
+        where: { id: sessionId, revokedAt: null },
+        data: { revokedAt: now, revokeReason: reason },
+      }),
+      this.prisma.reloadTicket.deleteMany({ where: { sessionId } }),
+    ]);
   }
 }

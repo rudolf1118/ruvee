@@ -30,6 +30,7 @@ const SECRET_OUTPUTS: Partial<Record<keyof RuveeCrypto, (out: unknown) => [strin
     deriveAccountUnlockKey: (k) => [['AUK', k as Uint8Array]],
     unwrapAccountKey: (k) => [['AK (password wrap)', k as Uint8Array]],
     unwrapAccountKeyForRecovery: (k) => [['AK (recovery wrap)', k as Uint8Array]],
+    openReloadTicket: (k) => [['AK (reload ticket)', k as Uint8Array]],
     openKeyset: (k) => {
       const keyset = k as { secretKey: Uint8Array; vaults: readonly { vk: Uint8Array }[] };
       return [
@@ -284,6 +285,32 @@ describe('F-19: key lifetimes in the client engine', () => {
       expect(await code(d.engine.resume({ accountKey: wrong }))).toBe('locked');
       expect(d.captured.live()).toEqual([]);
       wrong.fill(0);
+    });
+  });
+
+  describe('web reload (D-34)', () => {
+    it('a resume from a reload ticket keeps only the keys its session uses', async () => {
+      const { server, a } = await account();
+      const ticket = await a.engine.reloadTicketIssue({ idleSeconds: 900 });
+      if (!ticket) throw new Error('no ticket');
+      a.engine.wipeMemory();
+      const d = await reopen(server, a);
+      await d.engine.reloadTicketResume(ticket);
+      // The opened AK was the caller's copy; `resume` keeps its own.
+      expect(d.captured.live()).toEqual(['keyset VK', 'stored SK']);
+      d.engine.wipeMemory();
+      expect(d.captured.live()).toEqual([]);
+    });
+
+    it('a ticket that does not resume leaves nothing', async () => {
+      const { server, a } = await account();
+      const ticket = await a.engine.reloadTicketIssue({ idleSeconds: 900 });
+      if (!ticket) throw new Error('no ticket');
+      a.engine.wipeMemory();
+      server.reloadTickets.clear();
+      const d = await reopen(server, a);
+      expect(await code(d.engine.reloadTicketResume(ticket))).toBe('locked');
+      expect(d.captured.live()).toEqual([]);
     });
   });
 

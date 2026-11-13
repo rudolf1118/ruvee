@@ -5,8 +5,11 @@ describe('popup error text', () => {
     expect(stepMessageFor('pendingSave', new CallError('internal'))).toBe(
       'Something went wrong. Try again. (pendingSave: internal)',
     );
-    expect(stepMessageFor('sync', new Error('boom'))).toBe(
+    expect(stepMessageFor('sync', new CallError('internal'))).toBe(
       'Something went wrong. Try again. (sync: internal)',
+    );
+    expect(stepMessageFor('fill', new Error('boom'))).toBe(
+      'Something went wrong. Try again. (fill: internal)',
     );
   });
 
@@ -14,5 +17,10 @@ describe('popup error text', () => {
     expect(stepMessageFor('sync', new CallError('offline'))).toBe(
       messageFor(new CallError('offline')),
     );
+  });
+
+  it('says plainly that an item is gone', () => {
+    expect(messageFor(new CallError('not_found'))).toMatch(/no longer in your vault/);
+    expect(stepMessageFor('fill', new CallError('not_found'))).toMatch(/no longer in your vault/);
   });
 });

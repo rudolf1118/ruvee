@@ -4,10 +4,12 @@
  * runs it in its own isolated context (a web worker, the extension service worker).
  */
 export * from './api.js';
+export * from './clock.js';
 export * from './dispatch.js';
 export * from './export-file.js';
 export * from './item-schema.js';
 export * from './password-policy.js';
 export * from './protocol.js';
 export * from './store.js';
+export * from './totp.js';
 export * from './vault-engine.js';
