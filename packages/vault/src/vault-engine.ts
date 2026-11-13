@@ -500,6 +500,9 @@ export class VaultEngine {
           // or setup failing after `AK` was in place; follow-up review F-12), and one that a
           // lock overtook keeps nothing at all (F-13; the success path below did this already).
           if (this.session !== before || this.generation !== generation) this.clearMemory();
+          // Locked while it ran: whatever failed after that (an envelope opened under a zeroed
+          // key, a request signed with one) failed because of the lock, which is the answer.
+          if (this.generation !== generation) throw new VaultError('locked');
           throw error;
         }
         // Locked while it ran: nothing it unlocked or derived may outlive the lock (R19).

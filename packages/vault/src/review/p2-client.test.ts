@@ -176,6 +176,42 @@ describe('REVIEW R19 (regression): a lock during an operation leaves nothing unl
     expect(view.sync.state).toBe('synced');
   });
 
+  it('an unlock the lock overtakes after its session exists reports "locked", not what then failed', async () => {
+    const { server, a } = await account();
+    // An unsent change, so the unlock opens a local envelope under AK after installing the session.
+    server.offline = true;
+    await a.engine.save({ draft: note('Unsent') });
+    server.offline = false;
+    a.engine.wipeMemory();
+    let reached!: () => void;
+    let release!: () => void;
+    const atRecords = new Promise<void>((resolve) => (reached = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const wrapStore = (store: DeviceStore) =>
+      new Proxy(store, {
+        get(target, key, receiver) {
+          const value = Reflect.get(target, key, receiver) as unknown;
+          if (typeof value !== 'function') return value;
+          const method = value as (...args: unknown[]) => Promise<unknown>;
+          if (key !== 'records') return method.bind(target);
+          return async (...args: unknown[]) => {
+            reached();
+            await gate;
+            return method.apply(target, args);
+          };
+        },
+      });
+    const b = await device(server, { factory: a.factory, wrapStore });
+    const unlocking = b.engine.unlock({ password: PASSWORD });
+    await atRecords;
+    b.engine.wipeMemory();
+    release();
+    // Before: the local envelope failed to open under the zeroed AK and that crypto error was
+    // reported, which the extension's popup showed as "internal" (CI flake of the R19 e2e test).
+    expect(await code(unlocking)).toBe('locked');
+    expect(() => b.engine.accountKeyForResume()).toThrow();
+  });
+
   it('a sync caught by the lock does not seal records under the zeroed keys', async () => {
     const { server, a } = await account();
     await a.engine.save({ draft: note('Before') });
