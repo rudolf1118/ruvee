@@ -1,10 +1,11 @@
 # Extension inline fill, save and generate: design and threat-model addendum
 
-Status: **D-33 approved by the owner for development (2026-11-12). Not implemented, not
-independently reviewed.** The owner accepted the recommendation in §9 as a whole: opt-in
-permission for `https:` sites, the installed-extension disclosure in §4, option I1 first, vault
-writes from the extension with the previous password kept on update, and the order A, B, C, D.
-Phase E (an in-page menu) and cross-origin frame fill remain separate, undecided questions.
+Status: **D-33 approved by the owner for development (2026-11-12). Phase A implemented for
+development (2026-11-12, §8.1); phases B to D not started. Not independently reviewed.** The
+owner accepted the recommendation in §9 as a whole: opt-in permission for `https:` sites, the
+installed-extension disclosure in §4, option I1 first, vault writes from the extension with the
+previous password kept on update, and the order A, B, C, D. Phase E (an in-page menu) and
+cross-origin frame fill remain separate, undecided questions.
 [extension-design.md](extension-design.md) stays the rule for the code until each phase lands:
 the rules in §7 change in the pull request that implements the phase that needs them.
 
@@ -53,10 +54,12 @@ ways to build F1:
 
 **Recommendation: I1 first.** It gives the "click the icon in the field" experience while every
 decision that matters (which login, save, update, use this password) stays in the popup, which the
-page cannot cover or fake inside the browser's toolbar UI. `chrome.action.openPopup()` must be
-confirmed in a spike on the minimum Chrome version (it needs a focused window and is not available
-on every channel or version); if it is unavailable, the icon highlights the toolbar action and the
-user clicks it, which is the current flow. I2 is a later, separate decision (Phase E in §7), taken
+page cannot cover or fake inside the browser's toolbar UI. A spike on 2026-11-12 confirmed
+that `chrome.action.openPopup()`, called by the service worker on a message from a content
+script's click, opens the popup in Playwright's Chromium 156, headless and headed. It was not
+tried on older versions (the manifest's minimum is 120): where it fails (an older browser, an
+unfocused window), the worker puts a badge on the toolbar button for that tab and the user clicks
+it, which is the current flow. I2 is a later, separate decision (Phase E in §7), taken
 only if I1 proves too awkward; I3 is rejected for anything that shows vault data.
 
 The public research this must survive: DOM-based clickjacking of password-manager inline menus
@@ -78,9 +81,10 @@ These stay as strict as manual fill, and are now enforced for content-script mes
   array. No subdomain, registrable-domain or public-suffix matching. A user who wants a login on
   `login.example.com` and `example.com` adds both URLs to the item. (T-20 mentions the public
   suffix list; under this design it is not used for matching, and T-20's wording should say so.)
-- **Top frame only, unchanged.** The content script runs with `all_frames: true` so it can see a
-  login form in a same-origin frame, but a fill, a save or an update is accepted only when the
-  frame's origin equals the top-level origin. Cross-origin frames get no icon, no save prompt and no
+- **Top frame only, unchanged.** Phase A registers the content script for the top frame only
+  (`allFrames: false`), because the fill reaches only the top frame; an icon in a same-origin
+  frame would open a popup that cannot fill it. If later phases run it in frames, a fill, a save
+  or an update is accepted only when the frame's origin equals the top-level origin. Cross-origin frames get no icon, no save prompt and no
   fill. A per-item "also fill in frames from X" setting is a possible later decision, not part of
   D-33.
 - **Re-check at every step.** The origin is read when the icon is clicked, when the popup lists
@@ -226,6 +230,41 @@ content-script registration, field detection, the icon, the content-script messa
   without a click in the popup; a field swapped after the icon click is not filled; a content
   script's forged `fill` or vault message is refused; revoking the permission unregisters the
   script.
+
+### 8.1 Phase A as built (2026-11-12)
+
+- `src/content.ts`, built to `content.js` and registered with
+  `chrome.scripting.registerContentScripts` (top frame, `document_idle`, isolated world) only
+  after the user chooses **Turn on** under "Fill from login fields" in the options page and the
+  browser grants `https://*/*` (the test build: `http://127.0.0.1/*`). **Turn off** unregisters it
+  and gives the permission back, then checks the server origin's permission is still there and
+  says so if it is not. On every start, and when a permission is removed in the browser's own
+  settings, the worker re-registers or unregisters to match the setting and the permission.
+- The icon (the brand mark, inline SVG) sits in a closed shadow root, on each password field and
+  the username field before it in the same form (`src/inline/detect.ts`, the fill function's
+  rule), hidden when the field is not visible or too small. The script never sends a message on
+  its own; only a click with `isTrusted` sends `{ kind: 'inlineOpen' }`, at most once a second.
+- The worker answers that one message on a separate path (`src/inline/gate.ts`): this extension,
+  not its own pages, `frameId` 0, a fillable origin that equals the tab's, inline fill on, the
+  tab active and still on that origin. It opens the popup and replies `null` in every case. A
+  content-script message never counts as activity for auto-lock and never reaches the vault
+  channel, which still drops every sender but the extension's own pages.
+- Unit tests: the sender gate and the one-message schema, field detection (login, sign-up,
+  other form, disabled, read-only, shadow roots and frames skipped), and the content script
+  (closed shadow root, no message on load, untrusted clicks ignored, icon restored after the page
+  removes it).
+- Browser test (`e2e/extension.spec.ts`, "inline icon (phase A)"): no script before opt-in; the
+  icon after it; the page's whole markup **identical** when unlocked with a match, unlocked
+  without one and locked, and the reply to the content script identical too; the user's click
+  opens the toolbar popup (`chrome.runtime.getContexts`) and fills nothing; page-made clicks open
+  nothing; with `opacity: 0` on `html` a click still only opens the popup; forged `fill`,
+  `candidates`, vault, `status`, `setInline` and an `inlineOpen` carrying a tab id get no reply;
+  no icon in a cross-origin frame; nothing after **Turn off**.
+- **Not covered by tests:** the badge fallback (the test browser always opens the popup), giving
+  back the permission and its effect on the server origin's permission (the test build's
+  host permission is part of its manifest and cannot be removed), a browser withdrawing the
+  permission, covering the icon or moving it into a top-layer popover (only `opacity` was tried;
+  each still only opens the popup), and any Chrome older than 156.
 
 **Phase B: save a new login.** Submit detection, capture, badge, popup save, item create from the
 extension.

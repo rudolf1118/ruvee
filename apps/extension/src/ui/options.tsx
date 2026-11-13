@@ -1,6 +1,7 @@
 import { type SubmitEvent, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { SetServerResult, Status } from '../messages';
+import { INLINE_ORIGINS } from '../inline/gate';
+import type { InlineSettings, SetInlineResult, SetServerResult, Status } from '../messages';
 import { fillableOrigin } from '../origin';
 import { call, messageFor } from './client';
 
@@ -86,7 +87,116 @@ function Options() {
           Save
         </button>
       </form>
+      <Inline />
     </main>
+  );
+}
+
+/**
+ * Inline fill (extension-inline-autofill.md, phase A). Off by default. Turning it on asks the
+ * browser for permission to run on every HTTPS page, so the icon can appear in login fields;
+ * turning it off gives that permission back.
+ */
+function Inline() {
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [message, setMessage] = useState<{ tone: 'error' | 'ok'; text: string } | null>(null);
+
+  useEffect(() => {
+    call<InlineSettings>({ kind: 'inlineSettings' }).then(
+      (settings) => {
+        setEnabled(settings.enabled);
+      },
+      (e: unknown) => {
+        setMessage({ tone: 'error', text: messageFor(e) });
+      },
+    );
+  }, []);
+
+  const turnOn = () => {
+    setMessage(null);
+    // Asked here, in the click: the browser shows its prompt only for a user gesture.
+    chrome.permissions
+      .request({ origins: [...INLINE_ORIGINS] })
+      .then(() => call<SetInlineResult>({ kind: 'setInline', enabled: true }))
+      .then(
+        (result) => {
+          if (result === 'saved') {
+            setEnabled(true);
+            setMessage({
+              tone: 'ok',
+              text: 'On. Reload a login page to see the Ruvee icon in its fields.',
+            });
+          } else
+            setMessage({
+              tone: 'error',
+              text: 'Ruvee needs permission to run on websites to show the icon. Allow it when the browser asks.',
+            });
+        },
+        (e: unknown) => {
+          setMessage({ tone: 'error', text: messageFor(e) });
+        },
+      );
+  };
+
+  const turnOff = () => {
+    setMessage(null);
+    call<SetInlineResult>({ kind: 'setInline', enabled: false })
+      .then(async () => {
+        setEnabled(false);
+        // The test build's host permission is part of its manifest and cannot be given back.
+        if (!__RUVEE_TEST__) await chrome.permissions.remove({ origins: [...INLINE_ORIGINS] });
+        // Giving back access to every site must not have taken the server's with it.
+        const status = await call<Status>({ kind: 'status' });
+        const server = status.serverOrigin;
+        const serverKept =
+          server === null || (await chrome.permissions.contains({ origins: [`${server}/*`] }));
+        setMessage(
+          serverKept
+            ? { tone: 'ok', text: 'Off. Ruvee no longer runs on websites.' }
+            : {
+                tone: 'error',
+                text: 'Off. The browser also removed access to your Ruvee server: save the server address again above.',
+              },
+        );
+      })
+      .catch((e: unknown) => {
+        setMessage({ tone: 'error', text: messageFor(e) });
+      });
+  };
+
+  return (
+    <section aria-labelledby="inline-heading">
+      <h2 id="inline-heading">Fill from login fields</h2>
+      <p>
+        Shows the Ruvee icon in login fields. Clicking it opens Ruvee, where you choose what to
+        fill, as from the toolbar. Ruvee never fills by itself and never asks for your master
+        password inside a web page.
+      </p>
+      <p className="muted">
+        This needs permission to run on every HTTPS website. Websites can then tell that Ruvee is
+        installed, but not whether it is unlocked or has a login for them.
+      </p>
+      {enabled === null ? null : (
+        <p>
+          Status: <strong>{enabled ? 'on' : 'off'}</strong>
+        </p>
+      )}
+      {message ? (
+        <p role={message.tone === 'error' ? 'alert' : 'status'} className={message.tone}>
+          {message.text}
+        </p>
+      ) : null}
+      {enabled === false ? (
+        <button type="button" className="primary" onClick={turnOn}>
+          Turn on
+        </button>
+      ) : null}
+      {enabled === true ? (
+        <button type="button" onClick={turnOff}>
+          Turn off
+        </button>
+      ) : null}
+    </section>
   );
 }
 

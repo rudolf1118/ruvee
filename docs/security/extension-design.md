@@ -7,7 +7,8 @@ was approved by the owner for development on 2026-10-25.
 
 The next scope (inline fill trigger, saving and updating logins, generated passwords) is proposed
 in [extension-inline-autofill.md](extension-inline-autofill.md), approved for development as D-33
-on 2026-11-12. This document's limits apply until each phase there is implemented.
+on 2026-11-12. This document's limits apply until each phase there is implemented. Phase A (the
+inline icon that opens this popup) is built; it changes §1, §2 and E-02 as marked below.
 
 Scope of the first extension: **Chromium, Manifest V3**, logins only, **manual** fill. No
 automatic fill on page load, no saving of new logins from forms, no passkeys, no Firefox yet.
@@ -19,14 +20,18 @@ automatic fill on page load, no saving of new logins from forms, no passkeys, no
 | Service worker (`background`)            | Trusted   | The vault engine: `packages/crypto`, OPAQUE, sync, the encrypted local store (extension-origin IndexedDB). Keys while unlocked (§3). |
 | Extension pages (popup, options, unlock) | Trusted   | Only what they display, as the web UI does with its worker. They talk to the service worker with `chrome.runtime` messages.          |
 | Injected fill function                   | Untrusted | One username and one password, passed as arguments for a single call, in one frame the extension checked (§4). Nothing persists.     |
-| Web pages, other extensions              | Hostile   | Nothing. No `externally_connectable`, no `web_accessible_resources`, no long-lived content script.                                   |
+| Inline content script (opt-in, phase A)  | Untrusted | Nothing from the vault. Draws an icon; a trusted click sends one fixed message (extension-inline-autofill.md §8.1).                  |
+| Web pages, other extensions              | Hostile   | Nothing. No `externally_connectable`, no `web_accessible_resources`.                                                                 |
 
 Extension pages and the service worker share the extension origin; that is the boundary that
 matters. Any message whose `sender.id` is not this extension, or whose `sender.origin` is not the
 extension's own origin, is dropped before parsing. That excludes content scripts and other
 extensions, whose origin is the page's or their own; `sender.tab` is not used, because an extension
 page opened in a tab (the popup as a page, the options page) has it set too. Messages are validated
-against a schema like API responses are.
+against a schema like API responses are. Since phase A, content scripts of this extension have a
+separate path with one message (`inlineOpen`) that opens the popup and returns nothing; it is
+checked against the browser's sender data and never reaches the vault
+([extension-inline-autofill.md §8.1](extension-inline-autofill.md#81-phase-a-as-built-2026-11-12)).
 
 The extension CSP is the MV3 default plus WebAssembly:
 `script-src 'self' 'wasm-unsafe-eval'; object-src 'self'`. No remote code (MV3 forbids it), no
@@ -37,7 +42,8 @@ The extension CSP is the MV3 default plus WebAssembly:
 - **Server origin:** the user types it on the options page. It must be `https://`, or
   `http://127.0.0.1`/`http://localhost` for development. The extension then requests host
   permission for **that origin only** (`optional_host_permissions`); the manifest grants none by
-  default. With the permission, the service worker's `fetch` needs no CORS from the API.
+  default. Turning on inline fill (phase A) also asks for `https://*/*`; turning it off gives it
+  back. With the permission, the service worker's `fetch` needs no CORS from the API.
 - **Sessions** follow [authentication.md §5](authentication.md#5-sessions) and D-08: a 10-minute
   bearer access token and a rotating refresh token (30 days idle, 90 absolute), family revocation
   on reuse. The access token stays in service-worker memory and `chrome.storage.session`; the
@@ -102,17 +108,17 @@ there.
 
 ## 5. Threats specific to the extension
 
-| ID   | Threat                                                           | Attacker | Mitigation                                                                                                                                                      |
-| ---- | ---------------------------------------------------------------- | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| E-01 | A page triggers a fill without the user, or for another origin   | A5       | Fill needs a user action in extension UI; the origin comes from `chrome.tabs`; exact origin match; re-check before injecting (§4).                              |
-| E-02 | A page frames a login page, or hides fields, to harvest a fill   | A5       | Top frame only; visible, enabled fields only; no autofill on load. Clickjacking of the popup is impossible because the popup is extension UI, not page content. |
-| E-03 | A page or another extension sends messages to the service worker | A5, A8   | No `externally_connectable`; drop messages with a foreign `sender.id` or `sender.origin`; schema validation.                                                    |
-| E-04 | A content script reads the vault (T-20)                          | A5       | There is no persistent content script; the injected function receives one credential and returns a boolean.                                                     |
-| E-05 | A stolen browser profile while the browser runs                  | A7, A8   | Auto-lock (D-10) clears `AK` from `chrome.storage.session`; at rest the store needs the password, as on the web (T-22).                                         |
-| E-06 | A malicious extension update or build                            | A10      | Store signing and review are outside Ruvee's control (R-12). Pinned dependencies, reproducible build script, no remote code.                                    |
-| E-07 | The server swaps in a key or reply during pairing                | A3       | Unchanged: the pairing protocol (device-enrollment §3.3).                                                                                                       |
-| E-08 | A refresh token copied from the profile                          | A7       | Rotation with family revocation on reuse; the token alone decrypts nothing (INV-06); revocation from Devices.                                                   |
-| E-09 | Phishing look-alike origins                                      | A5       | Exact origin matching never offers a login on a look-alike domain. The popup shows the origin it matched.                                                       |
+| ID   | Threat                                                           | Attacker | Mitigation                                                                                                                                                                                                   |
+| ---- | ---------------------------------------------------------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| E-01 | A page triggers a fill without the user, or for another origin   | A5       | Fill needs a user action in extension UI; the origin comes from `chrome.tabs`; exact origin match; re-check before injecting (§4).                                                                           |
+| E-02 | A page frames a login page, or hides fields, to harvest a fill   | A5       | Top frame only; visible, enabled fields only; no autofill on load. Clickjacking of the popup is impossible because the popup is extension UI, not page content; the opt-in inline icon only opens it (E-10). |
+| E-03 | A page or another extension sends messages to the service worker | A5, A8   | No `externally_connectable`; drop messages with a foreign `sender.id` or `sender.origin`; schema validation.                                                                                                 |
+| E-04 | A content script reads the vault (T-20)                          | A5       | There is no persistent content script; the injected function receives one credential and returns a boolean.                                                                                                  |
+| E-05 | A stolen browser profile while the browser runs                  | A7, A8   | Auto-lock (D-10) clears `AK` from `chrome.storage.session`; at rest the store needs the password, as on the web (T-22).                                                                                      |
+| E-06 | A malicious extension update or build                            | A10      | Store signing and review are outside Ruvee's control (R-12). Pinned dependencies, reproducible build script, no remote code.                                                                                 |
+| E-07 | The server swaps in a key or reply during pairing                | A3       | Unchanged: the pairing protocol (device-enrollment §3.3).                                                                                                                                                    |
+| E-08 | A refresh token copied from the profile                          | A7       | Rotation with family revocation on reuse; the token alone decrypts nothing (INV-06); revocation from Devices.                                                                                                |
+| E-09 | Phishing look-alike origins                                      | A5       | Exact origin matching never offers a login on a look-alike domain. The popup shows the origin it matched.                                                                                                    |
 
 The extension does **not** protect against: malware or another extension with broad host
 permissions on an unlocked browser (T-23), a page reading a filled field after the fill, or a

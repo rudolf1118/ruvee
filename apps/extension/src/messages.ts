@@ -36,6 +36,8 @@ export const requestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('fill'), tabId, itemId: z.uuid() }),
   z.strictObject({ kind: z.literal('lock') }),
   z.strictObject({ kind: z.literal('pairing') }),
+  z.strictObject({ kind: z.literal('inlineSettings') }),
+  z.strictObject({ kind: z.literal('setInline'), enabled: z.boolean() }),
 ]);
 export type ExtensionRequest = z.infer<typeof requestSchema>;
 
@@ -67,6 +69,13 @@ export interface Candidates {
   readonly origin: string | null;
   readonly items: readonly Candidate[];
 }
+
+/** Whether the inline icon is on (extension-inline-autofill.md §5.1). Off by default. */
+export interface InlineSettings {
+  readonly enabled: boolean;
+}
+
+export type SetInlineResult = 'saved' | 'no_permission';
 
 export type SetServerResult = 'saved' | 'not_an_origin' | 'device_exists' | 'no_permission';
 

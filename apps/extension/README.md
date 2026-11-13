@@ -33,6 +33,9 @@ reach that one origin.
    Approve it in the web app.
 4. On a login page, open the popup and choose **Fill** on a matching login. Only logins saved for
    exactly that origin (scheme, host and port) are offered.
+5. Optional: in the extension's settings, **Turn on** "Fill from login fields". The Ruvee icon then
+   appears in login fields; clicking it opens the same popup. It needs permission to run on every
+   HTTPS site ([extension-inline-autofill.md](../../docs/security/extension-inline-autofill.md)).
 
 The vault locks after 15 minutes without use, on **Lock**, and when the browser exits.
 
