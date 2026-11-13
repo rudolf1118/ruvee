@@ -21,10 +21,13 @@ function Options() {
   const [current, setCurrent] = useState<string | null>(null);
   const [text, setText] = useState('');
   const [message, setMessage] = useState<{ tone: 'error' | 'ok'; text: string } | null>(null);
+  const [stale, setStale] = useState(false);
 
   useEffect(() => {
     call<Status>({ kind: 'status' }).then(
       (status) => {
+        // Files replaced without a reload: the old worker does not know these pages' messages.
+        if (status.build !== __RUVEE_BUILD__) setStale(true);
         setCurrent(status.serverOrigin);
         setText(status.serverOrigin ?? '');
       },
@@ -64,6 +67,19 @@ function Options() {
   return (
     <main className="options">
       <h1>Ruvee settings</h1>
+      {stale ? (
+        <p role="alert" className="error">
+          Ruvee was updated, but the browser is still running the previous version.{' '}
+          <button
+            type="button"
+            onClick={() => {
+              chrome.runtime.reload();
+            }}
+          >
+            Reload Ruvee
+          </button>
+        </p>
+      ) : null}
       <p className="badge">Development build, not reviewed. Use synthetic data only.</p>
       <form onSubmit={submit}>
         <label>

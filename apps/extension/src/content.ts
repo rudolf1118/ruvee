@@ -1,3 +1,4 @@
+import { captureFrom, type Capture, submitControl } from './inline/capture';
 import { inlineFields } from './inline/detect';
 
 /**
@@ -6,6 +7,10 @@ import { inlineFields } from './inline/detect';
  * the same icon on every login field whatever the vault holds; it never asks the worker anything
  * and receives nothing back but an empty reply. A trusted click on the icon asks the worker to
  * open the toolbar popup, where the user chooses, exactly as with manual fill.
+ *
+ * Phase B: when the user signs in (their own click on a submit control, or Enter in a field), the
+ * script sends what the form holds to the worker, which may offer to save it from the toolbar
+ * (§5.2). The page typed those values itself; nothing comes back.
  */
 
 const TAG = 'ruvee-inline-icon';
@@ -63,6 +68,39 @@ function makeIcon(): HTMLElement {
     chrome.runtime.sendMessage({ kind: 'inlineOpen' }).catch(() => undefined);
   });
   return host;
+}
+
+/** Enter in a field also makes the browser click the submit button: one capture, not two. */
+const CAPTURE_REPEAT_MS = 2000;
+let lastCapture: { at: number; capture: Capture } | undefined;
+
+function sendCapture(from: Element): void {
+  const capture = captureFrom(from);
+  if (!capture) return;
+  const now = Date.now();
+  if (
+    lastCapture &&
+    now - lastCapture.at < CAPTURE_REPEAT_MS &&
+    lastCapture.capture.username === capture.username &&
+    lastCapture.capture.password === capture.password
+  )
+    return;
+  lastCapture = { at: now, capture };
+  chrome.runtime
+    .sendMessage({ kind: 'inlineCapture', username: capture.username, password: capture.password })
+    .catch(() => undefined);
+}
+
+function onClick(event: MouseEvent): void {
+  // Only the user's own gesture: `requestSubmit()` and `button.click()` are the page's.
+  if (!event.isTrusted) return;
+  const control = submitControl(event.target);
+  if (control) sendCapture(control);
+}
+
+function onKeydown(event: KeyboardEvent): void {
+  if (!event.isTrusted || event.key !== 'Enter' || event.isComposing) return;
+  if (event.target instanceof HTMLInputElement) sendCapture(event.target);
 }
 
 function place(field: HTMLInputElement, host: HTMLElement): void {
@@ -152,6 +190,9 @@ if (window.top === window && !started.ruveeInlineStarted) {
   });
   window.addEventListener('scroll', queuePlace, { capture: true, passive: true });
   window.addEventListener('resize', queuePlace, { passive: true });
+  // Capture phase on the window, before the page's own handlers can navigate away.
+  window.addEventListener('click', onClick, { capture: true });
+  window.addEventListener('keydown', onKeydown, { capture: true });
   // Animations and layout changes that fire no event.
   setInterval(() => {
     if (icons.size > 0) placeAll();

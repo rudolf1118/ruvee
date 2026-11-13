@@ -33,6 +33,7 @@ declare namespace chrome {
     function sendMessage(message: unknown): Promise<unknown>;
     function openOptionsPage(): Promise<void>;
     function getURL(path: string): string;
+    function reload(): void;
   }
 
   namespace storage {
@@ -56,6 +57,10 @@ declare namespace chrome {
     }
     function get(tabId: number): Promise<Tab>;
     function query(query: { active?: boolean; lastFocusedWindow?: boolean }): Promise<Tab[]>;
+    const onRemoved: { addListener(callback: (tabId: number) => void): void };
+    const onUpdated: {
+      addListener(callback: (tabId: number, change: { status?: string }) => void): void;
+    };
   }
 
   namespace scripting {
@@ -88,6 +93,7 @@ declare namespace chrome {
   namespace action {
     function openPopup(options?: { windowId?: number }): Promise<void>;
     function setBadgeText(details: { tabId?: number; text: string }): Promise<void>;
+    function getBadgeText(details: { tabId?: number }): Promise<string>;
     function setBadgeBackgroundColor(details: { tabId?: number; color: string }): Promise<void>;
   }
 
@@ -113,3 +119,5 @@ declare namespace chrome {
 
 /** Replaced at build time; true only in the test build (extension-design.md §6). */
 declare const __RUVEE_TEST__: boolean;
+/** Replaced at build time: the same id in every bundle of one build (scripts/build.mjs). */
+declare const __RUVEE_BUILD__: string;

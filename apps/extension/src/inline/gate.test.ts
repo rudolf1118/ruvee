@@ -64,8 +64,23 @@ describe('the inline channel: who may ask to open the popup (E-15, E-20)', () =>
 });
 
 describe('the inline message schema', () => {
-  it('has exactly one message, with nothing in it', () => {
+  it('has two messages: open (empty) and capture (username and password only)', () => {
     expect(contentRequestSchema.safeParse({ kind: 'inlineOpen' }).success).toBe(true);
+    const capture = { kind: 'inlineCapture', username: 'me', password: 'synthetic-pw' };
+    expect(contentRequestSchema.safeParse(capture).success).toBe(true);
+    expect(contentRequestSchema.safeParse({ ...capture, username: '' }).success).toBe(true);
+    for (const forged of [
+      // E-17: the origin, tab or item of a save always comes from the browser, never the page.
+      { ...capture, origin: 'https://bank.example' },
+      { ...capture, url: 'https://bank.example/login' },
+      { ...capture, tabId: 7 },
+      { ...capture, itemId: '00000000-0000-4000-8000-000000000000' },
+      { ...capture, password: '' },
+      { ...capture, password: 'x'.repeat(1025) },
+      { ...capture, username: 'x'.repeat(501) },
+      { kind: 'inlineCapture', password: 'synthetic-pw' },
+    ])
+      expect(contentRequestSchema.safeParse(forged).success, JSON.stringify(forged)).toBe(false);
     for (const forged of [
       { kind: 'inlineOpen', origin: PAGE },
       { kind: 'inlineOpen', tabId: 7 },
@@ -83,6 +98,11 @@ describe('the inline message schema', () => {
 
   it('is not part of the extension pages’ channel, and theirs is not part of it', () => {
     expect(requestSchema.safeParse({ kind: 'inlineOpen' }).success).toBe(false);
+    expect(
+      requestSchema.safeParse({ kind: 'inlineCapture', username: 'me', password: 'pw' }).success,
+    ).toBe(false);
+    for (const kind of ['pendingSave', 'savePending', 'dismissPending'])
+      expect(contentRequestSchema.safeParse({ kind, tabId: 7 }).success, kind).toBe(false);
     expect(contentRequestSchema.safeParse({ kind: 'status' }).success).toBe(false);
   });
 });

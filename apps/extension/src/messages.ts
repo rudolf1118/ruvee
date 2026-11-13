@@ -38,12 +38,17 @@ export const requestSchema = z.discriminatedUnion('kind', [
   z.strictObject({ kind: z.literal('pairing') }),
   z.strictObject({ kind: z.literal('inlineSettings') }),
   z.strictObject({ kind: z.literal('setInline'), enabled: z.boolean() }),
+  z.strictObject({ kind: z.literal('pendingSave'), tabId }),
+  z.strictObject({ kind: z.literal('savePending'), tabId }),
+  z.strictObject({ kind: z.literal('dismissPending'), tabId }),
 ]);
 export type ExtensionRequest = z.infer<typeof requestSchema>;
 
 export interface Status {
   readonly serverOrigin: string | null;
   readonly unlocked: boolean;
+  /** The worker's build id. A worker older than the popup does not send it at all. */
+  readonly build?: string;
 }
 
 /**
@@ -76,6 +81,14 @@ export interface InlineSettings {
 }
 
 export type SetInlineResult = 'saved' | 'no_permission';
+
+/** A login the user submitted on a page, waiting for "Save" in the popup (phase B). No password. */
+export interface PendingSave {
+  readonly origin: string;
+  readonly username: string;
+}
+
+export type SavePendingResult = 'saved' | 'gone';
 
 export type SetServerResult = 'saved' | 'not_an_origin' | 'device_exists' | 'no_permission';
 

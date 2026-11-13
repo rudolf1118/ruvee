@@ -55,7 +55,42 @@ const FRAMED = `<!doctype html><title>Synthetic framed login</title>
 <iframe src="${OTHER_PORT}" width="400" height="200"></iframe>`;
 const FRAMED_PAGE = `${new URL(LOGIN_PAGE).origin}/framed`;
 const ICON = 'ruvee-inline-icon';
-const PAGES: Record<string, string> = { '/hidden': HIDDEN_FIELDS, '/framed': FRAMED };
+/**
+ * Phase B: a sign-in form on the saved origin that posts to another origin, as many sign-ins do
+ * (E-18: the save offer is for the form's origin, not where the tab ends up). The fields have no
+ * `name`, so nothing typed into them is sent anywhere.
+ */
+const SIGNIN = `<!doctype html><title>Synthetic sign-in</title>
+<form method="post" action="${new URL(OTHER_PORT).origin}/welcome">
+<label>Email <input id="user" type="email"></label>
+<label>Password <input id="pw" type="password"></label><button id="go">Sign in</button></form>`;
+const SIGNIN_PAGE = `${new URL(LOGIN_PAGE).origin}/signin`;
+/**
+ * A sign-in that continues on a second page of the same origin, like a two-factor step: the form
+ * posts to `/session`, which answers with a page that sends the browser on to `/two-factor`.
+ */
+const SIGNIN_2FA = `<!doctype html><title>Synthetic sign-in with a second step</title>
+<form method="post" action="/session">
+<label>Username <input id="user" type="text"></label>
+<label>Password <input id="pw" type="password"></label><input id="go" type="submit" value="Sign in"></form>`;
+const SESSION_REDIRECT = `<!doctype html><title>Signing in</title>
+<script>location.replace('/two-factor/mobile')</script>`;
+const TWO_FACTOR = `<!doctype html><title>Synthetic two-factor</title>
+<p>Approve the sign-in on your phone.</p>`;
+const WELCOME = '<!doctype html><title>Synthetic welcome</title><p>Signed in.</p>';
+const SAVED_USER = 'saved-user@portal.example';
+const SAVED_PASSWORD = 'synthetic-captured-secret-5c2';
+const PAGES: Record<string, string> = {
+  '/hidden': HIDDEN_FIELDS,
+  '/framed': FRAMED,
+  '/signin': SIGNIN,
+  '/welcome': WELCOME,
+  '/signin-2fa': SIGNIN_2FA,
+  '/session': SESSION_REDIRECT,
+  '/two-factor/mobile': TWO_FACTOR,
+};
+/** Every request to the Ruvee server (web origin and API), for the phase B capture check. */
+const toServer: string[] = [];
 
 const extensionDir = new URL('../dist-test/', import.meta.url).pathname;
 const popupUrl = (tab?: number) =>
@@ -113,6 +148,8 @@ test('extension: pairing, unlock, exact-origin fill, lock, resume', async () => 
   expect(new URL(worker.url()).host).toBe(EXTENSION_ID);
   context.on('request', (request) => {
     wire.push(request.url(), JSON.stringify(request.headers()), request.postData() ?? '');
+    if ([WEB_ORIGIN, API_ORIGIN].some((o) => request.url().startsWith(o)))
+      toServer.push(request.url(), request.postData() ?? '');
     const fromExtension = request.headers().origin === `chrome-extension://${EXTENSION_ID}`;
     if (fromExtension && request.headers().cookie) cookiesToApi.push(request.url());
   });
@@ -518,6 +555,218 @@ test('inline icon (phase A): opt-in, opens the popup, never fills, tells the pag
   await expect(site.locator(ICON)).toHaveCount(0);
 });
 
+/** What the worker holds for a tab after a sign-in: origin and username, or null. */
+async function pendingFor(tab: number): Promise<unknown> {
+  return popup.evaluate(async (tabId) => {
+    const reply = (await chrome.runtime.sendMessage({ kind: 'pendingSave', tabId })) as {
+      ok: boolean;
+      result?: unknown;
+    };
+    return reply.ok ? reply.result : 'error';
+  }, tab);
+}
+
+const badgeOf = (tab: number) =>
+  worker.evaluate((tabId) => chrome.action.getBadgeText({ tabId }), tab);
+
+/** The user signs in on the sign-in page: typed values, their own click; the tab navigates. */
+async function signIn(username: string, password: string): Promise<void> {
+  await site.goto(SIGNIN_PAGE);
+  await site.locator('#user').fill(username);
+  await site.locator('#pw').fill(password);
+  await site.locator('#go').click();
+  await site.waitForURL(`${new URL(OTHER_PORT).origin}/welcome`);
+}
+
+async function lockFromPopup(): Promise<void> {
+  await popup.evaluate(() => chrome.runtime.sendMessage({ kind: 'lock' }));
+  expect(await sessionKeys(worker)).not.toContain('ak');
+}
+
+/** Unlocks with the tab on the saved origin (the helper expects its login listed). */
+async function unlockAgain(): Promise<void> {
+  await site.goto(LOGIN_PAGE);
+  await unlock(MASTER);
+}
+
+test('save a new login (phase B): offered in the popup only, for the form’s origin, never faked', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${EXTENSION_ID}/options.html`);
+  await options.getByRole('button', { name: 'Turn on' }).click();
+  await expect(options.getByText(/^On\./)).toBeVisible();
+  const formOrigin = new URL(LOGIN_PAGE).origin;
+
+  // ---- A page that submits by itself gets nothing: click(), requestSubmit() ----
+  for (const how of ['click', 'requestSubmit'] as const) {
+    await site.goto(SIGNIN_PAGE);
+    await site.evaluate(
+      ([mode, user, pw]) => {
+        (document.getElementById('user') as HTMLInputElement).value = user;
+        (document.getElementById('pw') as HTMLInputElement).value = pw;
+        if (mode === 'click') document.getElementById('go')?.click();
+        else document.querySelector('form')?.requestSubmit();
+      },
+      [how, 'planted@portal.example', 'planted-secret'] as const,
+    );
+    await site.waitForURL(/\/welcome$/);
+    await site.waitForTimeout(500);
+    expect(await pendingFor(siteTab), how).toBeNull();
+    expect(await badgeOf(siteTab), how).toBe('');
+  }
+
+  // ---- Locked when the user signs in: nothing is kept for later ----
+  await lockFromPopup();
+  await signIn(SAVED_USER, SAVED_PASSWORD);
+  await site.waitForTimeout(500);
+  expect(await badgeOf(siteTab)).toBe('');
+  await unlockAgain();
+  expect(await pendingFor(siteTab)).toBeNull();
+
+  // ---- The user signs in: a badge, and the offer in the popup for the form's origin ----
+  await signIn(SAVED_USER, SAVED_PASSWORD);
+  await expect.poll(() => badgeOf(siteTab)).toBe('+');
+  expect(await pendingFor(siteTab)).toEqual({ origin: formOrigin, username: SAVED_USER });
+  // Memory only (E-19): not in chrome.storage while it waits.
+  const waiting = await worker.evaluate(async () =>
+    JSON.stringify([
+      await chrome.storage.local.get(null as never),
+      await chrome.storage.session.get(null as never),
+    ]),
+  );
+  expect(waiting).not.toContain(SAVED_PASSWORD);
+  // Nothing was shown in the page (§5.2): the welcome page is untouched.
+  expect(await site.locator('body').innerText()).toBe('Signed in.');
+
+  await popup.goto(popupUrl(siteTab));
+  // The tab is now on another origin; the offer is still for the form's own (E-18).
+  await expect(popup.getByText(`Logins for ${new URL(OTHER_PORT).origin}`)).toBeVisible();
+  await expect(popup.getByText(`Save this login for ${formOrigin}?`)).toBeVisible();
+  await expect(popup.getByText(`Username: ${SAVED_USER}`)).toBeVisible();
+  expect(await popup.content()).not.toContain(SAVED_PASSWORD);
+  await popup.getByRole('button', { name: 'Save login' }).click();
+  await expect(popup.getByText('Saved to your vault.')).toBeVisible();
+  expect(await badgeOf(siteTab)).toBe('');
+  expect(await pendingFor(siteTab)).toBeNull();
+  // Not offered on the tab's new origin: the item is for exactly the form's.
+  await expect(popup.getByText('No login is saved for exactly this address.')).toBeVisible();
+
+  // ---- The saved login fills on its origin, like any other ----
+  await site.goto(LOGIN_PAGE);
+  await popup.goto(popupUrl(siteTab));
+  const savedTitle = new URL(LOGIN_PAGE).host;
+  await popup.getByRole('button', { name: `Fill ${savedTitle}` }).click();
+  await expect(popup.getByText(/^Filled\./)).toBeVisible();
+  await expect(site.locator('#user')).toHaveValue(SAVED_USER);
+  await expect(site.locator('#pw')).toHaveValue(SAVED_PASSWORD);
+
+  // ---- Known usernames are not offered again (a duplicate; a new password is phase C) ----
+  await signIn(SAVED_USER, SAVED_PASSWORD);
+  await signIn('owner@portal.example', 'a-changed-password-for-phase-c');
+  await site.waitForTimeout(500);
+  expect(await pendingFor(siteTab)).toBeNull();
+  expect(await badgeOf(siteTab)).toBe('');
+
+  // ---- "Not now" drops it ----
+  await signIn('second-user@portal.example', 'synthetic-second-secret');
+  await expect.poll(() => pendingFor(siteTab)).not.toBeNull();
+  await popup.goto(popupUrl(siteTab));
+  await popup.getByRole('button', { name: 'Not now' }).click();
+  await expect(popup.getByText(/Save this login/)).toHaveCount(0);
+  expect(await pendingFor(siteTab)).toBeNull();
+  expect(await badgeOf(siteTab)).toBe('');
+
+  // ---- A lock drops it, and so does a worker restart (memory only) ----
+  await signIn('third-user@portal.example', 'synthetic-third-secret');
+  await expect.poll(() => pendingFor(siteTab)).not.toBeNull();
+  await lockFromPopup();
+  expect(await badgeOf(siteTab)).toBe('');
+  await unlockAgain();
+  expect(await pendingFor(siteTab)).toBeNull();
+  await signIn('fourth-user@portal.example', 'synthetic-fourth-secret');
+  await expect.poll(() => pendingFor(siteTab)).not.toBeNull();
+  await stopWorker();
+  expect(await pendingFor(siteTab)).toBeNull();
+
+  // ---- E-17: a content script cannot name the origin; E-15: nor capture from a frame ----
+  await site.goto(LOGIN_PAGE);
+  for (const forged of [
+    { kind: 'inlineCapture', username: 'x', password: 'y', origin: 'https://bank.example' },
+    { kind: 'inlineCapture', username: 'x', password: 'y', tabId: siteTab },
+    { kind: 'savePending', tabId: siteTab },
+    { kind: 'pendingSave', tabId: siteTab },
+  ])
+    expect(await fromContentScript(forged), JSON.stringify(forged)).toEqual({ reply: 'no reply' });
+  await site.goto(FRAMED_PAGE);
+  await expect(site.frameLocator('iframe').locator('#pw')).toBeVisible();
+  const fromFrame = await worker.evaluate(async (tabId) => {
+    const results = await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true } as never,
+      world: 'ISOLATED',
+      args: [],
+      func: async () => {
+        if (window.top === window) return 'top';
+        const reply: unknown = await chrome.runtime.sendMessage({
+          kind: 'inlineCapture',
+          username: 'framed-user',
+          password: 'framed-secret',
+        });
+        return reply === undefined ? 'no reply' : JSON.stringify(reply);
+      },
+    });
+    return results.map((r) => r.result);
+  }, siteTab);
+  expect(fromFrame.sort()).toEqual(['no reply', 'top']);
+  expect(await pendingFor(siteTab)).toBeNull();
+  // The same capture from the top frame is answered exactly like everything else: null.
+  await site.goto(LOGIN_PAGE);
+  expect(
+    await fromContentScript({
+      kind: 'inlineCapture',
+      username: 'top-user',
+      password: 'top-secret',
+    }),
+  ).toEqual({ reply: null });
+  await popup.evaluate(
+    (tabId) => chrome.runtime.sendMessage({ kind: 'dismissPending', tabId }),
+    siteTab,
+  );
+
+  await options.bringToFront();
+  await options.getByRole('button', { name: 'Turn off' }).click();
+  await expect(options.getByText(/^Off\./)).toBeVisible();
+  await options.close();
+});
+
+test('save offer after a sign-in that goes on to a second same-origin page (two-factor)', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${EXTENSION_ID}/options.html`);
+  await options.getByRole('button', { name: 'Turn on' }).click();
+  await expect(options.getByText(/^On\./)).toBeVisible();
+  const origin = new URL(LOGIN_PAGE).origin;
+
+  await site.goto(`${origin}/signin-2fa`);
+  await site.bringToFront();
+  await site.locator('#user').fill('two-step-user');
+  await site.locator('#pw').fill('synthetic-two-step-secret');
+  await site.locator('#go').click();
+  await site.waitForURL(`${origin}/two-factor/mobile`);
+  await expect.poll(() => badgeOf(siteTab)).toBe('+');
+
+  // The popup opened on the second page: the offer, the (empty) list, and no error.
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByText(`Logins for ${origin}`)).toBeVisible();
+  await expect(popup.getByText(`Save this login for ${origin}?`)).toBeVisible();
+  await expect(popup.getByText('Username: two-step-user')).toBeVisible();
+  await popup.waitForTimeout(1500);
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+  await popup.getByRole('button', { name: 'Not now' }).click();
+
+  await options.bringToFront();
+  await options.getByRole('button', { name: 'Turn off' }).click();
+  await expect(options.getByText(/^Off\./)).toBeVisible();
+  await options.close();
+});
+
 /** Adds a login for the test page's origin in the web app and waits until it is synced. */
 async function addLoginInWeb(title: string, password: string): Promise<void> {
   await web.bringToFront();
@@ -528,7 +777,7 @@ async function addLoginInWeb(title: string, password: string): Promise<void> {
     .getByLabel('Username or email')
     .fill(`${title.toLowerCase().replace(/ /g, '-')}@portal.example`);
   await web.getByRole('textbox', { name: 'Password', exact: true }).fill(password);
-  await web.getByRole('button', { name: 'Save' }).click();
+  await web.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(web.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
     timeout: 15_000,
   });
@@ -1012,18 +1261,22 @@ test('capture: nothing secret on the wire, in the extension stores, or sent with
     );
   });
   for (const secret of forbidden) expect(stored, `stored: ${secret}`).not.toContain(secret);
+  // Phase B: the password saved from a sign-in reaches the server and the stores only encrypted.
+  expect(toServer.join('\n')).not.toContain(SAVED_PASSWORD);
+  expect(stored).not.toContain(SAVED_PASSWORD);
 });
 
 async function sessionKeys(w: Worker): Promise<string[]> {
   return w.evaluate(async () => Object.keys(await chrome.storage.session.get(null as never)));
 }
 
+/** The id of the suite's own login ("Synthetic Portal"); phase B saves a second one there. */
 async function firstItemId(popup: Page, tab: number): Promise<string> {
   return popup.evaluate(async (tabId) => {
     const reply = (await chrome.runtime.sendMessage({ kind: 'candidates', tabId })) as {
-      result: { items: { id: string }[] };
+      result: { items: { id: string; title: string }[] };
     };
-    return reply.result.items[0]?.id ?? '';
+    return reply.result.items.find((i) => i.title === 'Synthetic Portal')?.id ?? '';
   }, tab);
 }
 

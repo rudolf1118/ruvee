@@ -1,7 +1,14 @@
 import type { DevicePhase, PairingJoinStatus, SyncStatus } from '@ruvee/vault';
 import { type SubmitEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
-import type { Candidates, FillOutcome, PairingView, Status } from '../messages';
+import type {
+  Candidates,
+  FillOutcome,
+  PairingView,
+  PendingSave,
+  SavePendingResult,
+  Status,
+} from '../messages';
 import {
   call,
   CallError,
@@ -27,7 +34,7 @@ async function targetTab(): Promise<number | null> {
 }
 
 interface Screen {
-  readonly name: 'loading' | 'no-server' | 'login' | 'pending' | 'locked' | 'unlocked';
+  readonly name: 'loading' | 'stale' | 'no-server' | 'login' | 'pending' | 'locked' | 'unlocked';
 }
 
 function Popup() {
@@ -36,6 +43,9 @@ function Popup() {
 
   const refresh = useCallback(() => {
     const next = (status: Status): Promise<Screen> => {
+      // A worker from another build (files replaced without a reload) does not know this
+      // popup's messages; nothing else is sent to it.
+      if (status.build !== __RUVEE_BUILD__) return Promise.resolve({ name: 'stale' });
       if (!status.serverOrigin) return Promise.resolve({ name: 'no-server' });
       if (status.unlocked) return Promise.resolve({ name: 'unlocked' });
       return call<DevicePhase>({ kind: 'vault', method: 'phase' }).then((phase) => ({
@@ -45,7 +55,7 @@ function Popup() {
     call<Status>({ kind: 'status' })
       .then(next)
       .then(setScreen, (e: unknown) => {
-        setError(messageFor(e));
+        setError(stepMessageFor('status', e));
       });
   }, []);
 
@@ -63,6 +73,24 @@ function Popup() {
         </p>
       ) : null}
       {screen.name === 'loading' ? <p aria-busy="true">Loading…</p> : null}
+      {screen.name === 'stale' ? (
+        <section>
+          <p role="alert" className="error">
+            Ruvee was updated, but the browser is still running the previous version. Reload it to
+            finish the update (or press Reload on its card in chrome://extensions). The vault locks;
+            unlock it again afterwards.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              chrome.runtime.reload();
+            }}
+          >
+            Reload Ruvee
+          </button>
+        </section>
+      ) : null}
       {screen.name === 'no-server' ? (
         <section>
           <p>Choose your Ruvee server first.</p>
@@ -420,6 +448,7 @@ const FILL_TEXT: Record<FillOutcome, string> = {
 function Fill({ onLocked }: { onLocked: () => void }) {
   const [tabId, setTabId] = useState<number | null>(null);
   const [found, setFound] = useState<Candidates | null>(null);
+  const [pending, setPending] = useState<PendingSave | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -456,6 +485,13 @@ function Fill({ onLocked }: { onLocked: () => void }) {
       setTabId(tab);
       // The local list first, so the popup is usable at once and while offline.
       await list(tab);
+      // A save offer waiting for this tab (phase B). Its own call: a failure here or in the
+      // sync below does not hide the list, and the error names the call.
+      if (tab !== null)
+        await call<PendingSave | null>({ kind: 'pendingSave', tabId: tab }).then(
+          setPending,
+          failed('pendingSave'),
+        );
       // A sync on every open: it brings other devices' changes, and it is how a revoked
       // browser or an ended session is noticed (the worker then locks or wipes itself). The
       // list is read again afterwards: what other devices deleted must not stay offered.
@@ -472,8 +508,58 @@ function Fill({ onLocked }: { onLocked: () => void }) {
     })();
   }, [onLocked, list, failed]);
 
+  const answerSave = (save: boolean) => {
+    if (tabId === null) return;
+    setNotice(null);
+    setError(null);
+    const request = save
+      ? call<SavePendingResult>({ kind: 'savePending', tabId })
+      : call<true>({ kind: 'dismissPending', tabId }).then(() => 'dismissed' as const);
+    request
+      .then(async (result) => {
+        setPending(null);
+        if (result === 'saved') {
+          setNotice('Saved to your vault.');
+          setFound(await call<Candidates>({ kind: 'candidates', tabId }));
+        } else if (result === 'gone')
+          setNotice('That sign-in is no longer waiting. Nothing was saved.');
+      })
+      .catch((e: unknown) => {
+        setError(messageFor(e));
+      });
+  };
+
   return (
     <section>
+      {pending ? (
+        // extension-inline-autofill.md §5.2: the only place a save is offered (never in the page).
+        <div className="save-offer" role="group" aria-labelledby="save-offer-title">
+          <p id="save-offer-title">
+            Save this login for <strong>{pending.origin}</strong>?
+          </p>
+          <p className="muted">
+            {pending.username === '' ? 'No username' : `Username: ${pending.username}`}. The
+            password stays hidden.
+          </p>
+          <button
+            type="button"
+            className="primary"
+            onClick={() => {
+              answerSave(true);
+            }}
+          >
+            Save login
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              answerSave(false);
+            }}
+          >
+            Not now
+          </button>
+        </div>
+      ) : null}
       {found?.origin ? (
         <p className="origin">
           Logins for <strong>{found.origin}</strong>
