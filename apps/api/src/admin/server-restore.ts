@@ -225,12 +225,28 @@ export async function createBackup(options: BackupOptions): Promise<BackupResult
       plain,
       () => undefined,
     );
+    // Both sides settle before anything is cleaned up, and the first failure is the one
+    // reported. A pg_dump that fails after writing part of a dump still ends its output
+    // normally: only its exit status says the dump is incomplete, and that status can arrive
+    // while the encryption still reads. The encryption is then stopped and awaited: cleaning up
+    // at once let it create the dump file after the cleanup. An encryption that fails (a full
+    // disk) stops pg_dump.
+    let failure: { error: unknown } | undefined;
     const [dump] = await Promise.all([
-      encryptToFile(recipient, source, track(partial.dump), open, options.signal),
-      // A pg_dump that fails after writing part of a dump still ends its output normally:
-      // only its exit status says the dump is incomplete.
-      run.done,
+      encryptToFile(recipient, source, track(partial.dump), open, options.signal).catch(
+        (error: unknown) => {
+          failure ??= { error };
+          run.kill();
+          return undefined;
+        },
+      ),
+      run.done.catch((error: unknown) => {
+        failure ??= { error };
+        source.destroy(error instanceof Error ? error : new Error(String(error)));
+      }),
     ]);
+    if (failure) throw failure.error;
+    if (!dump) throw new RestoreError('backup', 'the dump was not written');
     fsyncPath(partial.dump);
     const backupId = newBackupId();
     const meta: BackupMeta = {
