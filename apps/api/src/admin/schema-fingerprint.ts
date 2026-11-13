@@ -12,8 +12,8 @@ import type pg from 'pg';
  * whenever a migration changes it; update it together with the migration.
  */
 export const EXPECTED_SCHEMA = {
-  migration: '20261029090000_shared_limits',
-  fingerprint: '41c670850ac16cd08b3c4fd6c80fd08cfdf55c08e3b35bf9487b456e46327bb3',
+  migration: '20261112090000_reload_tickets',
+  fingerprint: '49d458b8959ec7f814df4575346c0ba414ed3c6be1c1d64ef9150eef68c23d87',
 } as const;
 
 /**

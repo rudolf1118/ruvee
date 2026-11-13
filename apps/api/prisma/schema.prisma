@@ -151,6 +151,7 @@ model Account {
   pairings         Pairing[]
   proofNonces      ProofNonce[]
   loginStates      LoginState[]
+  reloadTickets    ReloadTicket[]
 
   @@map("accounts")
 }
@@ -211,6 +212,7 @@ model Device {
   commits           VaultCommit[]
   initiatedPairings Pairing[]       @relation("PairingInitiator")
   requestedPairings Pairing[]       @relation("PairingRequester")
+  reloadTickets     ReloadTicket[]
 
   @@index([accountId])
   @@map("devices")
@@ -238,6 +240,7 @@ model Session {
   refreshTokens RefreshToken[]
   proofNonces   ProofNonce[]
   loginStates   LoginState[]
+  reloadTicket  ReloadTicket?
 
   @@index([accountId])
   @@index([deviceId])
@@ -372,6 +375,25 @@ model LoginState {
 
   @@index([expiresAt])
   @@map("login_states")
+}
+
+/// A web reload ticket's server side (D-34, reload-tickets.service.ts). Transient: no rows in backups.
+model ReloadTicket {
+  idHash        Bytes    @id @map("id_hash")
+  accountId     String   @map("account_id") @db.Uuid
+  deviceId      String   @map("device_id") @db.Uuid
+  sessionId     String   @unique @map("session_id") @db.Uuid
+  idleSeconds   Int      @map("idle_seconds")
+  createdAt     DateTime @map("created_at") @db.Timestamptz(3)
+  expiresAt     DateTime @map("expires_at") @db.Timestamptz(3)
+  idleExpiresAt DateTime @map("idle_expires_at") @db.Timestamptz(3)
+
+  account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  device  Device  @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([expiresAt])
+  @@map("reload_tickets")
 }
 
 model Vault {
