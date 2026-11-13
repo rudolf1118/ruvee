@@ -34,6 +34,8 @@ export const RUNTIME_GRANTS: Readonly<Record<string, RuntimeGrant>> = {
   // (inserted, then consumed with DELETE … RETURNING; never updated).
   rate_windows: { table: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
   login_states: { table: ['SELECT', 'INSERT', 'DELETE'] },
+  // D-34: one web reload ticket per session; heartbeats move its expiries, redeem deletes it.
+  reload_tickets: { table: ['SELECT', 'INSERT', 'UPDATE', 'DELETE'] },
   // Setup tokens are issued on the host (`ruvee-admin bootstrap-token`); the API only uses them.
   bootstrap_tokens: { table: ['SELECT', 'UPDATE'] },
   security_events: { table: ['SELECT', 'INSERT'] },

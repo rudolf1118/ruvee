@@ -256,9 +256,16 @@ nonce are all authenticated.
 | `0x06`    | `MANIFEST`         | `K_manifest` | `vk_id`           | `vault_id ‖ u64(seq)`                                           | Manifest (section 5.3), 137 B  | exactly 198 B     |
 | `0x07`    | `LOCAL_RECORD`     | `K_local`    | `ak_id`           | `device_id ‖ LP(record_name)`                                   | Local record JSON              | 1,048,637 B       |
 | `0x08`    | `DEVICE_LABEL`     | `K_devlabel` | `ak_id`           | `account_id ‖ device_id`                                        | UTF-8 label, ≤ 128 B           | 189 B             |
+| `0x09`    | `RELOAD_TICKET`    | `K_reload`   | ticket id `tid`   | `account_id ‖ device_id ‖ ak_id`                                | `AK` (32 B)                    | exactly 93 B      |
 
-Purpose values `0x09`–`0x0F` are reserved for attachments, portable backups and device-bound
+Purpose values `0x0A`–`0x0F` are reserved for attachments, portable backups and device-bound
 local wraps in later phases. They must be specified before use.
+
+`0x09` is the web reload ticket (D-34, [web-reload-unlock.md §5](web-reload-unlock.md)):
+`K_srv = MAC(H(setup), "ruvee/v1/reload-server")` on the server,
+`H_srv = MAC(K_srv, "ruvee/v1/reload-half" ‖ tid ‖ session_id ‖ device_id)`, and on the client
+`K_reload = MAC(H_srv, "ruvee/v1/reload" ‖ H_tab ‖ tid)` with a random 32-byte `H_tab`. Neither
+half is derived from a vault key, and no purpose is keyed by `SK` (INV-17).
 
 ### 4.4 Parsing rules
 
@@ -318,6 +325,13 @@ JSON is padded with ISO/IEC 7816-4 padding (one `0x80` byte, then `0x00` bytes) 
 multiple of 256 bytes. This is the same scheme as libsodium's `sodium_pad`, implemented in
 `packages/crypto` because `react-native-libsodium` does not expose `pad`, and tested against
 libsodium.js. Padded plaintext is at most 65,536 bytes.
+
+Version 1 may gain **optional** fields (the first is `login.totp`, D-35). A client that does not
+know a field refuses the whole body, so the item shows as unreadable (section 7); it never reads
+the body without the field and never writes it back without it. A body without the new field
+encodes exactly as before. A change that alters the meaning of an existing field needs a new
+`item_schema_version`, and with it a way to learn the version before decrypting
+([totp-authenticator.md §2.2](totp-authenticator.md#22-schema-version-and-mixed-client-versions)).
 
 ### 5.3 Vault manifest (`MANIFEST`)
 

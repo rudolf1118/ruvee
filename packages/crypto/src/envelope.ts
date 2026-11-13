@@ -20,7 +20,8 @@ export interface PurposeSpec {
   readonly name: string;
   readonly code: number;
   /** Which key encrypts this purpose; none may be `SK` alone (INV-17). */
-  readonly keySource: 'AUK' | 'RWK' | 'K_keyset' | 'VK' | 'IK' | 'K_manifest' | 'K_local';
+  readonly keySource:
+    'AUK' | 'RWK' | 'K_keyset' | 'VK' | 'IK' | 'K_manifest' | 'K_local' | 'K_reload';
   readonly plaintextMinBytes: number;
   readonly plaintextMaxBytes: number;
 }
@@ -76,6 +77,14 @@ export const PURPOSES = Object.freeze({
     plaintextMinBytes: 0,
     plaintextMaxBytes: 1_048_576,
   }),
+  // The web reload ticket (D-34, reload-ticket.ts): AK under a key from a tab and a server half.
+  RELOAD_TICKET: Object.freeze({
+    name: 'RELOAD_TICKET',
+    code: 0x09,
+    keySource: 'K_reload',
+    plaintextMinBytes: 32,
+    plaintextMaxBytes: 32,
+  }),
 } satisfies Record<string, PurposeSpec>);
 
 export function envelopeMaxBytes(purpose: PurposeSpec): number {
@@ -94,6 +103,8 @@ export const ITEM_BODY_ENVELOPE_MAX_BYTES = envelopeMaxBytes(PURPOSES.ITEM_BODY)
 export const MANIFEST_ENVELOPE_BYTES = envelopeMaxBytes(PURPOSES.MANIFEST);
 /** Largest `LOCAL_RECORD` envelope: 1,048,637 bytes. */
 export const LOCAL_RECORD_ENVELOPE_MAX_BYTES = envelopeMaxBytes(PURPOSES.LOCAL_RECORD);
+/** Exact size of a `RELOAD_TICKET` envelope: 93 bytes. */
+export const RELOAD_TICKET_ENVELOPE_BYTES = envelopeMaxBytes(PURPOSES.RELOAD_TICKET);
 
 /**
  * The checks of §4.4 steps 1 to 3 that need no key: length bounds, magic, version, algorithm

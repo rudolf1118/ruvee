@@ -243,12 +243,17 @@ async function fill(tabId: number, itemId: string): Promise<FillOutcome> {
   const origin = await tabOrigin(tabId);
   if (!origin) return 'not_allowed';
   const e = await getEngine();
-  const detail = e.detail({ id: itemId });
-  if (
-    detail.type !== 'login' ||
-    detail.trashed ||
-    !detail.urls.some((u) => originMatches(u, origin))
-  )
+  let detail: ReturnType<VaultEngine['detail']>;
+  try {
+    detail = e.detail({ id: itemId });
+  } catch (error) {
+    // Deleted permanently on another device and synced since the popup listed it.
+    if (error instanceof VaultError && error.code === 'not_found') return 'gone';
+    throw error;
+  }
+  // In Trash (moved there on another device): not offered, and not filled either.
+  if (detail.trashed) return 'gone';
+  if (detail.type !== 'login' || !detail.urls.some((u) => originMatches(u, origin)))
     return 'not_allowed';
   const password = e.secret({ id: itemId });
   // Re-read the tab right before injecting; the page itself checks once more (fill.ts).

@@ -9,8 +9,10 @@ import {
   type RuveeCrypto,
 } from '@ruvee/crypto';
 import {
+  base64urlBytes,
   commitRequestSchema,
   normalizeUsername,
+  reloadTicketIdSchema,
   type CommitRequest,
   type SyncChangesResponse,
 } from '@ruvee/contracts';
@@ -35,10 +37,12 @@ import type {
   ItemDetail,
   ItemDraft,
   ItemSummary,
+  TotpView,
   LocalExport,
   LocalStateView,
   MigrationReport,
   RecoveryKitView,
+  ReloadTicket,
   SyncStatus,
   UnlockedVault,
   VaultEvent,
@@ -55,6 +59,8 @@ import {
 import { buildExport, openExport, type OpenedExport } from './export-file.js';
 import { withKeys, type KeyScope } from './key-scope.js';
 import { VaultError } from './vault-error.js';
+import { clockSkewMs } from './clock.js';
+import { parseTotpInput, totpCodes, type Totp } from './totp.js';
 
 export { VaultError } from './vault-error.js';
 import {
@@ -96,6 +102,13 @@ export interface EngineDeps {
   readonly now: () => number;
   readonly emit: (event: VaultEvent) => void;
 }
+
+/** D-34: what the page hands back after a reload; anything else is treated as no ticket. */
+const reloadTicketSchema = z.strictObject({
+  ticketId: reloadTicketIdSchema,
+  tabHalf: base64urlBytes({ length: 32 }),
+  envelope: base64urlBytes({ length: 93 }),
+});
 
 const MAX_MUTATIONS_PER_COMMIT = 100;
 /** device-enrollment §3.1: a pairing and everything a device keeps for it live 10 minutes. */
@@ -420,6 +433,8 @@ export class VaultEngine {
   private recovery: PendingRecovery | undefined;
   /** Serializes every state change, so a save never interleaves with a sync. */
   private queue: Promise<unknown> = Promise.resolve();
+  /** D-34, web: the id of the reload ticket this unlocked session made (memory only). */
+  private reloadTicketId: string | undefined;
   /** Bumped by every `wipeMemory` (a lock). */
   private generation = 0;
   /** The generation the running operation started in; undefined between operations. */
@@ -1805,6 +1820,26 @@ export class VaultEngine {
     return body.type === 'login' ? body.login.password : '';
   }
 
+  /**
+   * The current and next authenticator code, computed here so the secret never leaves the engine
+   * (totp-authenticator.md §4.1, INV-26 as proposed). The device clock is the only time source.
+   */
+  async totp(params: { id: string }): Promise<TotpView> {
+    const session = this.requireSession();
+    const { body } = this.current(session, params.id);
+    if (body.type !== 'login' || !body.login.totp) throw new VaultError('not_found');
+    const totp = body.login.totp;
+    const codes = await totpCodes(totp, this.deps.now());
+    // A lock while the HMAC ran: nothing is returned after it.
+    if (this.session !== session) throw new VaultError('locked');
+    return {
+      ...codes,
+      digits: totp.digits,
+      period: totp.period,
+      clockSkewMs: clockSkewMs(),
+    };
+  }
+
   save(params: { draft: ItemDraft }): Promise<ItemSummary> {
     return this.exclusive(async () => {
       const session = this.writable();
@@ -1812,6 +1847,16 @@ export class VaultEngine {
       const now = this.deps.now();
       const existing = draft.id ? this.current(session, draft.id) : undefined;
       const id = draft.id ?? this.deps.crypto.generateUuid();
+      let totp: Totp | undefined;
+      if (draft.type === 'login') {
+        if (draft.totp === undefined)
+          totp = existing?.body.type === 'login' ? existing.body.login.totp : undefined;
+        else if (draft.totp !== null) {
+          const parsed = parseTotpInput(draft.totp);
+          if (!parsed.ok) throw new VaultError('invalid_item');
+          totp = parsed.totp;
+        }
+      }
       const base = {
         v: 1 as const,
         title: draft.title.trim(),
@@ -1831,6 +1876,7 @@ export class VaultEngine {
                 password: draft.password,
                 urls: draft.urls.filter((u) => u.trim() !== '').map((u) => u.trim()),
                 notes: draft.notes,
+                ...(totp ? { totp } : {}),
               },
             }
           : { ...base, type: 'note', note: { text: draft.noteText } };
@@ -4394,6 +4440,131 @@ export class VaultEngine {
     return true;
   }
 
+  // ---- D-34: web reload tickets (docs/security/web-reload-unlock.md §5, INV-25) ----
+
+  /**
+   * A reload ticket for this unlocked session: the server gives a ticket id and its half `H_srv`,
+   * and `AK` is sealed under `MAC(H_srv, … ‖ H_tab ‖ tid)` with a fresh tab half. The page keeps
+   * `{ tid, H_tab, envelope }` in `sessionStorage`; `AK` and `H_srv` never leave the worker. Null
+   * when the server gives none (offline, a pre-proof session): a reload then asks for the password.
+   */
+  reloadTicketIssue(params: { idleSeconds: number }): Promise<ReloadTicket | null> {
+    return this.exclusive(() => this.issueReloadTicket(params.idleSeconds));
+  }
+
+  private async issueReloadTicket(idleSeconds: number): Promise<ReloadTicket | null> {
+    if (this.deps.platform !== 'web') throw new VaultError('internal');
+    const session = this.requireSession();
+    this.reloadTicketId = undefined;
+    let created;
+    try {
+      created = await this.deps.api.reloadTicketCreate(idleSeconds);
+    } catch {
+      return null;
+    }
+    if (this.session !== session) throw new VaultError('locked');
+    const ticketId = fromB64(created.ticketId);
+    const serverHalf = fromB64(created.serverHalf);
+    const tabHalf = this.deps.crypto.generateReloadTabHalf();
+    try {
+      const envelope = this.deps.crypto.sealReloadTicket({
+        serverHalf,
+        tabHalf,
+        ticketId,
+        accountId: uuidToBytes(session.device.accountId),
+        deviceId: session.deviceIdBytes,
+        accountKeyId: session.accountKeyId,
+        accountKey: session.accountKey,
+      });
+      this.reloadTicketId = created.ticketId;
+      return { ticketId: created.ticketId, tabHalf: toB64(tabHalf), envelope: toB64(envelope) };
+    } finally {
+      serverHalf.fill(0);
+      tabHalf.fill(0);
+    }
+  }
+
+  /**
+   * After a reload: the server returns `H_srv` once to this session (and deletes the ticket), the
+   * envelope opens to `AK`, and `resume` accepts it only if it opens this device's own keyset.
+   * Every failure is `locked`, and the page shows the lock screen; nothing is retried.
+   */
+  async reloadTicketResume(params: ReloadTicket): Promise<UnlockedVault> {
+    if (this.deps.platform !== 'web' || this.session) throw new VaultError('internal');
+    const parsed = reloadTicketSchema.safeParse(params);
+    if (!parsed.success) throw new VaultError('locked');
+    const device = await this.deps.store.device();
+    try {
+      if (!device?.enrolled || device.status !== 'active') throw new VaultError('locked');
+      let serverHalf: Uint8Array;
+      try {
+        serverHalf = fromB64(
+          (await this.deps.api.reloadTicketRedeem(parsed.data.ticketId)).serverHalf,
+        );
+      } catch {
+        throw new VaultError('locked');
+      }
+      let accountKey: Uint8Array;
+      try {
+        accountKey = this.deps.crypto.openReloadTicket({
+          serverHalf,
+          tabHalf: fromB64(parsed.data.tabHalf),
+          ticketId: fromB64(parsed.data.ticketId),
+          accountId: uuidToBytes(device.accountId),
+          deviceId: uuidToBytes(device.deviceId),
+          accountKeyId: device.enrolled.akId,
+          envelope: fromB64(parsed.data.envelope),
+        });
+      } catch {
+        throw new VaultError('locked');
+      } finally {
+        serverHalf.fill(0);
+      }
+      try {
+        return await this.resume({ accountKey });
+      } finally {
+        accountKey.fill(0);
+      }
+    } finally {
+      device?.enrolled?.secretKey.fill(0);
+    }
+  }
+
+  /**
+   * Once a minute while the tab is open. A ticket the server no longer has (the tab slept past
+   * its limit) is replaced, because this tab is still unlocked; one never issued (offline) is
+   * tried again. Offline or any other failure changes nothing.
+   */
+  reloadTicketHeartbeat(params: {
+    active: boolean;
+    idleSeconds: number;
+  }): Promise<ReloadTicket | null> {
+    return this.exclusive(async () => {
+      this.requireSession();
+      const id = this.reloadTicketId;
+      if (id !== undefined) {
+        try {
+          await this.deps.api.reloadTicketHeartbeat(id, params.active);
+          return null;
+        } catch (error) {
+          if (!(error instanceof ApiError && error.code === 'not_found')) return null;
+        }
+      }
+      return this.issueReloadTicket(params.idleSeconds);
+    });
+  }
+
+  /** Lock: the server forgets the ticket; offline, its limits end it within 3 minutes. */
+  async reloadTicketDrop(): Promise<true> {
+    this.reloadTicketId = undefined;
+    try {
+      await this.deps.api.reloadTicketDelete();
+    } catch {
+      // Offline or the session already ended.
+    }
+    return true;
+  }
+
   /** An unfinished setup's keys (INV-15, review R23). */
   private dropSetup(): void {
     const s = this.setup;
@@ -4435,6 +4606,7 @@ export class VaultEngine {
       session.bodies.clear();
     }
     this.session = undefined;
+    this.reloadTicketId = undefined;
     this.dropSetup();
     this.dropRecovery();
     this.kitRotation = undefined;
@@ -4493,6 +4665,7 @@ function detailOf(
     ...summaryOf(id, body, pending, conflict),
     username: body.type === 'login' ? body.login.username : '',
     hasPassword: body.type === 'login' && body.login.password !== '',
+    hasTotp: body.type === 'login' && body.login.totp !== undefined,
     notes: body.type === 'login' ? body.login.notes : '',
     noteText: body.type === 'note' ? body.note.text : '',
     createdAtMs: body.createdAtMs,

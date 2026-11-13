@@ -85,6 +85,8 @@ export function messageFor(e: unknown): string {
       return PAIRING_INTERRUPTED;
     case 'previous_password_required':
       return 'Your master password and Secret Key were both changed on another device. Also enter the master password this browser used before.';
+    case 'not_found':
+      return 'That item is no longer in your vault. It may have been deleted on another device.';
     case 'locked':
       return 'The vault is locked.';
     case 'server_reopening':

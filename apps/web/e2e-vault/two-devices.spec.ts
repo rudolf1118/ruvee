@@ -520,8 +520,27 @@ test('devices: setup, items, pairing, sync, conflict, lock, recovery, password c
   for (const page of [a, b, c, e]) {
     const stored = await indexedDbText(page);
     for (const secret of forbidden) expect(stored, `in IndexedDB: ${secret}`).not.toContain(secret);
-    for (const key of ['localStorage', 'sessionStorage'] as const)
-      expect(await page.evaluate((k) => window[k].length, key)).toBe(0);
+    expect(await page.evaluate(() => localStorage.length)).toBe(0);
+    // INV-16 as amended by D-34: at most this tab's reload ticket, and nothing else.
+    const session = await page.evaluate(() => {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i) ?? '';
+        out[key] = sessionStorage.getItem(key) ?? '';
+      }
+      return out;
+    });
+    expect(Object.keys(session).filter((k) => k !== 'ruvee-reload-ticket')).toEqual([]);
+    const ticket = session['ruvee-reload-ticket'];
+    if (ticket !== undefined) {
+      expect(Object.keys(JSON.parse(ticket) as object).sort()).toEqual([
+        'envelope',
+        'tabHalf',
+        'ticketId',
+      ]);
+      for (const secret of forbidden)
+        expect(ticket, `in sessionStorage: ${secret}`).not.toContain(secret);
+    }
   }
   expect(cspErrors).toEqual([]);
 

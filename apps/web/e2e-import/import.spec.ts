@@ -226,8 +226,21 @@ test('restore an export from installation A into a fresh installation B', async 
   for (const page of [a, b]) {
     const stored = await storedText(page);
     for (const secret of forbidden) expect(stored, `stored: ${secret}`).not.toContain(secret);
-    for (const key of ['localStorage', 'sessionStorage'] as const)
-      expect(await page.evaluate((k) => window[k].length, key)).toBe(0);
+    expect(await page.evaluate(() => localStorage.length)).toBe(0);
+    // INV-16 as amended by D-34: at most this tab's reload ticket in sessionStorage.
+    const session = await page.evaluate(() => {
+      const out: Record<string, string> = {};
+      for (let i = 0; i < sessionStorage.length; i++) {
+        const key = sessionStorage.key(i) ?? '';
+        out[key] = sessionStorage.getItem(key) ?? '';
+      }
+      return out;
+    });
+    expect(Object.keys(session).filter((k) => k !== 'ruvee-reload-ticket')).toEqual([]);
+    for (const secret of forbidden)
+      expect(session['ruvee-reload-ticket'] ?? '', `sessionStorage: ${secret}`).not.toContain(
+        secret,
+      );
   }
   await contextA.close();
   await contextB.close();

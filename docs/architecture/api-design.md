@@ -155,6 +155,15 @@ Specified in [device-enrollment.md](../security/device-enrollment.md). Phase 2.
 | `POST /pairings/{pairingId}/complete` | `active`  | Device B, now active. Deletes the pairing.                                                                                                   |
 | `DELETE /pairings/{pairingId}`        | `session` | Either device cancels.                                                                                                                       |
 
+Web reload tickets (D-34, [web-reload-unlock.md §5](../security/web-reload-unlock.md#5-option-d-in-detail)), web cookie sessions of a web device only:
+
+| Method and path                  | Level     | Body to the server, and response                                                                                     |
+| -------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------- |
+| `POST /reload-tickets`           | `active`  | `{ idleSeconds }` (60 to 28,800) → `201 { ticketId, serverHalf }`. Replaces the session's earlier ticket.            |
+| `POST /reload-tickets/heartbeat` | `active`  | `{ ticketId, active }` → `204`; 3 more minutes, and with `active` a new idle limit. `404` once the ticket has ended. |
+| `POST /reload-tickets/redeem`    | `active`  | `{ ticketId }` → `{ serverHalf }` once; deletes the ticket. `404` for any other session or after either limit.       |
+| `DELETE /reload-tickets`         | `session` | Deletes the session's ticket (lock). `204` when there is none.                                                       |
+
 `pairingId` is in the path, so it appears in routing. It is not a secret, because knowing it
 without `S` allows nothing, but it is logged only as the route template (see [Logging](#logging)).
 

@@ -11,6 +11,8 @@ import {
   loginStartResponseSchema,
   recoveryMaterialResponseSchema,
   recoveryStartResponseSchema,
+  reloadTicketCreateResponseSchema,
+  reloadTicketRedeemResponseSchema,
   reopenMaterialResponseSchema,
   reopenStartResponseSchema,
   pairingStateResponseSchema,
@@ -45,6 +47,7 @@ import {
   type SecretKeyRotateRequest,
 } from '@ruvee/contracts';
 import { z } from 'zod';
+import { noteServerDate } from './clock.js';
 
 /** A response with a contract error code. Messages are the contract's fixed text. */
 export class ApiError extends Error {
@@ -125,6 +128,7 @@ async function request<S extends z.ZodType>(
   } catch {
     throw new NetworkError('offline');
   }
+  noteServerDate(res.headers.get('Date'), Date.now());
   if (!res.ok) {
     const parsed = errorResponseSchema.safeParse(await res.json().catch(() => undefined));
     if (!parsed.success) throw new NetworkError('unexpected_error');
@@ -261,6 +265,14 @@ export function createApi(t: Transport) {
       ),
     rotateRecoveryKey: (body: RecoveryKeyRotateRequest) =>
       send('PUT', '/account/recovery', null, body),
+    // D-34 web reload tickets (web-reload-unlock.md §5).
+    reloadTicketCreate: (idleSeconds: number) =>
+      send('POST', '/reload-tickets', reloadTicketCreateResponseSchema, { idleSeconds }),
+    reloadTicketHeartbeat: (ticketId: string, active: boolean) =>
+      send('POST', '/reload-tickets/heartbeat', null, { ticketId, active }),
+    reloadTicketRedeem: (ticketId: string) =>
+      send('POST', '/reload-tickets/redeem', reloadTicketRedeemResponseSchema, { ticketId }),
+    reloadTicketDelete: () => send('DELETE', '/reload-tickets', null),
   };
 }
 

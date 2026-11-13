@@ -363,6 +363,8 @@ test('chrome.storage.session is out of reach of scripts running in pages', async
 test('a fill requested for a page that has since navigated away fails closed', async () => {
   await popup.goto(popupUrl(siteTab));
   await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+  // The popup lists again after its own sync; let that finish so the list below stays as shown.
+  await popup.waitForTimeout(1_500);
   // The listing is now stale: the same tab moves to another origin before the user clicks.
   await site.goto(OTHER_PORT);
   await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
@@ -763,6 +765,133 @@ test('save offer after a sign-in that goes on to a second same-origin page (two-
   await options.getByRole('button', { name: 'Turn off' }).click();
   await expect(options.getByText(/^Off\./)).toBeVisible();
   await options.close();
+});
+
+/** Adds a login for the test page's origin in the web app and waits until it is synced. */
+async function addLoginInWeb(title: string, password: string): Promise<void> {
+  await web.bringToFront();
+  await web.getByRole('button', { name: 'Add item' }).click();
+  await web.getByLabel('Title (required)').fill(title);
+  await web.getByLabel('Website').fill(new URL(LOGIN_PAGE).origin);
+  await web
+    .getByLabel('Username or email')
+    .fill(`${title.toLowerCase().replace(/ /g, '-')}@portal.example`);
+  await web.getByRole('textbox', { name: 'Password', exact: true }).fill(password);
+  await web.getByRole('button', { name: 'Save' }).click();
+  await expect(web.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
+/** The web app's section navigation (its buttons' names carry item counts). */
+const webNav = () => web.getByRole('navigation', { name: 'Vault navigation' });
+
+/** Moves a login to Trash in the web app, deletes it permanently there, and waits for the sync. */
+async function purgeInWeb(title: string): Promise<void> {
+  await web.bringToFront();
+  await webNav()
+    .getByRole('button', { name: /^All items/ })
+    .click();
+  await web
+    .getByRole('button', { name: new RegExp(title) })
+    .first()
+    .click();
+  await web.getByRole('button', { name: 'Move to Trash' }).click();
+  await webNav()
+    .getByRole('button', { name: /^Trash/ })
+    .click();
+  await web
+    .getByRole('button', { name: new RegExp(title) })
+    .first()
+    .click();
+  await web.getByRole('button', { name: 'Delete permanently' }).click();
+  await web.getByRole('button', { name: 'Delete permanently' }).click();
+  await expect(web.getByRole('button', { name: new RegExp(title) })).toHaveCount(0);
+  await web.waitForTimeout(1_000);
+  await expect(web.getByRole('status').filter({ hasText: 'Synced' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await webNav()
+    .getByRole('button', { name: /^All items/ })
+    .click();
+}
+
+test('a login deleted permanently in the web app leaves the extension; a fill of it says so', async () => {
+  await site.goto(LOGIN_PAGE);
+  await addLoginInWeb('Purge Seen', 'synthetic-purge-seen');
+  await addLoginInWeb('Purge Stale', 'synthetic-purge-stale');
+  // One opening of the popup is enough: it syncs, then lists again (before the fix, the list it
+  // showed was read before its own sync).
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Purge Seen' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(popup.getByRole('button', { name: 'Fill Purge Stale' })).toBeVisible();
+
+  // ---- Purged on the web: gone from the extension after its sync, no error ----
+  await purgeInWeb('Purge Seen');
+  // The extension's sync accepts the purge (it was never the failing call)...
+  const afterPurge = await popup.evaluate(async (tabId) => {
+    const synced = (await chrome.runtime.sendMessage({ kind: 'vault', method: 'sync' })) as {
+      ok: boolean;
+      result?: { state: string };
+    };
+    const listed = (await chrome.runtime.sendMessage({ kind: 'candidates', tabId })) as {
+      result: { items: { title: string }[] };
+    };
+    return { state: synced.result?.state, titles: listed.result.items.map((i) => i.title) };
+  }, siteTab);
+  expect(afterPurge.state).toBe('synced');
+  expect(afterPurge.titles).not.toContain('Purge Seen');
+  expect(afterPurge.titles).toContain('Purge Stale');
+  // ...and the popup, opened once, no longer offers it.
+  await addLoginInWeb('Purge Later', 'synthetic-purge-later');
+  await purgeInWeb('Purge Later');
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Purge Stale' })).toBeVisible();
+  await expect(popup.getByRole('button', { name: 'Fill Purge Later' })).toHaveCount(0, {
+    timeout: 15_000,
+  });
+  await expect(popup.getByRole('button', { name: 'Fill Purge Seen' })).toHaveCount(0);
+  await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+  await expect(popup.getByRole('alert')).toHaveCount(0);
+
+  // ---- Purged while the popup still lists it: the fill says so and fills nothing ----
+  await popup.goto(popupUrl(siteTab));
+  await expect(popup.getByRole('button', { name: 'Fill Purge Stale' })).toBeVisible();
+  await purgeInWeb('Purge Stale');
+  // The extension learns of it with its next sync (here: the worker's, on the fill itself or a
+  // reopen); the click below uses the list shown before the purge.
+  await popup.evaluate(() => chrome.runtime.sendMessage({ kind: 'vault', method: 'sync' }));
+  await popup.getByRole('button', { name: 'Fill Purge Stale' }).click();
+  await expect(popup.getByText(/no longer in your vault/)).toBeVisible();
+  await expect(popup.getByText(/Something went wrong/)).toHaveCount(0);
+  await expect(site.locator('#pw')).toHaveValue('');
+  await expect(popup.getByRole('button', { name: 'Fill Purge Stale' })).toHaveCount(0);
+});
+
+test('the popup stays usable when its sync cannot reach the server', async () => {
+  await site.goto(LOGIN_PAGE);
+  const block = (route: { abort: () => Promise<void> }) => route.abort();
+  await context.route(`${WEB_ORIGIN}/api/**`, block);
+  try {
+    await popup.goto(popupUrl(siteTab));
+    await expect(popup.getByRole('button', { name: 'Fill Synthetic Portal' })).toBeVisible();
+    // The server really is out of reach for the worker's sync.
+    const offline = await popup.evaluate(
+      () =>
+        chrome.runtime.sendMessage({ kind: 'vault', method: 'sync' }) as Promise<{
+          result?: { state: string };
+        }>,
+    );
+    expect(offline.result?.state).toBe('offline');
+    await expect(popup.getByText(/Something went wrong/)).toHaveCount(0);
+    await popup.getByRole('button', { name: 'Fill Synthetic Portal' }).click();
+    await expect(popup.getByText(/^Filled\./)).toBeVisible();
+    await expect(site.locator('#pw')).toHaveValue(ITEM_PASSWORD);
+  } finally {
+    await context.unroute(`${WEB_ORIGIN}/api/**`, block);
+  }
 });
 
 test('R19: a lock that arrives while an unlock is still running wins', async () => {

@@ -92,7 +92,13 @@ export type SavePendingResult = 'saved' | 'gone';
 
 export type SetServerResult = 'saved' | 'not_an_origin' | 'device_exists' | 'no_permission';
 
-export type FillOutcome = 'filled' | 'origin_changed' | 'no_password_field' | 'not_allowed';
+export type FillOutcome =
+  | 'filled'
+  | 'origin_changed'
+  | 'no_password_field'
+  | 'not_allowed'
+  /** The item was deleted or moved to Trash, usually on another device, after it was listed. */
+  | 'gone';
 
 export type ExtensionResponse =
   | { readonly ok: true; readonly result: unknown }

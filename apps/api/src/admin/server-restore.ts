@@ -71,7 +71,7 @@ import type { PgTools } from './pg-tools.js';
  * request windows (≤ 15 minutes) of the old server mean nothing on the restored one, and a
  * login state must never be finishable after a restore.
  */
-export const TRANSIENT_TABLES = ['rate_windows', 'login_states'] as const;
+export const TRANSIENT_TABLES = ['rate_windows', 'login_states', 'reload_tickets'] as const;
 
 export { BACKUP_FORMAT, GUARD_TABLE };
 /** Names of the throwaway databases the test suites create; nothing else may be backed up yet. */

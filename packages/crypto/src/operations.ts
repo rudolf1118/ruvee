@@ -26,6 +26,7 @@ import {
   type LoginStateSealOperations,
 } from './login-state-seal.js';
 import { buildPairingOperations, type PairingOperations } from './pairing-operations.js';
+import { buildReloadTicketOperations, type ReloadTicketOperations } from './reload-ticket.js';
 import { buildVaultOperations, type VaultOperations } from './vault-operations.js';
 
 const ACCOUNT_ID_BYTES = 16;
@@ -91,7 +92,12 @@ export interface OpenKeysetInput extends KeysetContext {
  * keyset plaintext bytes) are wiped before returning, on success and on failure.
  */
 export interface RuveeCrypto
-  extends VaultOperations, PairingOperations, DeviceProofOperations, LoginStateSealOperations {
+  extends
+    VaultOperations,
+    PairingOperations,
+    DeviceProofOperations,
+    LoginStateSealOperations,
+    ReloadTicketOperations {
   /** A new 32-byte key from the CSPRNG: `SK`, `AK` or `VK`. */
   generateKey(): Uint8Array;
   /** A new 16-byte key id from the CSPRNG: `ak_id` or `vk_id`. */
@@ -146,6 +152,7 @@ export function buildRuveeCrypto(p: Primitives, nextNonce: NonceSource): RuveeCr
     ...buildPairingOperations(p),
     ...buildDeviceProofOperations(p),
     ...buildLoginStateSealOperations(p),
+    ...buildReloadTicketOperations(p, nextNonce),
     generateKey: () => p.randomBytes(KEY_BYTES),
     generateKeyId: () => p.randomBytes(KEY_ID_BYTES),
     generatePasswordSalt: () => p.randomBytes(SALT_BYTES),

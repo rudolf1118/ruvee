@@ -441,6 +441,7 @@ const FILL_TEXT: Record<FillOutcome, string> = {
   origin_changed: 'The page changed before Ruvee could fill it. Nothing was filled.',
   no_password_field: 'No visible password field on this page.',
   not_allowed: "This login isn't saved for this page, so Ruvee won't fill it.",
+  gone: 'This login is no longer in your vault (deleted or moved to Trash on another device). Nothing was filled.',
 };
 
 /** extension-design.md §4: logins saved for exactly this page's origin, filled on request. */
@@ -451,39 +452,61 @@ function Fill({ onLocked }: { onLocked: () => void }) {
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
+  const failed = useCallback(
+    (step: string) => (e: unknown) => {
+      if (
+        e instanceof CallError &&
+        ['locked', 'session_expired', 'device_revoked'].includes(e.code)
+      )
+        onLocked();
+      else setError(stepMessageFor(step, e));
+    },
+    [onLocked],
+  );
+
+  /** The logins for the tab, as the worker holds them now. */
+  const list = useCallback(
+    async (tab: number | null): Promise<void> => {
+      if (tab === null) {
+        setFound({ origin: null, items: [] });
+        return;
+      }
+      await call<Candidates>({ kind: 'candidates', tabId: tab }).then(
+        setFound,
+        failed('candidates'),
+      );
+    },
+    [failed],
+  );
+
   useEffect(() => {
     void (async () => {
-      // Each call on its own: one that fails does not hide what the others found (a save
-      // offer must not vanish because a sync failed), and the error names the call.
-      const failed = (step: string) => (e: unknown) => {
-        if (
-          e instanceof CallError &&
-          ['locked', 'session_expired', 'device_revoked'].includes(e.code)
-        )
-          onLocked();
-        else setError(stepMessageFor(step, e));
-      };
       const tab = await targetTab().catch(() => null);
       setTabId(tab);
-      if (tab === null) setFound({ origin: null, items: [] });
-      else {
-        await call<Candidates>({ kind: 'candidates', tabId: tab }).then(setFound, (e: unknown) => {
-          setFound({ origin: null, items: [] });
-          failed('candidates')(e);
-        });
+      // The local list first, so the popup is usable at once and while offline.
+      await list(tab);
+      // A save offer waiting for this tab (phase B). Its own call: a failure here or in the
+      // sync below does not hide the list, and the error names the call.
+      if (tab !== null)
         await call<PendingSave | null>({ kind: 'pendingSave', tabId: tab }).then(
           setPending,
           failed('pendingSave'),
         );
-      }
       // A sync on every open: it brings other devices' changes, and it is how a revoked
-      // browser or an ended session is noticed (the worker then locks or wipes itself).
-      await call<SyncStatus>({ kind: 'vault', method: 'sync' }).then((synced) => {
-        if (synced.state === 'session_expired') onLocked();
-        else setNotice(restoreNotice(synced));
+      // browser or an ended session is noticed (the worker then locks or wipes itself). The
+      // list is read again afterwards: what other devices deleted must not stay offered.
+      await call<SyncStatus>({ kind: 'vault', method: 'sync' }).then(async (synced) => {
+        if (synced.state === 'session_expired') {
+          onLocked();
+          return;
+        }
+        // Only a notice of its own: a fill the user started meanwhile keeps its result shown.
+        const notice = restoreNotice(synced);
+        if (notice !== null) setNotice(notice);
+        await list(tab);
       }, failed('sync'));
     })();
-  }, [onLocked]);
+  }, [onLocked, list, failed]);
 
   const answerSave = (save: boolean) => {
     if (tabId === null) return;
@@ -568,14 +591,10 @@ function Fill({ onLocked }: { onLocked: () => void }) {
               onClick={() => {
                 if (tabId === null) return;
                 setNotice(null);
-                call<FillOutcome>({ kind: 'fill', tabId, itemId: item.id }).then(
-                  (outcome) => {
-                    setNotice(FILL_TEXT[outcome]);
-                  },
-                  (e: unknown) => {
-                    setError(messageFor(e));
-                  },
-                );
+                call<FillOutcome>({ kind: 'fill', tabId, itemId: item.id }).then((outcome) => {
+                  setNotice(FILL_TEXT[outcome]);
+                  if (outcome === 'gone') void list(tabId);
+                }, failed('fill'));
               }}
             >
               Fill
