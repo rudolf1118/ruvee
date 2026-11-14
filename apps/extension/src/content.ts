@@ -22,12 +22,18 @@ const MIN_FIELD_HEIGHT = 16;
 /** One request a second at most, however often the icon is clicked. */
 const OPEN_INTERVAL_MS = 1000;
 
-// The brand mark (docs/brand/favicon.svg), inline: there are no web-accessible resources.
+// The brand mark, drawn as in the popup and the web app (apps/web/src/components/ui/logo.tsx),
+// inline: there are no web-accessible resources. The browser's (OS) dark preference picks the
+// dark brand; the page's own color-scheme does not.
 const MARKUP = `<style>
 :host { all: initial; }
-button { all: initial; display: block; width: ${String(SIZE)}px; height: ${String(SIZE)}px; cursor: pointer; }
+button { all: initial; display: block; width: ${String(SIZE)}px; height: ${String(SIZE)}px; cursor: pointer; border-radius: 6px; transition: transform 120ms, filter 120ms; }
+button:hover { transform: scale(1.08); filter: brightness(1.08); }
 svg { display: block; width: 100%; height: 100%; }
-</style><button type="button" tabindex="-1" title="Fill with Ruvee" aria-label="Fill with Ruvee"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#6d4aff"/><circle cx="16" cy="13.2" r="4.8" fill="none" stroke="#fff" stroke-width="3.2"/><path d="M16 18.4v6.4" stroke="#fff" stroke-width="3.2" stroke-linecap="round"/></svg></button>`;
+rect { fill: #6d4aff; }
+@media (prefers-color-scheme: dark) { rect { fill: #7357ff; } }
+@media (prefers-reduced-motion: reduce) { button { transition: none; } button:hover { transform: none; } }
+</style><button type="button" tabindex="-1" title="Fill with Ruvee" aria-label="Fill with Ruvee"><svg viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="9"/><circle cx="16" cy="13.5" r="5" fill="none" stroke="#fff" stroke-width="2.6"/><path d="M16 18.5v6" stroke="#fff" stroke-width="2.6" stroke-linecap="round"/></svg></button>`;
 
 const icons = new Map<HTMLInputElement, HTMLElement>();
 let lastOpen = 0;

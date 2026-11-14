@@ -41,6 +41,10 @@ reach that one origin.
 
 The vault locks after 15 minutes without use, on **Lock**, and when the browser exits.
 
+**Open Ruvee** in the popup's header and on the settings page opens the paired server's web vault,
+or brings its tab forward if one is open. **Copy** on a login copies its username only; the
+password never reaches the popup.
+
 ## Tests
 
 ```sh
@@ -51,3 +55,10 @@ RUVEE_E2E_ADMIN_DATABASE_URL=… pnpm --filter @ruvee/extension test:extension
 The second builds `dist-test/` (the same code with `__RUVEE_TEST__` and host permission for
 127.0.0.1, because automation cannot click a permission prompt) and runs the end-to-end flow in
 Chromium against a throwaway API database. It needs the API and web export built.
+
+```sh
+pnpm --filter @ruvee/extension build && node apps/extension/scripts/screenshots.mjs <dir>
+```
+
+Screenshots of the popup states and the settings page, light and dark, for design review. The
+pages run against a stub of the `chrome` API with synthetic data; no server or worker is involved.

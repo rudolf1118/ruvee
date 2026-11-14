@@ -103,7 +103,7 @@ function bootstrapToken(): string {
 
 async function tabIdOf(worker: Worker, url: string): Promise<number> {
   return worker.evaluate(async (pattern) => {
-    const [tab] = await chrome.tabs.query({ url: pattern } as never);
+    const [tab] = await chrome.tabs.query({ url: pattern });
     return tab?.id ?? -1;
   }, `${url}*`);
 }
@@ -892,6 +892,49 @@ test('the popup stays usable when its sync cannot reach the server', async () =>
   } finally {
     await context.unroute(`${WEB_ORIGIN}/api/**`, block);
   }
+});
+
+test('Open Ruvee brings the open web vault forward; Copy copies the username only', async () => {
+  await site.goto(LOGIN_PAGE);
+  await popup.goto(popupUrl(siteTab));
+  const onServer = () => context.pages().filter((p) => p.url().startsWith(WEB_ORIGIN));
+  const open = onServer().length;
+  expect(open).toBeGreaterThan(0);
+  // Start with the web vault behind another tab, so the poll below can only pass by the click.
+  await site.bringToFront();
+  const vaultActive = () =>
+    worker.evaluate(
+      async (origin) => (await chrome.tabs.query({ url: `${origin}/*` })).some((t) => t.active),
+      WEB_ORIGIN,
+    );
+  expect(await vaultActive()).toBe(false);
+  await popup.getByRole('button', { name: /^Open Ruvee/ }).click();
+  await expect
+    .poll(() =>
+      worker.evaluate(
+        async (origin) => (await chrome.tabs.query({ url: `${origin}/*` })).some((t) => t.active),
+        WEB_ORIGIN,
+      ),
+    )
+    .toBe(true);
+  // The tab already open is reused; no second web vault tab.
+  expect(onServer()).toHaveLength(open);
+
+  // What the popup hands to the clipboard (Playwright cannot grant clipboard access to an
+  // extension origin, so the call itself is recorded).
+  await popup.evaluate(() => {
+    const copied: string[] = [];
+    Object.assign(window, { copied });
+    navigator.clipboard.writeText = (text: string) => {
+      copied.push(text);
+      return Promise.resolve();
+    };
+  });
+  await popup.getByRole('button', { name: 'Copy username for Synthetic Portal' }).click();
+  await expect(popup.getByText('Username copied.')).toBeVisible();
+  expect(await popup.evaluate(() => (window as unknown as { copied: string[] }).copied)).toEqual([
+    'owner@portal.example',
+  ]);
 });
 
 test('R19: a lock that arrives while an unlock is still running wins', async () => {

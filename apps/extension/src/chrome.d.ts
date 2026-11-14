@@ -56,11 +56,22 @@ declare namespace chrome {
       windowId?: number;
     }
     function get(tabId: number): Promise<Tab>;
-    function query(query: { active?: boolean; lastFocusedWindow?: boolean }): Promise<Tab[]>;
+    function query(query: {
+      active?: boolean;
+      lastFocusedWindow?: boolean;
+      url?: string;
+    }): Promise<Tab[]>;
+    // "Open Ruvee" (ui/open-web.ts): the web vault in a new tab, or its open tab brought forward.
+    function create(properties: { url: string }): Promise<Tab>;
+    function update(tabId: number, properties: { active: boolean }): Promise<Tab>;
     const onRemoved: { addListener(callback: (tabId: number) => void): void };
     const onUpdated: {
       addListener(callback: (tabId: number, change: { status?: string }) => void): void;
     };
+  }
+
+  namespace windows {
+    function update(windowId: number, properties: { focused: boolean }): Promise<unknown>;
   }
 
   namespace scripting {
