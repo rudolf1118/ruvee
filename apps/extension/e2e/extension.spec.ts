@@ -900,7 +900,15 @@ test('Open Ruvee brings the open web vault forward; Copy copies the username onl
   const onServer = () => context.pages().filter((p) => p.url().startsWith(WEB_ORIGIN));
   const open = onServer().length;
   expect(open).toBeGreaterThan(0);
-  await popup.getByRole('button', { name: 'Open Ruvee' }).click();
+  // Start with the web vault behind another tab, so the poll below can only pass by the click.
+  await site.bringToFront();
+  const vaultActive = () =>
+    worker.evaluate(
+      async (origin) => (await chrome.tabs.query({ url: `${origin}/*` })).some((t) => t.active),
+      WEB_ORIGIN,
+    );
+  expect(await vaultActive()).toBe(false);
+  await popup.getByRole('button', { name: /^Open Ruvee/ }).click();
   await expect
     .poll(() =>
       worker.evaluate(

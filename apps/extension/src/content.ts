@@ -23,7 +23,8 @@ const MIN_FIELD_HEIGHT = 16;
 const OPEN_INTERVAL_MS = 1000;
 
 // The brand mark, drawn as in the popup and the web app (apps/web/src/components/ui/logo.tsx),
-// inline: there are no web-accessible resources. The page's colour scheme picks the dark brand.
+// inline: there are no web-accessible resources. The browser's (OS) dark preference picks the
+// dark brand; the page's own color-scheme does not.
 const MARKUP = `<style>
 :host { all: initial; }
 button { all: initial; display: block; width: ${String(SIZE)}px; height: ${String(SIZE)}px; cursor: pointer; border-radius: 6px; transition: transform 120ms, filter 120ms; }

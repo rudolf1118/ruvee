@@ -45,6 +45,13 @@ describe('Open Ruvee', () => {
     expect(tabs.create).toHaveBeenCalledWith({ url: `${SERVER}/` });
   });
 
+  it('opens a new tab when the tab found has closed before it could be brought forward', async () => {
+    const { tabs } = stubTabs([{ id: 4, url: `${SERVER}/`, active: false, windowId: 2 }]);
+    tabs.update.mockImplementationOnce(() => Promise.reject(new Error('No tab with id: 4.')));
+    await openWebVault(SERVER);
+    expect(tabs.create).toHaveBeenCalledWith({ url: `${SERVER}/` });
+  });
+
   it('opens a new tab when the browser refuses the query', async () => {
     const { tabs } = stubTabs(new Error('no permission'));
     await openWebVault(SERVER);

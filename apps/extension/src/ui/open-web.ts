@@ -17,8 +17,13 @@ export async function openWebVault(server: string | null): Promise<void> {
     await chrome.tabs.create({ url: `${origin}/` });
     return;
   }
-  await chrome.tabs.update(tab.id, { active: true });
-  if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+  try {
+    await chrome.tabs.update(tab.id, { active: true });
+    if (tab.windowId !== undefined) await chrome.windows.update(tab.windowId, { focused: true });
+  } catch {
+    // The tab closed (or its window went away) between the query and the update.
+    await chrome.tabs.create({ url: `${origin}/` });
+  }
 }
 
 /** The server origin as stored at pairing; read directly when the worker could not answer. */
