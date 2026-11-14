@@ -908,7 +908,12 @@ test('save offer opens the popup by itself: once per capture, the badge when it 
   await expect.poll(() => badgeOf(c.tab)).toBe('+');
   expect(await actionPopups()).toBe(1);
   expect(await pendingFor(c.tab)).toMatchObject({ username: 'popup-open@portal.example' });
-  expect((await offerResults())[0]).toMatch(/^badge only: Chrome refused \(.+\)$/);
+  // The open popup holds the focus. Chromium on Linux (CI) then reports the browser window as not
+  // focused, so the worker's own check stops first; on macOS the window stays focused and Chrome's
+  // openPopup refuses. Either way it is the badge only, and the record names which rule applied.
+  expect((await offerResults())[0]).toMatch(
+    /^badge only: (Chrome refused \(.+\)|window_not_focused)$/,
+  );
   await closeActionPopups();
   await pastAutoOpenInterval();
 
