@@ -138,6 +138,27 @@ describe('D-34: web reload tickets (real database)', () => {
     expect(left.map((r) => r.session_id)).toEqual([await sessionIdOf(cookie)]);
   });
 
+  it('never returns a ticket whose device is not the session’s, and leaves it in place', async () => {
+    // A session belongs to one device, so the device check can only fail if the row itself names
+    // another device: copy this device's row under a new id, move the ticket to it, and redeem
+    // with the session of the original device.
+    const [copy] = await rows<{ id: string }>(
+      `INSERT INTO devices SELECT (jsonb_populate_record(d, jsonb_build_object('id', gen_random_uuid()))).*
+       FROM devices d WHERE d.id = $1 RETURNING id::text`,
+      [account.deviceId],
+    );
+    if (!copy) throw new Error('no device copy');
+    const other = { deviceId: copy.id };
+    const ticket = await create();
+    await rows('UPDATE reload_tickets SET device_id = $1', [other.deviceId]);
+    expectError(await redeem(ticket.ticketId), 'not_found');
+    expectError(await heartbeat(ticket.ticketId, true), 'not_found');
+    const left = await rows<{ device_id: string }>('SELECT device_id::text FROM reload_tickets');
+    expect(left.map((r) => r.device_id)).toEqual([other.deviceId]);
+    await rows('DELETE FROM reload_tickets');
+    await rows('DELETE FROM devices WHERE id = $1', [other.deviceId]);
+  });
+
   it('refuses after 3 minutes without a heartbeat, and removes the row', async () => {
     const ticket = await create();
     await rows(

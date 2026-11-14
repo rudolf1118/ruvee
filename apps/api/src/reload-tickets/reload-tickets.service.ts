@@ -116,7 +116,10 @@ export class ReloadTicketsService implements OnModuleInit, OnModuleDestroy {
     return response;
   }
 
-  /** Moves the heartbeat limit, and the idle limit when the user was active. */
+  /**
+   * Moves the heartbeat limit, and the idle limit when the user was active. Bound to the session and
+   * its device like redeem, so a row naming another device is neither moved nor removed.
+   */
   async heartbeat(
     session: AuthenticatedSession,
     ticketId: string,
@@ -132,10 +135,11 @@ export class ReloadTicketsService implements OnModuleInit, OnModuleDestroy {
             THEN ${now}::timestamptz(3) + make_interval(secs => idle_seconds)
             ELSE idle_expires_at END
       WHERE id_hash = ${idHash} AND session_id = ${session.sessionId}::uuid
+        AND device_id = ${session.deviceId}::uuid
         AND expires_at > ${now} AND idle_expires_at > ${now}`;
     if (updated !== 1) {
       await this.prisma.reloadTicket.deleteMany({
-        where: { idHash, sessionId: session.sessionId },
+        where: { idHash, sessionId: session.sessionId, deviceId: session.deviceId },
       });
       throw new ApiException('not_found');
     }
