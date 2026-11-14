@@ -1,7 +1,13 @@
 import { type SubmitEvent, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { INLINE_ORIGINS } from '../inline/gate';
-import type { InlineSettings, SetInlineResult, SetServerResult, Status } from '../messages';
+import type {
+  InlineSettings,
+  OfferLogEntry,
+  SetInlineResult,
+  SetServerResult,
+  Status,
+} from '../messages';
 import { fillableOrigin } from '../origin';
 import { call, messageFor } from './client';
 
@@ -115,12 +121,16 @@ function Options() {
  */
 function Inline() {
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [autoOpen, setAutoOpen] = useState(false);
+  const [log, setLog] = useState<OfferLogEntry[]>([]);
   const [message, setMessage] = useState<{ tone: 'error' | 'ok'; text: string } | null>(null);
 
   useEffect(() => {
     call<InlineSettings>({ kind: 'inlineSettings' }).then(
       (settings) => {
         setEnabled(settings.enabled);
+        setAutoOpen(settings.autoOpenSave);
+        void call<OfferLogEntry[]>({ kind: 'offerLog' }).then(setLog, () => undefined);
       },
       (e: unknown) => {
         setMessage({ tone: 'error', text: messageFor(e) });
@@ -211,6 +221,61 @@ function Inline() {
         <button type="button" onClick={turnOff}>
           Turn off
         </button>
+      ) : null}
+      {enabled === true ? (
+        <label className="check">
+          <input
+            type="checkbox"
+            checked={autoOpen}
+            onChange={(event) => {
+              const next = event.target.checked;
+              setMessage(null);
+              call<true>({ kind: 'setAutoOpenSave', enabled: next }).then(
+                () => {
+                  setAutoOpen(next);
+                },
+                (e: unknown) => {
+                  setMessage({ tone: 'error', text: messageFor(e) });
+                },
+              );
+            }}
+          />
+          Open Ruvee by itself to offer saving a login
+          <span className="muted">
+            {' '}
+            After you sign in on a site, Ruvee opens its own window to ask whether to save the
+            login. Off: only a + on the Ruvee button shows the offer. When the window opens, the
+            site may notice that its page lost focus, and so that Ruvee is unlocked and has no login
+            with that username.
+          </span>
+        </label>
+      ) : null}
+      {enabled === true ? (
+        // Development build: what became of the last sign-ins, so a hand check can tell why a
+        // popup did or did not open (extension-inline-autofill.md §8.3).
+        <div className="offer-log">
+          <h3>Recent sign-ins (development build)</h3>
+          {log.length === 0 ? (
+            <p className="muted">None since the browser started.</p>
+          ) : (
+            <ul>
+              {log.map((entry) => (
+                <li key={`${String(entry.atMs)}-${entry.origin}`}>
+                  <span className="muted">{new Date(entry.atMs).toLocaleTimeString()}</span>{' '}
+                  {entry.origin}: {entry.result}
+                </li>
+              ))}
+            </ul>
+          )}
+          <button
+            type="button"
+            onClick={() => {
+              void call<OfferLogEntry[]>({ kind: 'offerLog' }).then(setLog, () => undefined);
+            }}
+          >
+            Refresh
+          </button>
+        </div>
       ) : null}
     </section>
   );

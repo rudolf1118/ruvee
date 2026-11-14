@@ -767,6 +767,199 @@ test('save offer after a sign-in that goes on to a second same-origin page (two-
   await options.close();
 });
 
+/** A message from this extension's content script in the top frame of `tabId`. */
+async function fromContentScriptIn(tabId: number, message: unknown): Promise<unknown> {
+  return worker.evaluate(
+    async ([id, msg]) => {
+      const [r] = await chrome.scripting.executeScript({
+        target: { tabId: id },
+        world: 'ISOLATED',
+        args: [msg],
+        func: async (m: unknown) => {
+          const reply: unknown = await chrome.runtime.sendMessage(m);
+          return reply === undefined ? 'no reply' : reply;
+        },
+      });
+      return r?.result;
+    },
+    [tabId, message] as const,
+  );
+}
+
+/** A new tab on the sign-in page, in front, and its id. */
+async function signInTab(name: string): Promise<{ page: Page; tab: number }> {
+  const page = await context.newPage();
+  const url = `${SIGNIN_PAGE}?tab=${name}`;
+  await page.goto(url);
+  await page.bringToFront();
+  const tab = await worker.evaluate(async () => {
+    const [front] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+    return front?.id ?? -1;
+  });
+  return { page, tab };
+}
+
+async function signInOn(page: Page, username: string, password: string): Promise<void> {
+  await page.locator('#user').fill(username);
+  await page.locator('#pw').fill(password);
+  await page.locator('#go').click();
+  await page.waitForURL(/\/welcome$/);
+}
+
+/** What the worker recorded about the last sign-ins, newest first (§8.3). */
+async function offerResults(): Promise<string[]> {
+  return popup.evaluate(async () => {
+    const reply = (await chrome.runtime.sendMessage({ kind: 'offerLog' })) as {
+      result: { result: string }[];
+    };
+    return reply.result.map((e) => e.result);
+  });
+}
+
+/** Past the browser-wide interval between two automatic popups (3 s in the test build). */
+const pastAutoOpenInterval = () => site.waitForTimeout(3_500);
+
+test('save offer opens the popup by itself: once per capture, the badge when it cannot, off by the toggle', async () => {
+  const options = await context.newPage();
+  await options.goto(`chrome-extension://${EXTENSION_ID}/options.html`);
+  await options.getByRole('button', { name: 'Turn on' }).click();
+  await expect(options.getByText(/^On\./)).toBeVisible();
+  const toggle = options.getByRole('checkbox', { name: /Open Ruvee by itself/ });
+  // Off by default (§5.2a); turned on here. The box changes once the worker stored it.
+  await expect(toggle).not.toBeChecked();
+  await closeActionPopups();
+  await pastAutoOpenInterval();
+
+  // ---- The owner's case (rehearsal, 2026-11-12): the setting at its default, off ----
+  const z = await signInTab('z');
+  await signInOn(z.page, 'default-off@portal.example', 'synthetic-default-off');
+  await expect.poll(() => badgeOf(z.tab)).toBe('+');
+  await z.page.waitForTimeout(1000);
+  expect(await actionPopups()).toBe(0);
+  expect((await offerResults())[0]).toBe('badge only: off');
+  // The offer says how to get the popup by itself; the options page shows the record.
+  await popup.goto(popupUrl(z.tab));
+  await expect(popup.getByText(/turn on .Open Ruvee by itself. in Settings/)).toBeVisible();
+  await options.reload();
+  await expect(options.getByText(/badge only: off/).first()).toBeVisible();
+
+  await toggle.click();
+  await expect(toggle).toBeChecked();
+  await pastAutoOpenInterval();
+
+  // ---- A sign-in opens the popup once; the "+" stays until the offer is answered ----
+  const a = await signInTab('a');
+  await signInOn(a.page, 'auto-a@portal.example', 'synthetic-auto-a');
+  await expect.poll(actionPopups).toBe(1);
+  expect(await pendingFor(a.tab)).toEqual({
+    origin: new URL(LOGIN_PAGE).origin,
+    username: 'auto-a@portal.example',
+  });
+  await a.page.waitForTimeout(1000);
+  expect(await badgeOf(a.tab)).toBe('+');
+  expect((await offerResults())[0]).toBe('popup opened');
+  await closeActionPopups();
+
+  // ---- Once per tab: a second sign-in there only updates the offer and the badge ----
+  await pastAutoOpenInterval();
+  await a.page.goto(`${SIGNIN_PAGE}?tab=a`);
+  await signInOn(a.page, 'auto-a2@portal.example', 'synthetic-auto-a2');
+  await expect.poll(() => pendingFor(a.tab)).toMatchObject({ username: 'auto-a2@portal.example' });
+  await a.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+  expect(await badgeOf(a.tab)).toBe('+');
+  expect((await offerResults())[0]).toBe('badge only: limit_tab');
+
+  // ---- Never without a capture: a page's own submit opens nothing ----
+  const b = await signInTab('b');
+  await b.page.evaluate(() => {
+    (document.getElementById('user') as HTMLInputElement).value = 'planted@portal.example';
+    (document.getElementById('pw') as HTMLInputElement).value = 'planted-secret';
+    document.querySelector('form')?.requestSubmit();
+  });
+  await b.page.waitForURL(/\/welcome$/);
+  await b.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+  expect(await pendingFor(b.tab)).toBeNull();
+
+  // ---- Never while locked: no capture, no popup ----
+  await lockFromPopup();
+  await b.page.goto(`${SIGNIN_PAGE}?tab=b`);
+  await b.page.bringToFront();
+  await signInOn(b.page, 'locked-user@portal.example', 'synthetic-locked');
+  await b.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+  expect(await badgeOf(b.tab)).toBe('');
+  expect((await offerResults())[0]).toBe('not kept: locked');
+  await unlockAgain();
+  await pastAutoOpenInterval();
+
+  // ---- The badge when the browser cannot open it: a popup already open ----
+  const c = await signInTab('c');
+  expect(await fromContentScriptIn(c.tab, { kind: 'inlineOpen' })).toBeNull();
+  await expect.poll(actionPopups).toBe(1);
+  expect(
+    await fromContentScriptIn(c.tab, {
+      kind: 'inlineCapture',
+      username: 'popup-open@portal.example',
+      password: 'synthetic-popup-open',
+    }),
+  ).toBeNull();
+  await expect.poll(() => badgeOf(c.tab)).toBe('+');
+  expect(await actionPopups()).toBe(1);
+  expect(await pendingFor(c.tab)).toMatchObject({ username: 'popup-open@portal.example' });
+  // The open popup holds the focus. Chromium on Linux (CI) then reports the browser window as not
+  // focused, so the worker's own check stops first; on macOS the window stays focused and Chrome's
+  // openPopup refuses. Either way it is the badge only, and the record names which rule applied.
+  expect((await offerResults())[0]).toMatch(
+    /^badge only: (Chrome refused \(.+\)|window_not_focused)$/,
+  );
+  await closeActionPopups();
+  await pastAutoOpenInterval();
+
+  // ---- ... and for a tab that is not in front (it would open for the wrong tab) ----
+  const d = await signInTab('d');
+  await c.page.bringToFront();
+  expect(
+    await fromContentScriptIn(d.tab, {
+      kind: 'inlineCapture',
+      username: 'background@portal.example',
+      password: 'synthetic-background',
+    }),
+  ).toBeNull();
+  await expect.poll(() => badgeOf(d.tab)).toBe('+');
+  await c.page.waitForTimeout(1000);
+  expect(await actionPopups()).toBe(0);
+  expect((await offerResults())[0]).toBe('badge only: tab_not_active');
+
+  // ---- Turned off: the badge only ----
+  await options.bringToFront();
+  await toggle.click();
+  await expect(toggle).not.toBeChecked();
+  await options.reload();
+  await expect(options.getByRole('checkbox', { name: /Open Ruvee by itself/ })).not.toBeChecked();
+  await pastAutoOpenInterval();
+  const e = await signInTab('e');
+  await signInOn(e.page, 'toggle-off@portal.example', 'synthetic-toggle-off');
+  await expect.poll(() => badgeOf(e.tab)).toBe('+');
+  await e.page.waitForTimeout(1500);
+  expect(await actionPopups()).toBe(0);
+
+  // Inline fill off for the tests that follow (the setting is back at its default, off).
+  await options.bringToFront();
+  await options.getByRole('button', { name: 'Turn off' }).click();
+  await expect(options.getByText(/^Off\./)).toBeVisible();
+  for (const t of [z, a, b, c, d, e]) {
+    await popup.evaluate(
+      (tabId) => chrome.runtime.sendMessage({ kind: 'dismissPending', tabId }),
+      t.tab,
+    );
+    await t.page.close();
+  }
+  await options.close();
+  await site.bringToFront();
+});
+
 /** Adds a login for the test page's origin in the web app and waits until it is synced. */
 async function addLoginInWeb(title: string, password: string): Promise<void> {
   await web.bringToFront();
@@ -997,8 +1190,14 @@ test('service worker stopped mid-operation: an unlock completes once or not at a
   await site.goto(LOGIN_PAGE);
   await popup.waitForTimeout(1_000);
   await expect(site.locator('#pw')).toHaveValue('');
-  // Nothing but the unlock state and the access token survives in session storage.
-  expect((await sessionKeys(worker)).sort()).toEqual(['accessToken', 'ak', 'lastActivityMs']);
+  // Nothing but the unlock state, the access token and (since the automatic save popup) the
+  // record of recent sign-ins, origins and outcomes only (§8.3), survives in session storage.
+  expect((await sessionKeys(worker)).sort()).toEqual([
+    'accessToken',
+    'ak',
+    'lastActivityMs',
+    'offerLog',
+  ]);
 });
 
 test('a password reaches only the page field it fills: no popup reply, page message or markup', async () => {

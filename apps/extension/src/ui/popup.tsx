@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import type {
   Candidates,
   FillOutcome,
+  InlineSettings,
   PairingView,
   PendingSave,
   SavePendingResult,
@@ -449,6 +450,7 @@ function Fill({ onLocked }: { onLocked: () => void }) {
   const [tabId, setTabId] = useState<number | null>(null);
   const [found, setFound] = useState<Candidates | null>(null);
   const [pending, setPending] = useState<PendingSave | null>(null);
+  const [autoOpenOff, setAutoOpenOff] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -487,11 +489,19 @@ function Fill({ onLocked }: { onLocked: () => void }) {
       await list(tab);
       // A save offer waiting for this tab (phase B). Its own call: a failure here or in the
       // sync below does not hide the list, and the error names the call.
-      if (tab !== null)
+      if (tab !== null) {
         await call<PendingSave | null>({ kind: 'pendingSave', tabId: tab }).then(
           setPending,
           failed('pendingSave'),
         );
+        // Only for the hint under a save offer; a failure here changes nothing else.
+        await call<InlineSettings>({ kind: 'inlineSettings' }).then(
+          (settings) => {
+            setAutoOpenOff(!settings.autoOpenSave);
+          },
+          () => undefined,
+        );
+      }
       // A sync on every open: it brings other devices' changes, and it is how a revoked
       // browser or an ended session is noticed (the worker then locks or wipes itself). The
       // list is read again afterwards: what other devices deleted must not stay offered.
@@ -541,6 +551,12 @@ function Fill({ onLocked }: { onLocked: () => void }) {
             {pending.username === '' ? 'No username' : `Username: ${pending.username}`}. The
             password stays hidden.
           </p>
+          {autoOpenOff ? (
+            <p className="muted">
+              Ruvee can open this offer by itself after a sign-in: turn on &ldquo;Open Ruvee by
+              itself&rdquo; in Settings.
+            </p>
+          ) : null}
           <button
             type="button"
             className="primary"

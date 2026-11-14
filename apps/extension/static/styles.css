@@ -181,3 +181,20 @@ li > span {
 .save-offer button + button {
   margin-left: 8px;
 }
+/* A setting with its explanation. */
+label.check {
+  display: block;
+  margin-top: 12px;
+}
+label.check input {
+  margin-right: 6px;
+}
+.offer-log ul {
+  padding-left: 0;
+  list-style: none;
+  font-size: 13px;
+}
+.offer-log li {
+  padding: 2px 0;
+  word-break: break-all;
+}
